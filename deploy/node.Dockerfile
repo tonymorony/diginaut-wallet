@@ -17,5 +17,8 @@ COPY apps ./apps
 
 ARG APP=wallet
 ENV APP=${APP}
+# /data must be node-owned BEFORE the volume is created from it, or the faucet
+# (USER node) gets EACCES writing its claim ledger to a root-owned named volume.
+RUN mkdir -p /data && chown node:node /data
 USER node
 CMD node apps/${APP}/server.js
