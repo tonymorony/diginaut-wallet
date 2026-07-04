@@ -32,7 +32,27 @@ export function configFromEnv() {
     },
     // Faucet service base URL; unset = no faucet button in the UI.
     faucetUrl: process.env.FAUCET_URL || '',
+    // Indexer façade base URL (apps/indexer); unset = no balance/history in the UI.
+    indexerUrl: process.env.INDEXER_URL || '',
   };
+}
+
+// Forward address-level reads to the indexer façade (#5: all balance/history
+// queries go through the indexer seam — never node RPC).
+async function handleIndexer(req, res, { indexerUrl }) {
+  if (!indexerUrl) return sendJson(res, 503, { error: 'no indexer configured' });
+  const rel = req.url.slice('/api/indexer'.length);
+  if (!/^\/address\/[a-z0-9]+\/(utxos|history)$/.test(rel)) {
+    return sendJson(res, 404, { error: 'unknown indexer path' });
+  }
+  try {
+    const upstream = await fetch(`${indexerUrl}/api${rel}`, { signal: AbortSignal.timeout(15_000) });
+    const body = await upstream.text();
+    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(body);
+  } catch (err) {
+    sendJson(res, 502, { error: `indexer unreachable: ${String(err.message || err)}` });
+  }
 }
 
 // Forward a claim to the Faucet service (same-origin for the browser; the
@@ -61,12 +81,12 @@ async function handleFaucetClaim(req, res, { faucetUrl }) {
 const ALLOWED_METHODS = new Set([
   'getblockchaininfo',
   'getdeploymentinfo',
-  'getoraclestatus',
-  'listoracles',
-  'listredemptionpaths',
-  'getdigidollarspendinfo',
-  // mintdigidollartaproot / redeemdigidollar intentionally NOT exposed to the
-  // browser — fund-moving flows arrive client-signed via M2/M3 (ADR-0001).
+  // Real v9.26.4 names (docs/discovery/regtest-oracle-findings.md) — the
+  // spec-discussion names (getoraclestatus, listoracles, …) don't exist.
+  'getoracleprice',
+  'getoracles',
+  // mintdigidollar / redeemdigidollar / senddigidollar intentionally NOT
+  // exposed — fund-moving flows arrive client-signed via M2/M3 (ADR-0001).
 ]);
 
 const MIME = {
@@ -95,20 +115,23 @@ function mockResponse(method, params) {
           taproot: { type: 'bip9', bip9: { status: 'active' }, active: true },
         },
       };
-    case 'getoraclestatus':
-      return { active: true, activeOracles: 35, threshold: 7, lastPrice: 0.01342, lastPriceBlock: 1_284_510, priceValidBlocks: 20, sources: 7 };
-    case 'listoracles':
+    case 'getoracleprice':
+      return {
+        price_micro_usd: 13_420, price_cents: 1, price_usd: 0.01342,
+        last_update_height: 1_284_510, validity_blocks: 20, is_stale: false,
+        oracle_count: 35, status: 'ok',
+      };
+    case 'getoracles':
       return Array.from({ length: 35 }, (_, i) => ({
-        id: i + 1,
-        pubkey: `dgbtoracle${String(i + 1).padStart(2, '0')}...`,
-        active: true,
-        reliability: 0.96 + (i % 4) * 0.01,
-        lastSeenBlock: 1_284_510 - (i % 3),
+        oracle_id: i,
+        name: `oracle-${i}`,
+        pubkey: `03${String(i).padStart(64, '0')}`,
+        is_active: true,
+        in_consensus: i % 5 !== 4,
+        active_oracle_count: 35,
+        total_oracle_slots: 35,
+        consensus_threshold: 7,
       }));
-    case 'listredemptionpaths':
-      return [];
-    case 'getdigidollarspendinfo':
-      return { internalKey: 'mock', merkleRoot: 'mock', scriptPaths: [] };
     default:
       throw new Error(`No mock for method: ${method}`);
   }
@@ -197,7 +220,8 @@ export function startServer(overrides = {}) {
     try {
       if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
       if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, config);
-      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl) });
+      if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, config);
+      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl) });
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {

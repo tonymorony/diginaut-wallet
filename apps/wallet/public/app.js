@@ -87,31 +87,34 @@ async function loadStatus() {
 
 async function loadOracle() {
   try {
-    const st = await rpc('getoraclestatus');
-    if (st?.lastPrice) {
-      $('o-price').textContent = fmtUSD(st.lastPrice);
+    const price = await rpc('getoracleprice');
+    if (price?.price_usd) {
+      // sub-cent DGB prices need more than fmtUSD's 2 decimals
+      $('o-price').textContent = '$' + price.price_usd.toLocaleString('en-US', { maximumFractionDigits: 5 }) + (price.is_stale ? ' (stale)' : '');
       // seed the calculator price with the live oracle price
       const priceInput = $('c-price');
       if (priceInput && !priceInput.dataset.touched) {
-        priceInput.value = st.lastPrice;
+        priceInput.value = price.price_usd;
         $('c-pricesrc').textContent = '(from oracle)';
         recalc();
       }
     }
-    $('o-consensus').innerHTML = `<span class="dot ${st.active ? 'good' : 'bad'}"></span>${st.activeOracles}/${st.threshold ? st.activeOracles : '?'} · need ${st.threshold ?? '?'}`;
-    $('o-active').textContent = `${st.activeOracles ?? '?'} of 35`;
   } catch (e) {
     $('o-hint').innerHTML = `<span class="err">oracle: ${e.message}</span>`;
   }
   try {
-    const list = await rpc('listoracles');
-    if (Array.isArray(list)) {
+    const list = await rpc('getoracles');
+    if (Array.isArray(list) && list.length) {
+      const { active_oracle_count: active, total_oracle_slots: slots, consensus_threshold: need } = list[0];
+      const ok = active >= need;
+      $('o-consensus').innerHTML = `<span class="dot ${ok ? 'good' : 'bad'}"></span>${active}/${slots} · need ${need}`;
+      $('o-active').textContent = `${active} of ${slots}`;
       $('o-grid').innerHTML = list
         .map((o, i) => {
-          const ok = o.active !== false;
-          const bg = ok ? 'rgba(22,199,154,.18)' : 'rgba(255,92,114,.18)';
-          const col = ok ? 'var(--good)' : 'var(--bad)';
-          return `<div class="oracle" style="background:${bg};color:${col}" title="${o.pubkey || ''} reliability ${o.reliability ?? '?'}">${o.id ?? i + 1}</div>`;
+          const on = o.is_active !== false;
+          const bg = on ? 'rgba(22,199,154,.18)' : 'rgba(255,92,114,.18)';
+          const col = on ? 'var(--good)' : 'var(--bad)';
+          return `<div class="oracle" style="background:${bg};color:${col}" title="${o.name ?? ''} ${o.pubkey ?? ''}">${o.oracle_id ?? i}</div>`;
         })
         .join('');
     }
@@ -122,6 +125,7 @@ async function loadOracle() {
 $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1'; $('c-pricesrc').textContent = ''; });
 
 // ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
+let appConfig = { mock: true, faucet: false, indexer: false };
 const wallet = {
   mnemonic: null, // set only while unlocked
   seed: null,
@@ -149,11 +153,14 @@ function openWallet(mnemonic) {
   $('w-seed').style.display = 'none';
   $('w-open-err').textContent = '';
   show('open');
+  startMoneyPolling();
 }
 
 function lockWallet() {
   wallet.mnemonic = null;
   wallet.seed = null;
+  clearInterval(moneyTimer);
+  $('w-money').style.display = 'none';
   $('w-seed-words').textContent = '';
   $('w-unlock-pass').value = '';
   $('w-locked-err').textContent = '';
@@ -216,7 +223,7 @@ $('w-forget').addEventListener('click', async (e) => {
 });
 
 $('w-lock').addEventListener('click', lockWallet);
-$('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); });
+$('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); refreshMoney(); });
 $('w-copy').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-address').textContent)));
 $('w-faucet').addEventListener('click', (e) =>
@@ -245,6 +252,66 @@ $('w-backup').addEventListener('click', () => {
   $('w-backup').textContent = showing ? 'Show seed phrase' : 'Hide seed phrase';
 });
 
+// ---- Balance & history (#5): every query goes through the indexer seam ----
+const fmtSats = (sats) => fmtDGB(Number(sats) / 1e8);
+
+async function fetchIndexer(path) {
+  const res = await fetch('/api/indexer' + path);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+/** Addresses the wallet watches: every derived index up to the current one, +2 lookahead. */
+function watchedAddresses() {
+  return Array.from({ length: wallet.index + 3 }, (_, i) =>
+    deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }).address);
+}
+
+async function refreshMoney() {
+  if (!wallet.seed || !appConfig.indexer) return;
+  try {
+    const addrs = watchedAddresses();
+    const perAddr = await Promise.all(addrs.map(async (a) => ({
+      utxos: (await fetchIndexer(`/address/${a}/utxos`)).utxos,
+      history: (await fetchIndexer(`/address/${a}/history`)).history,
+    })));
+    if (!wallet.seed) return; // locked while we were fetching
+    const utxos = perAddr.flatMap((r) => r.utxos);
+    const confirmed = utxos.filter((u) => u.height > 0).reduce((n, u) => n + Number(u.valueSats), 0);
+    const pending = utxos.filter((u) => u.height === 0).reduce((n, u) => n + Number(u.valueSats), 0);
+    $('w-balance').textContent = fmtDGB(confirmed / 1e8);
+    $('w-pending-row').style.display = pending > 0 ? 'flex' : 'none';
+    if (pending > 0) $('w-pending').textContent = fmtDGB(pending / 1e8);
+
+    const receivedByTx = {};
+    for (const u of utxos) receivedByTx[u.txid] = (receivedByTx[u.txid] ?? 0) + Number(u.valueSats);
+    const seen = new Set();
+    const entries = perAddr.flatMap((r) => r.history)
+      .filter((h) => (seen.has(h.txid) ? false : seen.add(h.txid)))
+      .sort((a, b) => (a.height === 0 ? Infinity : a.height) < (b.height === 0 ? Infinity : b.height) ? 1 : -1)
+      .slice(0, 8);
+    $('w-history').innerHTML = entries.map((h) => {
+      const status = h.height === 0
+        ? '<span class="warn-text">pending</span>'
+        : `<span style="color:var(--good)">confirmed</span>`;
+      const amt = receivedByTx[h.txid] ? ` · +${fmtSats(receivedByTx[h.txid])} DGB` : '';
+      return `<div class="mono">${h.txid.slice(0, 12)}… ${status}${amt}</div>`;
+    }).join('') || 'No transactions yet.';
+    $('w-money').style.display = 'block';
+  } catch (e) {
+    $('w-open-err').textContent = 'indexer: ' + e.message;
+  }
+}
+
+let moneyTimer = null;
+function startMoneyPolling() {
+  if (!appConfig.indexer) return;
+  refreshMoney();
+  clearInterval(moneyTimer);
+  moneyTimer = setInterval(refreshMoney, 8000);
+}
+
 async function bootWallet() {
   try {
     const blob = await loadKeystore();
@@ -259,6 +326,7 @@ async function boot() {
   initCalculator();
   try {
     const cfg = await (await fetch('/api/config')).json();
+    appConfig = cfg;
     const badge = $('modeBadge');
     if (cfg.mock) {
       badge.className = 'badge mock';
