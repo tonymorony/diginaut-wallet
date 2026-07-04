@@ -103,6 +103,29 @@ export function buildTransferMetadata({ amountsCents }) {
   return bytesToHex(Uint8Array.from(parts));
 }
 
+// ---- Redeem OP_RETURN metadata ----
+// Present ONLY when a redemption has DD change (RedeemTxBuilder): exact-amount
+// burns carry no OP_RETURN at all (see test/fixtures/redeem-tx.json).
+//   OP_RETURN(0x6a) push2 "DD"(0x4444) push1 <type=3> pushN <ddChangeCents LE, minimal>
+
+/** Parse a redeem OP_RETURN scriptPubKey (hex) into its DD change amount (cents). */
+export function parseRedeemMetadata(scriptHex) {
+  const pushes = readPushes(hexToBytes(scriptHex));
+  const [magic, type, change] = pushes;
+  if (pushes.length !== 3 || bytesToHex(magic) !== '4444') throw new RangeError('not a redeem metadata script');
+  if (type.length !== 1 || type[0] !== CODE_BY_TYPE.redeem) throw new RangeError(`not a redeem metadata script (type ${type[0]})`);
+  return { ddChangeCents: leToBigInt(change) };
+}
+
+/** Build a redeem OP_RETURN scriptPubKey (hex) — Core's DD-change encoding. */
+export function buildRedeemMetadata({ ddChangeCents }) {
+  if (BigInt(ddChangeCents) <= 0n) throw new RangeError('DD change must be positive');
+  const push = (bytes) => [bytes.length, ...bytes];
+  return bytesToHex(Uint8Array.from([
+    0x6a, ...push([0x44, 0x44]), ...push([CODE_BY_TYPE.redeem]), ...push(leMinimal(ddChangeCents)),
+  ]));
+}
+
 /** Build a mint OP_RETURN scriptPubKey (hex) — byte-exact vs Core's encoding. */
 export function buildMintMetadata({ ddCents, unlockHeight, lockTier, ownerKeyHex }) {
   const ownerKey = hexToBytes(ownerKeyHex);

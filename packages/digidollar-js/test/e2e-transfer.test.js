@@ -52,7 +52,7 @@ async function broadcastAndMine(hex, minerAddr) {
   const txid = await rpc('sendrawtransaction', [hex]);
   await rpc('generatetoaddress', [1, minerAddr], 'stand');
   const mined = await rpc('getrawtransaction', [txid, true]);
-  assert.equal(mined.confirmations, 1);
+  assert.ok(mined.confirmations >= 1); // >=1: parallel test files may mine extra blocks
   return mined;
 }
 
