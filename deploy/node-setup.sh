@@ -8,7 +8,7 @@ set -euo pipefail
 VERSION="${VERSION:-9.26.4}"
 RPC_USER="${RPC_USER:?set RPC_USER}"
 RPC_PASS="${RPC_PASS:?set RPC_PASS}"
-RPC_PORT="${RPC_PORT:-14022}" # DigiByte testnet RPC default
+RPC_PORT="${RPC_PORT:-14022}" # pinned explicitly below (v9.26.4 testnet default is 14026; 14022 is mainnet's)
 DATADIR="${DATADIR:-/var/lib/digibyte}"
 
 case "$(uname -m)" in
