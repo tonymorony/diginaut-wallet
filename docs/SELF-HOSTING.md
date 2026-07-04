@@ -79,7 +79,7 @@ Everything must agree on one chain:
 | chain   | `DGB_NET`  | `DGB_HRP` | notes |
 |---------|-----------|-----------|-------|
 | regtest | `regtest` | `dgbrt`   | works out of the box (custom ElectrumX coin class ships in this repo) |
-| testnet | `testnet` | `dgbt`    | check that your ElectrumX build knows DigiByte testnet — if not, add a coin class next to `scripts/electrumx-regtest/coins_regtest.py` (it is ~20 lines: NET name, address version bytes, genesis hash) |
+| testnet | `testnet` | `dgbt`    | works out of the box too — `scripts/electrumx-regtest/coins_regtest.py` registers a DigiByte testnet class (genesis from v9.26.4 `CTestNetParams`) |
 
 A wrong `DGB_HRP` is silent but total: the indexer 400s every address and the
 wallet shows no balances.
@@ -90,6 +90,30 @@ Mint, Transfer and Redeem ship **together as one unit** and are always on
 (ADR-0002: mint is never exposed without transfer and redeem). The release
 gate (#17) removed the former `FEATURE_MINT` flag — there is nothing to
 configure.
+
+## Public deployment (testnet, TLS)
+
+On a fresh Linux server (root):
+
+```sh
+# 1. the node — downloads the v9.26.4 release, configures TESTNET with
+#    server=1 txindex=1, installs a systemd unit, starts syncing
+RPC_USER=dd RPC_PASS=$(openssl rand -hex 16) ./deploy/node-setup.sh
+# keep the RPC port (14022) closed in the host firewall; only 22/80/443 open
+
+# 2. DNS: create an A record for your hostname → this server's IP
+
+# 3. the stack, with Caddy terminating HTTPS (Let's Encrypt, automatic)
+cd deploy && cp .env.example .env
+# .env: DGB_NET=testnet, DGB_HRP=dgbt, DOMAIN=<your hostname>,
+#       RPC creds from step 1, DGB_RPC_URL/DAEMON_URL port 14022
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build -d
+```
+
+ElectrumX indexes the testnet chain on first start — wait until
+`docker compose exec wallet wget -qO- http://indexer:8789/api/health` reports
+the node's height before announcing the URL. Fund the faucet wallet first
+(see above).
 
 ## Updating
 

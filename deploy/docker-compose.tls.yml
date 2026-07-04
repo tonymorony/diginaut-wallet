@@ -1,0 +1,23 @@
+# TLS overlay for public deployments: Caddy terminates HTTPS for the wallet
+# and auto-provisions Let's Encrypt certificates for $DOMAIN.
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build -d
+# Requires: an A record for $DOMAIN pointing at this host, ports 80/443 open.
+services:
+  caddy:
+    image: caddy:2-alpine
+    command: caddy reverse-proxy --from ${DOMAIN:?public hostname, e.g. dd.example.com} --to wallet:8791
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+    depends_on: [wallet]
+    restart: unless-stopped
+
+  wallet:
+    # with Caddy in front, the wallet itself stays off the public interface
+    ports: !override
+      - "127.0.0.1:8791:8791"
+
+volumes:
+  caddy-data:
