@@ -31,14 +31,17 @@ const hexToBytes = (hex) => Uint8Array.from(hex.match(/../g).map((b) => parseInt
 const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 function leMinimal(value) {
-  // minimal-length little-endian encoding of a non-negative integer
+  // CScriptNum encoding: minimal signed little-endian. Zero is EMPTY (pushed
+  // as OP_0); a set high bit on the top byte gets a 0x00 sign-padding byte.
   let v = BigInt(value);
   if (v < 0n) throw new RangeError('negative value');
+  if (v === 0n) return new Uint8Array(0);
   const out = [];
-  do {
+  while (v > 0n) {
     out.push(Number(v & 0xffn));
     v >>= 8n;
-  } while (v > 0n);
+  }
+  if (out[out.length - 1] & 0x80) out.push(0x00);
   return Uint8Array.from(out);
 }
 
@@ -50,8 +53,8 @@ function readPushes(script) {
   const pushes = [];
   for (let i = 1; i < script.length; ) {
     const len = script[i];
-    if (len < 1 || len > 75) throw new RangeError(`unsupported push opcode 0x${len.toString(16)} at ${i}`);
-    pushes.push(script.subarray(i + 1, i + 1 + len));
+    if (len > 75) throw new RangeError(`unsupported push opcode 0x${len.toString(16)} at ${i}`);
+    pushes.push(script.subarray(i + 1, i + 1 + len)); // len 0 = OP_0 → empty push
     i += 1 + len;
   }
   return pushes;
@@ -67,7 +70,7 @@ export function parseMintMetadata(scriptHex) {
   return {
     ddCents: leToBigInt(ddCents),
     unlockHeight: Number(leToBigInt(unlockHeight)),
-    lockTier: lockTier[0],
+    lockTier: Number(leToBigInt(lockTier)),
     ownerKeyHex: bytesToHex(ownerKey),
   };
 }
@@ -83,7 +86,7 @@ export function buildMintMetadata({ ddCents, unlockHeight, lockTier, ownerKeyHex
     ...push([CODE_BY_TYPE.mint]),
     ...push(leMinimal(ddCents)),
     ...push(leMinimal(unlockHeight)),
-    ...push([lockTier]),
+    ...push(leMinimal(lockTier)),
     ...push(ownerKey),
   ]);
   return bytesToHex(script);
