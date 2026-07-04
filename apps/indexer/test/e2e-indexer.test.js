@@ -137,6 +137,11 @@ test('e2e (#13): a real client-side mint surfaces as an open DigiDollar position
         collateralSats: String(collateralSats),
       }]);
       assert.ok(body.tipHeight >= tipHeight + 1, 'tip height present for expiry math');
+
+      // #15: the same mint's DD token output is the owner's spendable DigiDollar
+      const dd = await (await fetch(`${base}/api/address/${d0.address}/dd-utxos`)).json();
+      assert.deepEqual(dd.utxos, [{ txid: mintTxid, vout: 1, cents: '25000', height: tipHeight + 1 }]);
+      assert.equal(dd.totalCents, '25000');
     } finally {
       server.close();
     }

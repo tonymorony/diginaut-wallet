@@ -7,6 +7,7 @@ import {
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
+  buildSignedTransferTx,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 
@@ -165,8 +166,10 @@ function lockWallet() {
   wallet.seed = null;
   resetSend(); // pendingSend holds per-UTXO private keys — drop them with the seed
   resetMint(); // pendingMint holds the funding UTXO's private key — same
+  resetTransfer(); // pendingTransfer holds DD + fee UTXO keys — same
   $('w-send-out').textContent = '';
   $('w-mint-out').textContent = '';
+  $('w-tr-out').textContent = '';
   clearInterval(moneyTimer);
   $('w-money').style.display = 'none';
   $('w-seed-words').textContent = '';
@@ -308,6 +311,7 @@ async function refreshMoney() {
       utxos: (await fetchIndexer(`/address/${a}/utxos`)).utxos,
       history: (await fetchIndexer(`/address/${a}/history`)).history,
       positions: await fetchIndexer(`/address/${a}/positions`),
+      ddCents: BigInt((await fetchIndexer(`/address/${a}/dd-utxos`)).totalCents),
     })));
     if (!wallet.seed) return; // locked while we were fetching
     const utxos = perAddr.flatMap((r) => r.utxos);
@@ -331,6 +335,8 @@ async function refreshMoney() {
       const amt = receivedByTx[h.txid] ? ` · +${fmtSats(receivedByTx[h.txid])} DGB` : '';
       return `<div class="mono">${h.txid.slice(0, 12)}… ${status}${amt}</div>`;
     }).join('') || 'No transactions yet.';
+    const ddCents = perAddr.reduce((s, r) => s + r.ddCents, 0n);
+    $('w-dd-balance').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
     $('w-money').style.display = 'block';
   } catch (e) {
@@ -505,6 +511,98 @@ $('w-mint-go').addEventListener('click', (e) =>
     refreshMoney();
   }));
 
+// ---- Transfer DigiDollar (#15): plan → confirmation → sign → broadcast ----
+// Same stablecoin feature flag as Mint. A transfer spends ONE DD token UTXO
+// plus ONE DGB fee UTXO owned by the SAME key (Core's transfer anatomy), so
+// both coin picks are per-derivation-address.
+const TRANSFER_FEE_SATS = 12_000_000n; // 0.12 DGB, above Core's DD fee floor
+
+/** Every watched derivation's DD token UTXOs, with the owning key attached. */
+async function ddUtxosWithKeys() {
+  const derived = Array.from({ length: wallet.index + 3 }, (_, i) =>
+    deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }));
+  const perAddr = await Promise.all(derived.map(async (d) => {
+    const { utxos } = await fetchIndexer(`/address/${d.address}/dd-utxos`);
+    return utxos.map((u) => ({
+      txidHex: u.txid, vout: u.vout, ddCents: BigInt(u.cents), height: u.height,
+      privKeyHex: d.privKeyHex, address: d.address,
+    }));
+  }));
+  return perAddr.flat();
+}
+
+let pendingTransfer = null; // { ddUtxo, feeUtxo (both hold keys!), cents, outputKeyHex } while confirming
+
+function resetTransfer() {
+  pendingTransfer = null;
+  $('w-tr-confirm').style.display = 'none';
+  $('w-tr-review').disabled = false;
+}
+
+$('w-tr-review').addEventListener('click', (e) =>
+  busy(e.target, 'w-tr-err', async () => {
+    $('w-tr-out').textContent = '';
+    // recipient must be a taproot (witness v1) address on this network —
+    // a DigiDollar address IS the recipient's key-path P2TR
+    const address = $('w-tr-to').value.trim();
+    let decoded;
+    try {
+      decoded = decodeWitnessAddress(address);
+    } catch (err) {
+      throw new Error(`invalid address: ${err.message}`);
+    }
+    if (decoded.hrp !== wallet.network.hrp) throw new Error(`address is not for this network (expected ${wallet.network.hrp}…)`);
+    if (decoded.version !== 1 || decoded.programHex.length !== 64) {
+      throw new Error('not a DigiDollar-capable address — DigiDollar goes to taproot addresses (…1p…), this one is a different type');
+    }
+    const cents = ddToCents($('w-tr-amount').value);
+    if (cents <= 0n) throw new Error('amount must be positive');
+    const ddUtxos = await ddUtxosWithKeys();
+    const totalCents = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
+    const ddUtxo = ddUtxos.filter((u) => u.ddCents >= cents).sort((a, b) => (a.ddCents < b.ddCents ? -1 : 1))[0];
+    if (!ddUtxo) {
+      const fmtDD = (c) => (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+      throw new Error(totalCents >= cents
+        ? `your DigiDollar covers it, but it is split across smaller coins (a transfer spends one DD coin, largest is $${fmtDD(ddUtxos.reduce((m, u) => (u.ddCents > m ? u.ddCents : m), 0n))}). Transfer that amount or less, or consolidate by transferring to your own address.`
+        : `insufficient DigiDollar: you are sending $${fmtDD(cents)} but hold $${fmtDD(totalCents)}`);
+    }
+    // the fee coin must sit on the SAME address as the DD coin being spent
+    const feeUtxo = (await spendableUtxos())
+      .filter((u) => u.privKeyHex === ddUtxo.privKeyHex && u.valueSats >= TRANSFER_FEE_SATS)
+      .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    if (!feeUtxo) {
+      throw new Error(`no DGB for the fee on the address holding this DigiDollar — send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to ${ddUtxo.address}, then retry`);
+    }
+    pendingTransfer = { ddUtxo, feeUtxo, cents, outputKeyHex: decoded.programHex, address };
+    $('w-tr-c-to').textContent = address;
+    $('w-tr-c-dd').textContent = (Number(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    $('w-tr-c-change').textContent = (Number(ddUtxo.ddCents - cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    $('w-tr-c-fee').textContent = fmtSats(TRANSFER_FEE_SATS);
+    $('w-tr-confirm').style.display = 'block';
+    $('w-tr-review').disabled = true;
+  }));
+
+$('w-tr-cancel').addEventListener('click', resetTransfer);
+
+$('w-tr-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-tr-err', async () => {
+    const { ddUtxo, feeUtxo, cents, outputKeyHex } = pendingTransfer;
+    if (!wallet.seed) throw new Error('wallet is locked');
+    const { hex } = buildSignedTransferTx({
+      ddUtxo: { txidHex: ddUtxo.txidHex, vout: ddUtxo.vout, ddCents: ddUtxo.ddCents },
+      feeUtxo: { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats },
+      privKeyHex: ddUtxo.privKeyHex,
+      recipients: [{ outputKeyHex, cents }],
+      feeSats: TRANSFER_FEE_SATS,
+    });
+    const txid = await rpc('sendrawtransaction', [hex]);
+    resetTransfer();
+    $('w-tr-to').value = '';
+    $('w-tr-amount').value = '';
+    $('w-tr-out').textContent = `Transferred — tx ${txid.slice(0, 16)}…`;
+    refreshMoney();
+  }));
+
 let moneyTimer = null;
 function startMoneyPolling() {
   if (!appConfig.indexer) return;
@@ -537,7 +635,11 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
     if (cfg.faucet) $('w-faucet').style.display = 'block';
-    if (cfg.mint) { initMintTiers(); $('w-mint').style.display = 'block'; } // ADR-0002 flag
+    if (cfg.mint) { // the shared stablecoin flag gates mint AND transfer (ADR-0002)
+      initMintTiers();
+      $('w-mint').style.display = 'block';
+      $('w-transfer').style.display = 'block';
+    }
   } catch { /* ignore */ }
   bootWallet();
   loadStatus();

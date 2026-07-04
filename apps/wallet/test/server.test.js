@@ -174,9 +174,10 @@ test('proxies indexer GETs to INDEXER_URL and reports availability in config', a
     assert.equal((await (await fetch(base + '/api/config')).json()).indexer, true);
     const res = await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos');
     assert.equal(res.status, 200);
-    // DigiDollar positions (#13) go through the same seam
+    // DigiDollar positions (#13) and dd-utxos (#15) go through the same seam
     assert.equal((await fetch(base + '/api/indexer/address/dgbrt1qfoo/positions')).status, 200);
-    assert.deepEqual(hits, ['/api/address/dgbrt1qfoo/utxos', '/api/address/dgbrt1qfoo/positions']);
+    assert.equal((await fetch(base + '/api/indexer/address/dgbrt1qfoo/dd-utxos')).status, 200);
+    assert.deepEqual(hits, ['/api/address/dgbrt1qfoo/utxos', '/api/address/dgbrt1qfoo/positions', '/api/address/dgbrt1qfoo/dd-utxos']);
     // anything outside /api/address/ is not forwarded
     assert.equal((await fetch(base + '/api/indexer/../evil')).status, 404);
   } finally {

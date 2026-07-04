@@ -168,6 +168,8 @@
           <div class="row"><span class="k">Balance</span><span class="v"><span id="w-balance">—</span> DGB</span></div>
           <div class="row" id="w-pending-row" style="display:none"><span class="k">Incoming (pending)</span><span class="v warn-text">+<span id="w-pending"></span> DGB</span></div>
           <div id="w-history" class="hint" style="margin:6px 0 10px"></div>
+          <!-- DigiDollar (#15): spendable DD tokens, distinct from DGB and from locked positions -->
+          <div class="row"><span class="k">DigiDollar (spendable)</span><span class="v">$<span id="w-dd-balance">0.00</span></span></div>
           <!-- DigiDollar positions (#13): locked mints, distinct from the DGB balance above -->
           <div class="row"><span class="k">DigiDollar positions</span><span class="v" id="w-dd-total"></span></div>
           <div id="w-positions" class="hint" style="margin:6px 0 10px">No open positions.</div>
@@ -193,6 +195,27 @@
             </div>
             <div class="hint" id="w-mint-out"></div>
             <div class="err" id="w-mint-err"></div>
+          </div>
+          <!-- Transfer DigiDollar (#15): same stablecoin feature flag as Mint -->
+          <div id="w-transfer" style="display:none">
+            <label for="w-tr-to">Send DigiDollar — recipient address</label>
+            <input id="w-tr-to" class="mono" placeholder="dgb…1p…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <label for="w-tr-amount">Amount (DD)</label>
+            <input id="w-tr-amount" inputmode="decimal" autocomplete="off" placeholder="25" />
+            <button id="w-tr-review">Review transfer</button>
+            <!-- confirmation screen: nothing is signed until "Confirm & transfer" -->
+            <div id="w-tr-confirm" style="display:none">
+              <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-tr-c-to" style="word-break:break-all"></span></div>
+              <div class="row"><span class="k">Sending</span><span class="v">$<span id="w-tr-c-dd"></span></span></div>
+              <div class="row"><span class="k">DigiDollar change</span><span class="v">$<span id="w-tr-c-change"></span></span></div>
+              <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-tr-c-fee"></span> DGB</span></div>
+              <div class="grid">
+                <button id="w-tr-go">Confirm &amp; transfer</button>
+                <button id="w-tr-cancel" class="secondary">Cancel</button>
+              </div>
+            </div>
+            <div class="hint" id="w-tr-out"></div>
+            <div class="err" id="w-tr-err"></div>
           </div>
           <!-- Send DGB (issue #6): built & signed client-side, node only relays -->
           <div id="w-send">
