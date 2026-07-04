@@ -14,13 +14,13 @@ import { startServer } from '../server.js';
 const ADDR = 'dgbrt1pzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygszk8z3a';
 const ADDR2 = 'dgbrt1pyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3q3zehg3';
 
-const ORACLE_PRICE_USD = 0.01342;
+const ORACLE_PRICE_MICRO_USD = 13_420; // getoracleprice.price_micro_usd
 
 function fakeRpc(calls = []) {
   return async (method, params = []) => {
     calls.push({ method, params });
     switch (method) {
-      case 'getoraclestatus': return { active: true, lastPrice: ORACLE_PRICE_USD };
+      case 'getoracleprice': return { price_micro_usd: ORACLE_PRICE_MICRO_USD, is_stale: false };
       case 'getbalance': return 1_000_000;
       case 'sendtoaddress': return 'f'.repeat(64); // txid
       case 'getblockchaininfo': return { chain: 'regtest' };
@@ -63,7 +63,7 @@ test('claim: dispenses to a valid address and the amount clears the $50 six-mont
     const floor = requiredCollateralSats({
       ddCents: 5000n,
       tierId: '6months',
-      oraclePriceMicroUsd: BigInt(Math.round(ORACLE_PRICE_USD * 1_000_000)),
+      oraclePriceMicroUsd: BigInt(ORACLE_PRICE_MICRO_USD),
     });
     assert.ok(BigInt(amountSats) > floor, `${amountSats} sats must exceed the mint floor ${floor}`);
 

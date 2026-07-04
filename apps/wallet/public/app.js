@@ -219,6 +219,24 @@ $('w-lock').addEventListener('click', lockWallet);
 $('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); });
 $('w-copy').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-address').textContent)));
+$('w-faucet').addEventListener('click', (e) =>
+  busy(e.target, 'w-open-err', async () => {
+    $('w-faucet-out').textContent = 'Requesting…';
+    try {
+      const res = await fetch('/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: $('w-address').textContent }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      $('w-faucet-out').textContent = `Sent ${json.amountDgb.toLocaleString('en-US')} DGB — tx ${json.txid.slice(0, 16)}…`;
+    } catch (err) {
+      $('w-faucet-out').textContent = '';
+      throw err;
+    }
+  }));
+
 $('w-backup').addEventListener('click', () => {
   const box = $('w-seed');
   const showing = box.style.display !== 'none';
@@ -249,6 +267,7 @@ async function boot() {
       badge.className = 'badge real';
       badge.textContent = 'LIVE NODE';
     }
+    if (cfg.faucet) $('w-faucet').style.display = 'block';
   } catch { /* ignore */ }
   bootWallet();
   loadStatus();

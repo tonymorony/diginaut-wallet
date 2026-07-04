@@ -30,7 +30,30 @@ export function configFromEnv() {
       user: process.env.DGB_RPC_USER || '',
       pass: process.env.DGB_RPC_PASS || '',
     },
+    // Faucet service base URL; unset = no faucet button in the UI.
+    faucetUrl: process.env.FAUCET_URL || '',
   };
+}
+
+// Forward a claim to the Faucet service (same-origin for the browser; the
+// faucet's own rate limiting sees the real client IP via x-forwarded-for).
+async function handleFaucetClaim(req, res, { faucetUrl }) {
+  if (!faucetUrl) return sendJson(res, 503, { error: 'no faucet configured' });
+  let raw = '';
+  for await (const chunk of req) raw += chunk;
+  try {
+    const upstream = await fetch(faucetUrl + '/api/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': req.socket.remoteAddress ?? '' },
+      body: raw,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = await upstream.text();
+    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(body);
+  } catch (err) {
+    sendJson(res, 502, { error: `faucet unreachable: ${String(err.message || err)}` });
+  }
 }
 
 // Only these RPC methods are reachable from the browser. Keeps the proxy from
@@ -173,7 +196,8 @@ export function startServer(overrides = {}) {
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
-      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url });
+      if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, config);
+      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl) });
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {

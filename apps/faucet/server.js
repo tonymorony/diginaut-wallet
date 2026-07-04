@@ -114,9 +114,9 @@ async function handleClaim(req, res, ctx) {
     });
   }
 
-  const oracle = await ctx.rpc('getoraclestatus', []);
-  if (!oracle?.lastPrice) return sendJson(res, 503, { error: 'Oracle price unavailable' });
-  const priceMicroUsd = BigInt(Math.round(oracle.lastPrice * 1_000_000));
+  const oracle = await ctx.rpc('getoracleprice', []);
+  if (!oracle?.price_micro_usd || oracle.is_stale) return sendJson(res, 503, { error: 'Oracle price unavailable or stale' });
+  const priceMicroUsd = BigInt(oracle.price_micro_usd);
 
   const amountSats = dispenseSats(ctx.targetDdCents, priceMicroUsd);
   const amountDgb = Number(amountSats) / 1e8;
@@ -129,9 +129,9 @@ async function handleClaim(req, res, ctx) {
 
 async function handleStatus(res, ctx) {
   const balanceDgb = await ctx.rpc('getbalance', []);
-  const oracle = await ctx.rpc('getoraclestatus', []);
-  const dispenseDgb = oracle?.lastPrice
-    ? Number(dispenseSats(ctx.targetDdCents, BigInt(Math.round(oracle.lastPrice * 1_000_000)))) / 1e8
+  const oracle = await ctx.rpc('getoracleprice', []);
+  const dispenseDgb = oracle?.price_micro_usd
+    ? Number(dispenseSats(ctx.targetDdCents, BigInt(oracle.price_micro_usd))) / 1e8
     : null;
   sendJson(res, 200, { balanceDgb, dispenseDgb, cooldownHours: ctx.cooldownHours });
 }
