@@ -67,3 +67,4 @@ export { buildDDVersion, parseDDVersion, parseMintMetadata, buildMintMetadata, p
 export { ddTokenOutputKey, collateralOutputKey, normalRedemptionLeafHex, normalRedemptionLeafHash, collateralControlBlockHex, COLLATERAL_NUMS_KEY } from './taproot.js';
 export { encodeWitnessAddress, decodeWitnessAddress } from './address.js';
 export { buildSignedMintTx, buildSignedTransferTx, buildTransferOutputs, buildSignedRedeemTx, buildRedeemOutputs, serializeTx, xOnlyPubKey, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS, MIN_DD_TX_FEE_SATS } from './txbuild.js';
+export { generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from './hd.js';
