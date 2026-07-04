@@ -271,6 +271,30 @@ function watchedAddresses() {
     deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }).address);
 }
 
+// DigiDollar positions (#13): locked mints are NOT part of the DGB balance —
+// they render as their own list ($ amount, tier, collateral, expiry date).
+const SECONDS_PER_BLOCK = 15;
+function renderPositions(perAddr) {
+  const seen = new Set();
+  const positions = perAddr.flatMap((r) => r.positions.positions)
+    .filter((p) => (seen.has(p.txid) ? false : seen.add(p.txid)));
+  const tipHeight = Math.max(0, ...perAddr.map((r) => r.positions.tipHeight));
+  const totalCents = positions.reduce((n, p) => n + Number(p.ddCents), 0);
+  $('w-dd-total').textContent = positions.length ? fmtUSD(totalCents / 100) : '';
+  if (!positions.length) {
+    $('w-positions').textContent = 'No open positions.';
+    return;
+  }
+  $('w-positions').innerHTML = positions.map((p) => {
+    const blocksLeft = p.unlockHeight - tipHeight;
+    const unlock = blocksLeft <= 0
+      ? '<span style="color:var(--good)">unlockable now</span>'
+      : `unlocks ≈ ${new Date(Date.now() + blocksLeft * SECONDS_PER_BLOCK * 1000).toLocaleDateString('en-CA')} (block ${p.unlockHeight.toLocaleString('en-US')})`;
+    return `<div>${fmtUSD(Number(p.ddCents) / 100)} · ${p.tierLabel} · ` +
+      `locked ${fmtSats(BigInt(p.collateralSats))} DGB · ${unlock}</div>`;
+  }).join('');
+}
+
 async function refreshMoney() {
   if (!wallet.seed || !appConfig.indexer) return;
   try {
@@ -278,6 +302,7 @@ async function refreshMoney() {
     const perAddr = await Promise.all(addrs.map(async (a) => ({
       utxos: (await fetchIndexer(`/address/${a}/utxos`)).utxos,
       history: (await fetchIndexer(`/address/${a}/history`)).history,
+      positions: await fetchIndexer(`/address/${a}/positions`),
     })));
     if (!wallet.seed) return; // locked while we were fetching
     const utxos = perAddr.flatMap((r) => r.utxos);
@@ -301,6 +326,7 @@ async function refreshMoney() {
       const amt = receivedByTx[h.txid] ? ` · +${fmtSats(receivedByTx[h.txid])} DGB` : '';
       return `<div class="mono">${h.txid.slice(0, 12)}… ${status}${amt}</div>`;
     }).join('') || 'No transactions yet.';
+    renderPositions(perAddr);
     $('w-money').style.display = 'block';
   } catch (e) {
     $('w-open-err').textContent = 'indexer: ' + e.message;
