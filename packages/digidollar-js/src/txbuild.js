@@ -12,7 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { LOCK_TIERS, requiredCollateralSats, tierById } from './index.js';
 import { buildDDVersion } from './envelope.js';
-import { buildMintMetadata } from './envelope.js';
+import { buildMintMetadata, buildTransferMetadata } from './envelope.js';
 import { collateralOutputKey, ddTokenOutputKey } from './taproot.js';
 
 const { taggedHash } = schnorr.utils;
@@ -93,7 +93,7 @@ function taprootSighash({ version, locktime, inputs, outputs, inputIndex }) {
   return taggedHash('TapSighash', concat(Uint8Array.from([0x00]), msg)); // epoch 0
 }
 
-function serializeTx({ version, locktime, inputs, outputs, witnesses }) {
+export function serializeTx({ version, locktime, inputs, outputs, witnesses }) {
   const parts = [u32le(version), Uint8Array.from([0x00, 0x01])]; // segwit marker+flag
   parts.push(varint(inputs.length));
   for (const i of inputs) parts.push(hexToBytes(i.txidHex).reverse(), u32le(i.vout), varint(0), u32le(i.sequence));
@@ -105,6 +105,86 @@ function serializeTx({ version, locktime, inputs, outputs, witnesses }) {
   }
   parts.push(u32le(locktime));
   return bytesToHex(concat(...parts));
+}
+
+// ---- Transfer ----
+// Output layout mirrors real Core transfers (test/fixtures/transfer-tx.json,
+// TransferTxBuilder::BuildTransferTransaction):
+//   recipient DD P2TR (value 0) ×N
+//   DD change P2TR (value 0, tweaked sender owner key)  — only if change > 0
+//   DGB change P2WPKH                                   — only if change > 0
+//   OP_RETURN "DD" <2> <cents per DD output, in order>  — always LAST
+// Consensus (ValidateTransferTransaction) pairs OP_RETURN amounts positionally
+// with the zero-value canonical-P2TR outputs and enforces strict DD conservation.
+
+/**
+ * Build the transfer output list in Core's exact order.
+ * `recipients[].outputKeyHex` is the already-tweaked P2TR output key (what a
+ * DigiDollar address decodes to) — it is used verbatim, not tweaked again.
+ */
+export function buildTransferOutputs({
+  recipients, // [{ outputKeyHex, cents: bigint }]
+  ddChangeCents = 0n,
+  changeOwnerKeyHex, // sender's x-only owner key; tweaked here like CreateDigiDollarP2TR
+  dgbChangeSats = 0n,
+  dgbChangeScriptHex,
+}) {
+  if (!recipients?.length) throw new RangeError('at least one recipient required');
+  const amountsCents = recipients.map((r) => r.cents);
+  const outputs = recipients.map((r) => ({ valueSats: 0n, script: p2trScript(r.outputKeyHex) }));
+  if (ddChangeCents > 0n) {
+    outputs.push({ valueSats: 0n, script: p2trScript(ddTokenOutputKey(changeOwnerKeyHex)) });
+    amountsCents.push(ddChangeCents);
+  }
+  if (dgbChangeSats > 0n) {
+    outputs.push({ valueSats: dgbChangeSats, script: hexToBytes(dgbChangeScriptHex) });
+  }
+  outputs.push({ valueSats: 0n, script: hexToBytes(buildTransferMetadata({ amountsCents })) });
+  return outputs;
+}
+
+/**
+ * Build and sign a complete DigiDollar transfer transaction, client-side.
+ * Both UTXOs must be key-path-only P2TR of `privKeyHex` (the sender owner key):
+ * the DD token UTXO (on-chain value 0) and a DGB UTXO that pays the fee.
+ * Returns { hex, ddChangeCents, dgbChangeSats }.
+ */
+export function buildSignedTransferTx({
+  ddUtxo, // { txidHex, vout, ddCents: bigint } — the DD token output being spent (value 0)
+  feeUtxo, // { txidHex, vout, valueSats: bigint }
+  privKeyHex,
+  recipients, // [{ outputKeyHex, cents: bigint }]
+  feeSats = 12_000_000n, // 0.12 DGB ≥ Core's DD fee floor
+}) {
+  if (feeSats < MIN_DD_TX_FEE_SATS) throw new RangeError('fee below the DigiDollar fee floor (0.1 DGB)');
+  const sentCents = recipients.reduce((s, r) => s + r.cents, 0n);
+  const ddChangeCents = ddUtxo.ddCents - sentCents;
+  if (ddChangeCents < 0n) throw new RangeError('DD input smaller than the amount being sent');
+  const dgbChangeSats = feeUtxo.valueSats - feeSats;
+  if (dgbChangeSats < 0n) throw new RangeError('fee UTXO too small for the fee');
+
+  const ownerKey = xOnlyPubKey(privKeyHex);
+  const ownerScriptHex = bytesToHex(p2trScript(ddTokenOutputKey(ownerKey)));
+  const inputs = [
+    { txidHex: ddUtxo.txidHex, vout: ddUtxo.vout, valueSats: 0n, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
+    { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
+  ];
+  const outputs = buildTransferOutputs({
+    recipients,
+    ddChangeCents,
+    changeOwnerKeyHex: ownerKey,
+    dgbChangeSats,
+    dgbChangeScriptHex: bytesToHex(p2wpkhScript(privKeyHex)),
+  });
+
+  const version = buildDDVersion('transfer');
+  const tweakedKey = hexToBytes(tapTweakPrivKey(privKeyHex));
+  const witnesses = inputs.map((_, inputIndex) => [
+    schnorr.sign(taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex }), tweakedKey),
+  ]);
+
+  const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses });
+  return { hex, ddChangeCents, dgbChangeSats };
 }
 
 /**

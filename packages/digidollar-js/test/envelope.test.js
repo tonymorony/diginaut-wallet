@@ -44,3 +44,29 @@ test('rebuilds the mint OP_RETURN byte-for-byte (round-trip)', async () => {
   });
   assert.equal(hex, MINT_META_HEX);
 });
+
+// Real OP_RETURN from the fixture transfer 9b3069da… (test/fixtures/transfer-tx.json),
+// a $30 send with $70 change: 6a 024444 0102 02b80b 02581b
+// Core reference: TransferTxBuilder::BuildTransferTransaction — amounts are
+// CScriptNum, one per zero-value DD P2TR output, recipients first, change last.
+const TRANSFER_META_HEX = '6a024444010202b80b02581b';
+
+test('parses the transfer OP_RETURN metadata from a real regtest transfer', async () => {
+  const { parseTransferMetadata } = await import('digidollar-js');
+  assert.deepEqual(parseTransferMetadata(TRANSFER_META_HEX), {
+    amountsCents: [3_000n, 7_000n],
+  });
+});
+
+test('rebuilds the transfer OP_RETURN byte-for-byte (round-trip)', async () => {
+  const { buildTransferMetadata } = await import('digidollar-js');
+  assert.equal(buildTransferMetadata({ amountsCents: [3_000n, 7_000n] }), TRANSFER_META_HEX);
+});
+
+test('transfer metadata rejects malformed scripts and non-positive amounts', async () => {
+  const { parseTransferMetadata, buildTransferMetadata } = await import('digidollar-js');
+  assert.throws(() => parseTransferMetadata(MINT_META_HEX), /not a transfer/); // type 1, not 2
+  assert.throws(() => parseTransferMetadata('6a024444'), /not a transfer/); // no type push
+  assert.throws(() => buildTransferMetadata({ amountsCents: [] }), /at least one/);
+  assert.throws(() => buildTransferMetadata({ amountsCents: [0n] }), /positive/);
+});
