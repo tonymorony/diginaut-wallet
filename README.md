@@ -27,7 +27,7 @@ DigiDollar **without running their own node**, and without anyone else ever hold
 ## Run
 
 ```bash
-npm install   # links workspaces (no external dependencies)
+npm install   # links workspaces (only audited @noble/@scure crypto deps)
 npm start     # → http://localhost:8787
 npm test      # node:test across all workspaces
 ```
