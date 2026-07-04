@@ -113,6 +113,97 @@ test('buildSignedSpendTx folds sub-0.001-DGB change into the fee (no dust output
   assert.equal(parseTx(hex).vout.length, 1);
 });
 
+// ---- witness-v0 inputs (#38): mint change is P2WPKH by consensus ----
+// Hand-computed weights (BIP-141), NOT taken from the implementation:
+//   p2wpkh input: 41 vB non-witness ·4 = 164 wu; witness ≤ 1 count + 1+72 sig
+//   (max lowS DER 71 + 1 hashtype byte) + 1+33 pubkey = 108 wu → 272 wu budget.
+//   (271 wu assumes a 71-byte sig — a coin-flip; budgeting the max never
+//   under-pays, and the node rejects under-payment.)
+
+test('planSpend prices a single p2wpkh input: 42 + 272 + 344 = 658 wu → 165 vB', () => {
+  const plan = planSpend({
+    utxos: [{ txidHex: 'ab'.repeat(32), vout: 0, valueSats: 5_000_000n, type: 'p2wpkh' }],
+    amountSats: 4_000_000n,
+  });
+  assert.equal(plan.feeSats, 16_500n); // 165 vB · 100 sats/vB
+  assert.equal(plan.changeSats, 5_000_000n - 4_000_000n - 16_500n);
+});
+
+test('planSpend prices mixed p2tr + p2wpkh inputs per type: 888 wu → 222 vB', () => {
+  // 42 + 230 (p2tr) + 272 (p2wpkh) + 2·172 = 888 wu → ceil(888/4) = 222 vB → 22_200 sats
+  const plan = planSpend({
+    utxos: [
+      { txidHex: 'ab'.repeat(32), vout: 1, valueSats: 5_000_000n }, // default p2tr
+      { txidHex: 'ab'.repeat(32), vout: 2, valueSats: 3_000_000n, type: 'p2wpkh' },
+    ],
+    amountSats: 7_000_000n,
+  });
+  assert.equal(plan.inputs.length, 2);
+  assert.equal(plan.feeSats, 22_200n);
+  assert.equal(plan.changeSats, 8_000_000n - 7_000_000n - 22_200n);
+});
+
+test('buildSignedSpendTx signs a mixed p2tr + p2wpkh spend with a valid BIP-143 witness', async () => {
+  const { secp256k1 } = await import('@noble/curves/secp256k1.js');
+  const { sha256 } = await import('@noble/hashes/sha2.js');
+  const { ripemd160 } = await import('@noble/hashes/legacy.js');
+  const keyA = '11'.repeat(32); // p2tr owner
+  const keyB = '22'.repeat(32); // p2wpkh owner (mint-change key)
+  const recipientScriptHex = '5120' + ddTokenOutputKey(xOnlyPubKey('33'.repeat(32)));
+  const changeScriptHex = '5120' + ddTokenOutputKey(xOnlyPubKey(keyA));
+  const utxos = [
+    { txidHex: 'aa'.repeat(32), vout: 1, valueSats: 5_000_000n, privKeyHex: keyA },
+    { txidHex: 'bb'.repeat(32), vout: 0, valueSats: 3_000_000n, privKeyHex: keyB, type: 'p2wpkh' },
+  ];
+  const { hex, changeSats } = buildSignedSpendTx({
+    utxos,
+    recipientScriptHex,
+    amountSats: 7_000_000n,
+    changeScriptHex,
+    feeSats: 22_200n,
+  });
+  assert.equal(changeSats, 8_000_000n - 7_000_000n - 22_200n);
+
+  const tx = parseTx(hex);
+  assert.equal(tx.version, 2);
+  // input 0 (p2tr): single 64-byte Schnorr sig; input 1 (p2wpkh): [DER sig|01, pubkey]
+  assert.equal(tx.witnesses[0].length, 1);
+  assert.equal(tx.witnesses[0][0].length, 128);
+  const [sigHex, pkHex] = tx.witnesses[1];
+  assert.equal(tx.witnesses[1].length, 2);
+  const pubkey = secp256k1.getPublicKey(Buffer.from(keyB, 'hex'), true);
+  assert.equal(pkHex, Buffer.from(pubkey).toString('hex'), 'compressed pubkey of the p2wpkh key');
+  assert.equal(sigHex.slice(0, 2), '30', 'DER signature');
+  assert.equal(sigHex.slice(-2), '01', 'SIGHASH_ALL hashtype byte');
+
+  // Verify the ECDSA signature against a sighash computed HERE from the
+  // BIP-143 spec text — independent of the library's signer.
+  const h256 = (b) => sha256(sha256(b));
+  const le32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
+  const le64 = (v) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(v); return b; };
+  const outpoint = (u) => Buffer.concat([Buffer.from(u.txidHex, 'hex').reverse(), le32(u.vout)]);
+  const hash160 = ripemd160(sha256(pubkey));
+  const scriptCode = Buffer.concat([Buffer.from([0x19, 0x76, 0xa9, 0x14]), hash160, Buffer.from([0x88, 0xac])]);
+  const outputsSer = Buffer.concat(tx.vout.map((o) => Buffer.concat([
+    le64(o.valueSats), Buffer.from([o.scriptHex.length / 2]), Buffer.from(o.scriptHex, 'hex'),
+  ])));
+  const preimage = Buffer.concat([
+    le32(2), // nVersion
+    h256(Buffer.concat(utxos.map(outpoint))), // hashPrevouts
+    h256(Buffer.concat(tx.vin.map((v) => le32(v.sequence)))), // hashSequence
+    outpoint(utxos[1]), scriptCode, le64(utxos[1].valueSats), le32(tx.vin[1].sequence),
+    h256(outputsSer), // hashOutputs
+    le32(0), // nLockTime
+    le32(1), // SIGHASH_ALL
+  ]);
+  const sighash = h256(preimage);
+  const ok = secp256k1.verify(
+    Buffer.from(sigHex.slice(0, -2), 'hex'),
+    sighash, pubkey, { prehash: false, format: 'der' },
+  );
+  assert.ok(ok, 'ECDSA signature verifies against the independently computed BIP-143 sighash');
+});
+
 test('planSpend throws when the balance cannot cover amount + fee', () => {
   assert.throws(
     () => planSpend({ utxos: [utxo(1_000_000n)], amountSats: 995_000n }),

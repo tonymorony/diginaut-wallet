@@ -49,9 +49,15 @@ const p2trScript = (xOnlyHex) => concat(Uint8Array.from([0x51, 0x20]), hexToByte
 // P2WPKH change (matches Core's mint anatomy). A P2TR change output would be
 // rejected: consensus requires exactly one collateral-shaped output per mint
 // ("bad-mint-multiple-collateral-outputs", NUMS-bypass protection).
-function p2wpkhScript(privKeyHex) {
+
+/** hash160(compressed pubkey) hex — this key's P2WPKH witness program. */
+export function p2wpkhProgramHex(privKeyHex) {
   const compressed = secp256k1.getPublicKey(hexToBytes(privKeyHex), true);
-  return concat(Uint8Array.from([0x00, 0x14]), ripemd160(sha256(compressed)));
+  return bytesToHex(ripemd160(sha256(compressed)));
+}
+
+function p2wpkhScript(privKeyHex) {
+  return concat(Uint8Array.from([0x00, 0x14]), hexToBytes(p2wpkhProgramHex(privKeyHex)));
 }
 
 /** x-only pubkey (hex) for a private key. */
@@ -98,6 +104,39 @@ function taprootSighash({ version, locktime, inputs, outputs, inputIndex, leafHa
       : []),
   );
   return taggedHash('TapSighash', concat(Uint8Array.from([0x00]), msg)); // epoch 0
+}
+
+/**
+ * BIP-143 sighash (SIGHASH_ALL, no anyonecanpay) for a P2WPKH input. The
+ * scriptCode is the implied P2PKH script of the hash160 embedded in the
+ * input's witness program (scriptPubKey = 0014<hash160>).
+ */
+function bip143Sighash({ version, locktime, inputs, outputs, inputIndex }) {
+  const hash256 = (b) => sha256(sha256(b));
+  const hashPrevouts = hash256(concat(...inputs.map((i) => concat(hexToBytes(i.txidHex).reverse(), u32le(i.vout)))));
+  const hashSequence = hash256(concat(...inputs.map((i) => u32le(i.sequence))));
+  const hashOutputs = hash256(concat(...outputs.map((o) => concat(u64le(o.valueSats), varint(o.script.length), o.script))));
+  const input = inputs[inputIndex];
+  const hash160 = hexToBytes(input.scriptPubKeyHex).slice(2); // drop OP_0 <20>
+  const scriptCode = concat(Uint8Array.from([0x19, 0x76, 0xa9, 0x14]), hash160, Uint8Array.from([0x88, 0xac]));
+  const preimage = concat(
+    u32le(version),
+    hashPrevouts, hashSequence,
+    hexToBytes(input.txidHex).reverse(), u32le(input.vout),
+    scriptCode,
+    u64le(input.valueSats),
+    u32le(input.sequence),
+    hashOutputs,
+    u32le(locktime),
+    u32le(0x01), // SIGHASH_ALL
+  );
+  return hash256(preimage);
+}
+
+/** Witness stack for a P2WPKH input: [lowS DER sig + 0x01, compressed pubkey]. */
+function p2wpkhWitness(sighash, privKeyHex) {
+  const der = secp256k1.sign(sighash, hexToBytes(privKeyHex), { prehash: false, format: 'der', lowS: true });
+  return [concat(der, Uint8Array.from([0x01])), secp256k1.getPublicKey(hexToBytes(privKeyHex), true)];
 }
 
 export function serializeTx({ version, locktime, inputs, outputs, witnesses }) {
@@ -300,21 +339,29 @@ const CHANGE_FOLD_SATS = 100_000n; // change smaller than this goes to the fee, 
 // BIP-141 weights for a key-path P2TR spend, in weight units (see spend.test.js).
 const TX_OVERHEAD_WU = 42n; // version+counts+locktime (10 vB ·4) + segwit marker/flag (2 wu)
 const P2TR_INPUT_WU = 230n; // outpoint+len+sequence (41 vB ·4) + witness [64B sig] (66 wu)
+// p2wpkh: 164 wu non-witness + witness ≤ 1 count + (1+72) sig (max lowS DER 71
+// + hashtype) + (1+33) pubkey = 108 wu. Budget the maximum — a 71-byte sig is
+// a coin flip, and an under-paid fee is rejected by the relay policy.
+const P2WPKH_INPUT_WU = 272n;
 const P2TR_OUTPUT_WU = 172n; // 8 value + 1 len + 34 script, ·4
+const inputWeight = (u) => (u.type === 'p2wpkh' ? P2WPKH_INPUT_WU : P2TR_INPUT_WU);
 
 /**
  * Coin selection + fee plan for a standard 2-output (recipient + change) spend.
- * Largest-first: fewest inputs, fewest signatures. Returns { inputs, feeSats,
- * changeSats } where `inputs` are the selected UTXO objects verbatim.
+ * Largest-first: fewest inputs, fewest signatures. UTXOs are key-path P2TR by
+ * default; `type: 'p2wpkh'` marks a witness-v0 coin (mint change). Returns
+ * { inputs, feeSats, changeSats } where `inputs` are the UTXO objects verbatim.
  */
 export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_RATE_SATS_PER_KVB }) {
   const sorted = [...utxos].sort((a, b) => (a.valueSats < b.valueSats ? 1 : -1));
   const inputs = [];
   let total = 0n;
+  let inputsWu = 0n;
   for (const u of sorted) {
     inputs.push(u);
     total += u.valueSats;
-    const weight = TX_OVERHEAD_WU + P2TR_INPUT_WU * BigInt(inputs.length) + P2TR_OUTPUT_WU * 2n;
+    inputsWu += inputWeight(u);
+    const weight = TX_OVERHEAD_WU + inputsWu + P2TR_OUTPUT_WU * 2n;
     // Core rounds weight→vsize FIRST (GetVirtualTransactionSize = ceil(weight/4)),
     // then prices per vbyte — rounding at the end under-pays by up to 75 sats/kvB.
     const vsize = (weight + 3n) / 4n;
@@ -326,15 +373,16 @@ export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_
 }
 
 /**
- * Build and sign a standard (non-DD) DGB spend, client-side. Every UTXO must be
- * a key-path-only P2TR and carries its own private key (wallet UTXOs span
- * derivation indices). Change below 0.001 DGB (the relay-fee unit — negligible
- * value, guaranteed dust under any DGB dust policy) is folded into the fee
- * instead of creating an output. Returns { hex, changeSats } — the change
- * output's actual value, 0n when folded.
+ * Build and sign a standard (non-DD) DGB spend, client-side. Every UTXO carries
+ * its own private key (wallet UTXOs span derivation indices) and is a key-path-
+ * only P2TR unless marked `type: 'p2wpkh'` — the shape consensus forces on mint
+ * change — which is signed per BIP-143 (ECDSA, SIGHASH_ALL). Change below
+ * 0.001 DGB (the relay-fee unit — negligible value, guaranteed dust under any
+ * DGB dust policy) is folded into the fee instead of creating an output.
+ * Returns { hex, changeSats } — the change output's actual value, 0n when folded.
  */
 export function buildSignedSpendTx({
-  utxos, // [{ txidHex, vout, valueSats: bigint, privKeyHex }]
+  utxos, // [{ txidHex, vout, valueSats: bigint, privKeyHex, type?: 'p2tr'|'p2wpkh' }]
   recipientScriptHex,
   amountSats,
   changeScriptHex,
@@ -349,19 +397,26 @@ export function buildSignedSpendTx({
     txidHex: u.txidHex,
     vout: u.vout,
     valueSats: u.valueSats,
-    scriptPubKeyHex: bytesToHex(p2trScript(ddTokenOutputKey(xOnlyPubKey(u.privKeyHex)))),
+    scriptPubKeyHex: bytesToHex(u.type === 'p2wpkh'
+      ? p2wpkhScript(u.privKeyHex)
+      : p2trScript(ddTokenOutputKey(xOnlyPubKey(u.privKeyHex)))),
     sequence: 0xfffffffd,
   }));
   const outputs = [{ valueSats: amountSats, script: hexToBytes(recipientScriptHex) }];
   if (changeSats > 0n) outputs.push({ valueSats: changeSats, script: hexToBytes(changeScriptHex) });
 
   const version = 2; // plain spend: no DD envelope in the version field
-  const witnesses = utxos.map((u, inputIndex) => [
-    schnorr.sign(
-      taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex }),
-      hexToBytes(tapTweakPrivKey(u.privKeyHex)),
-    ),
-  ]);
+  const witnesses = utxos.map((u, inputIndex) => {
+    if (u.type === 'p2wpkh') {
+      return p2wpkhWitness(bip143Sighash({ version, locktime: 0, inputs, outputs, inputIndex }), u.privKeyHex);
+    }
+    return [
+      schnorr.sign(
+        taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex }),
+        hexToBytes(tapTweakPrivKey(u.privKeyHex)),
+      ),
+    ];
+  });
   const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses });
   return { hex, changeSats };
 }

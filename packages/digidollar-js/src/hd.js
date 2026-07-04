@@ -7,6 +7,7 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { HDKey } from '@scure/bip32';
 import { ddTokenOutputKey } from './taproot.js';
 import { encodeWitnessAddress } from './address.js';
+import { p2wpkhProgramHex } from './txbuild.js';
 
 const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -33,20 +34,33 @@ export function mnemonicToSeed(mnemonic, passphrase = '') {
 }
 
 /**
+ * P2WPKH (witness v0) address of a private key: hash160 of the compressed
+ * pubkey. Mint DGB change goes to this script BY CONSENSUS (single-collateral-
+ * shape rule), so the wallet watches each key's P2WPKH twin alongside its P2TR.
+ */
+export function p2wpkhAddress(privKeyHex, hrp) {
+  return encodeWitnessAddress(hrp, 0, p2wpkhProgramHex(privKeyHex));
+}
+
+/**
  * BIP86 taproot key + address at m/86'/coinType'/account'/change/index.
  * The output key is the key-path-only tap tweak — identical to Core's
  * CreateDigiDollarP2TR, so a mint to this address is redeemable by this key.
+ * Also carries the key's P2WPKH twin (`p2wpkhAddress`) — change-only, never
+ * shown as a receive address — so callers get it without re-deriving.
  */
 export function deriveTaprootAddress(seed, { hrp, coinType, account = 0, change = 0, index = 0 }) {
   const path = `m/86'/${coinType}'/${account}'/${change}/${index}`;
   const node = HDKey.fromMasterSeed(seed).derive(path);
   const internalKeyHex = bytesToHex(node.publicKey.slice(1)); // x-only: drop the parity byte
   const outputKeyHex = ddTokenOutputKey(internalKeyHex);
+  const privKeyHex = bytesToHex(node.privateKey);
   return {
     path,
-    privKeyHex: bytesToHex(node.privateKey),
+    privKeyHex,
     internalKeyHex,
     outputKeyHex,
     address: encodeWitnessAddress(hrp, 1, outputKeyHex),
+    p2wpkhAddress: p2wpkhAddress(privKeyHex, hrp),
   };
 }
