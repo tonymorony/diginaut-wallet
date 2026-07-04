@@ -1,0 +1,13 @@
+{
+  "name": "digidollar-testnet-ui",
+  "version": "0.1.0",
+  "description": "Simple web interface for DigiByte DigiDollar on testnet — mint calculator, oracle status, address generation. Works with a real DigiByte Core node or in mock mode.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
