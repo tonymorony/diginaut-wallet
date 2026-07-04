@@ -90,8 +90,16 @@ function tapLeafHash(script) {
   return taggedHash('TapLeaf', Uint8Array.from([LEAF_VERSION, script.length, ...script]));
 }
 
+function lexicographicCompare(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+
 function tapBranchHash(a, b) {
-  const [lo, hi] = Buffer.compare(Buffer.from(a), Buffer.from(b)) <= 0 ? [a, b] : [b, a];
+  // No Buffer here — this module must also run in the browser.
+  const [lo, hi] = lexicographicCompare(a, b) <= 0 ? [a, b] : [b, a];
   return taggedHash('TapBranch', new Uint8Array([...lo, ...hi]));
 }
 

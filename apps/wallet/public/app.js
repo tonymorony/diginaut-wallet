@@ -2,7 +2,11 @@
 // Consensus math comes from the digidollar-js protocol library (served at /lib/),
 // which mirrors DigiByte Core v9.26.4 exactly — the same code the differential
 // harness (M2) will verify against Core.
-import { LOCK_TIERS, requiredCollateralSats } from '/lib/index.js';
+import {
+  LOCK_TIERS, requiredCollateralSats,
+  generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
+} from '/lib/index.js';
+import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -60,6 +64,12 @@ async function loadStatus() {
     const info = await rpc('getblockchaininfo');
     $('s-chain').textContent = info.chain;
     $('s-height').textContent = Number(info.blocks).toLocaleString('en-US');
+    // derive receive addresses for the chain the node is actually on
+    const net = { main: 'mainnet', test: 'testnet', regtest: 'regtest' }[info.chain];
+    if (net) {
+      wallet.network = HD_NETWORKS[net];
+      if (wallet.seed) renderAddress();
+    }
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
   }
@@ -89,7 +99,7 @@ async function loadOracle() {
       }
     }
     $('o-consensus').innerHTML = `<span class="dot ${st.active ? 'good' : 'bad'}"></span>${st.activeOracles}/${st.threshold ? st.activeOracles : '?'} · need ${st.threshold ?? '?'}`;
-    $('o-active').textContent = `${st.activeOracles ?? '?'} of 15`;
+    $('o-active').textContent = `${st.activeOracles ?? '?'} of 35`;
   } catch (e) {
     $('o-hint').innerHTML = `<span class="err">oracle: ${e.message}</span>`;
   }
@@ -111,24 +121,120 @@ async function loadOracle() {
 // mark price as user-touched so the oracle doesn't overwrite it
 $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1'; $('c-pricesrc').textContent = ''; });
 
-// ---- Address generation ----
-$('genBtn').addEventListener('click', async () => {
-  const btn = $('genBtn');
-  $('addrErr').textContent = '';
+// ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
+const wallet = {
+  mnemonic: null, // set only while unlocked
+  seed: null,
+  index: 0,
+  network: HD_NETWORKS.testnet, // refined from the node's `chain` once known
+};
+
+function show(state) {
+  for (const s of ['loading', 'none', 'locked', 'open']) {
+    $('w-' + s).style.display = s === state ? 'block' : 'none';
+  }
+}
+
+function renderAddress() {
+  const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
+  $('w-path').textContent = path;
+  $('w-address').textContent = address;
+}
+
+function openWallet(mnemonic) {
+  wallet.mnemonic = mnemonic;
+  wallet.seed = mnemonicToSeed(mnemonic);
+  wallet.index = 0;
+  renderAddress();
+  $('w-seed').style.display = 'none';
+  $('w-open-err').textContent = '';
+  show('open');
+}
+
+function lockWallet() {
+  wallet.mnemonic = null;
+  wallet.seed = null;
+  $('w-seed-words').textContent = '';
+  $('w-unlock-pass').value = '';
+  $('w-locked-err').textContent = '';
+  show('locked');
+}
+
+async function createOrRestore(mnemonic) {
+  const pass = $('w-create-pass').value;
+  if (pass.length < 8) throw new Error('password must be at least 8 characters');
+  if (pass !== $('w-create-pass2').value) throw new Error('passwords do not match');
+  await saveKeystore(await encryptMnemonic(mnemonic, pass));
+  openWallet(mnemonic);
+}
+
+async function busy(btn, errId, fn) {
+  const el = $(errId);
+  el.textContent = '';
   btn.disabled = true;
-  btn.textContent = 'Generating…';
   try {
-    const addr = await rpc('getnewdigidollaraddress');
-    const out = $('addrOut');
-    out.style.display = 'block';
-    out.textContent = typeof addr === 'string' ? addr : JSON.stringify(addr);
+    await fn();
   } catch (e) {
-    $('addrErr').textContent = e.message;
+    el.textContent = e.message;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Generate testnet address';
   }
+}
+
+$('w-create').addEventListener('click', (e) =>
+  busy(e.target, 'w-none-err', () => createOrRestore(generateMnemonic())));
+
+$('w-show-restore').addEventListener('click', () => {
+  const box = $('w-restore');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
 });
+
+$('w-restore-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-none-err', async () => {
+    const words = $('w-restore-seed').value.trim().toLowerCase().split(/\s+/).join(' ');
+    if (!validateMnemonic(words)) throw new Error('not a valid BIP39 seed phrase (check the words and their order)');
+    await createOrRestore(words);
+  }));
+
+$('w-unlock').addEventListener('click', (e) =>
+  busy(e.target, 'w-locked-err', async () => {
+    const blob = await loadKeystore();
+    let mnemonic;
+    try {
+      mnemonic = await decryptMnemonic(blob, $('w-unlock-pass').value);
+    } catch {
+      throw new Error('wrong password');
+    }
+    openWallet(mnemonic);
+  }));
+$('w-unlock-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('w-unlock').click(); });
+
+$('w-forget').addEventListener('click', async (e) => {
+  e.preventDefault();
+  await deleteKeystore();
+  show('none');
+});
+
+$('w-lock').addEventListener('click', lockWallet);
+$('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); });
+$('w-copy').addEventListener('click', async (e) =>
+  busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-address').textContent)));
+$('w-backup').addEventListener('click', () => {
+  const box = $('w-seed');
+  const showing = box.style.display !== 'none';
+  box.style.display = showing ? 'none' : 'block';
+  $('w-seed-words').textContent = showing ? '' : wallet.mnemonic;
+  $('w-backup').textContent = showing ? 'Show seed phrase' : 'Hide seed phrase';
+});
+
+async function bootWallet() {
+  try {
+    const blob = await loadKeystore();
+    show(blob ? 'locked' : 'none');
+  } catch (e) {
+    $('w-loading').textContent = 'wallet storage unavailable: ' + e.message;
+  }
+}
 
 // ---- Boot ----
 async function boot() {
@@ -144,6 +250,7 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
   } catch { /* ignore */ }
+  bootWallet();
   loadStatus();
   loadOracle();
 }

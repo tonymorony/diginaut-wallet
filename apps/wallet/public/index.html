@@ -47,16 +47,29 @@
       background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
     }
     button:hover { filter: brightness(1.08); } button:disabled { opacity: .5; cursor: default; }
+    button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+    textarea {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+      background: #0e1526; color: var(--text); font-size: 14px; resize: vertical;
+    }
+    textarea:focus { outline: none; border-color: var(--accent); }
+    .warn-text { color: var(--warn); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all; }
     .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
     .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(30px,1fr)); gap: 6px; margin-top: 6px; }
     .oracle { height: 28px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
     footer { max-width: 960px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 12px; }
+    .testnet-banner {
+      position: sticky; top: 0; z-index: 10; text-align: center; padding: 7px 12px;
+      background: rgba(247,185,85,.14); color: var(--warn); border-bottom: 1px solid rgba(247,185,85,.4);
+      font-size: 12px; font-weight: 700; letter-spacing: .5px; backdrop-filter: blur(6px);
+    }
     a { color: var(--accent); }
   </style>
 </head>
 <body>
+  <div class="testnet-banner">TESTNET ONLY — no real value. Keys live in this browser; there is no server-side backup.</div>
   <header>
     <h1>DigiDollar <span style="color:var(--muted)">· Testnet UI</span><span id="modeBadge" class="badge mock">loading…</span></h1>
     <div class="sub">Decentralized USD stablecoin on DigiByte — mint calculator, oracle health & address generation.</div>
@@ -117,13 +130,56 @@
       </div>
     </section>
 
-    <!-- Address generation -->
-    <section class="card">
-      <h2>Receive DigiDollar</h2>
-      <p class="hint" style="margin-top:0">Generates a P2TR (<span class="mono">dgbt1p…</span>) testnet address via <span class="mono">getnewdigidollaraddress</span>.</p>
-      <button id="genBtn">Generate testnet address</button>
-      <div class="out mono" id="addrOut" style="display:none"></div>
-      <div class="err" id="addrErr"></div>
+    <!-- Wallet: keys never leave this browser (ADR-0001) -->
+    <section class="card" id="wallet-card">
+      <h2>Wallet</h2>
+      <div id="w-loading" class="hint">Loading wallet…</div>
+
+      <!-- no wallet yet -->
+      <div id="w-none" style="display:none">
+        <p class="hint" style="margin-top:0">No wallet in this browser yet. Keys are generated locally and never sent anywhere.</p>
+        <label for="w-create-pass">Password (encrypts the wallet in this browser)</label>
+        <input id="w-create-pass" type="password" autocomplete="new-password" />
+        <label for="w-create-pass2">Repeat password</label>
+        <input id="w-create-pass2" type="password" autocomplete="new-password" />
+        <button id="w-create">Create new wallet</button>
+        <button id="w-show-restore" class="secondary">Restore from seed phrase</button>
+        <div id="w-restore" style="display:none">
+          <label for="w-restore-seed">Seed phrase (12 or 24 words)</label>
+          <textarea id="w-restore-seed" rows="3" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+          <button id="w-restore-go">Restore wallet</button>
+        </div>
+        <div class="err" id="w-none-err"></div>
+      </div>
+
+      <!-- wallet exists, locked -->
+      <div id="w-locked" style="display:none">
+        <p class="hint" style="margin-top:0">Wallet is locked. Enter your password to unlock.</p>
+        <label for="w-unlock-pass">Password</label>
+        <input id="w-unlock-pass" type="password" autocomplete="current-password" />
+        <button id="w-unlock">Unlock</button>
+        <div class="err" id="w-locked-err"></div>
+        <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase this wallet</a> and restore from your seed phrase.</p>
+      </div>
+
+      <!-- unlocked -->
+      <div id="w-open" style="display:none">
+        <div class="row"><span class="k">Receive address <span class="mono" id="w-path"></span></span><span></span></div>
+        <div class="out mono" id="w-address"></div>
+        <div class="grid" style="margin-top:0">
+          <button id="w-copy">Copy address</button>
+          <button id="w-next" class="secondary">Next address</button>
+        </div>
+        <div class="grid">
+          <button id="w-backup" class="secondary">Show seed phrase</button>
+          <button id="w-lock" class="secondary">Lock wallet</button>
+        </div>
+        <div id="w-seed" style="display:none">
+          <p class="hint warn-text">Anyone with these words controls the wallet. Write them down; this is the only backup.</p>
+          <div class="out mono" id="w-seed-words"></div>
+        </div>
+        <div class="err" id="w-open-err"></div>
+      </div>
     </section>
   </main>
 
@@ -131,6 +187,18 @@
     Runs against a DigiByte Core v9.26+ testnet node, or in mock mode. Fund-moving RPCs (mint/redeem) are intentionally not exposed to the browser.
   </footer>
 
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/curves/": "/vendor/@noble/curves/",
+      "@noble/hashes/": "/vendor/@noble/hashes/",
+      "@scure/base": "/vendor/@scure/base/index.js",
+      "@scure/bip32": "/vendor/@scure/bip32/index.js",
+      "@scure/bip39": "/vendor/@scure/bip39/index.js",
+      "@scure/bip39/wordlists/": "/vendor/@scure/bip39/wordlists/"
+    }
+  }
+  </script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

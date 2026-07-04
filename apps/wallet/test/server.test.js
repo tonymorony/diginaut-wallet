@@ -48,3 +48,39 @@ test('refuses fund-moving RPCs at the proxy', async () => {
     }
   });
 });
+
+test('refuses getnewdigidollaraddress — addresses are derived client-side now (#3)', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getnewdigidollaraddress' }),
+    });
+    assert.equal(res.status, 403);
+  });
+});
+
+test('serves crypto deps under /vendor/ for the browser import map', async () => {
+  await withServer(async (base) => {
+    for (const path of [
+      '/vendor/@scure/bip39/index.js',
+      '/vendor/@scure/bip39/wordlists/english.js',
+      '/vendor/@scure/bip32/index.js',
+      '/vendor/@noble/curves/secp256k1.js',
+    ]) {
+      const res = await fetch(base + path);
+      assert.equal(res.status, 200, path);
+      assert.match(res.headers.get('content-type'), /javascript/, path);
+    }
+    // no directory escape
+    const evil = await fetch(base + '/vendor/..%2f..%2fserver.js');
+    assert.notEqual(evil.status, 200);
+  });
+});
+
+test('wallet UI carries the permanent TESTNET ONLY banner', async () => {
+  await withServer(async (base) => {
+    const html = await (await fetch(base + '/')).text();
+    assert.match(html, /TESTNET ONLY/);
+  });
+});
