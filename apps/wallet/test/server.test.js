@@ -130,3 +130,61 @@ test('faucet claim without FAUCET_URL configured → 503', async () => {
     assert.equal(res.status, 503);
   });
 });
+
+test('proxies indexer GETs to INDEXER_URL and reports availability in config', async () => {
+  const { createServer } = await import('node:http');
+  const hits = [];
+  const indexer = createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ address: 'x', utxos: [] }));
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  const server = startServer({ port: 0, indexerUrl: `http://127.0.0.1:${indexer.address().port}` });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    assert.equal((await (await fetch(base + '/api/config')).json()).indexer, true);
+    const res = await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos');
+    assert.equal(res.status, 200);
+    assert.deepEqual(hits, ['/api/address/dgbrt1qfoo/utxos']);
+    // anything outside /api/address/ is not forwarded
+    assert.equal((await fetch(base + '/api/indexer/../evil')).status, 404);
+  } finally {
+    server.close();
+    indexer.close();
+  }
+});
+
+test('indexer queries without INDEXER_URL → 503; config says indexer: false', async () => {
+  await withServer(async (base) => {
+    assert.equal((await (await fetch(base + '/api/config')).json()).indexer, false);
+    assert.equal((await fetch(base + '/api/indexer/address/a/utxos')).status, 503);
+  });
+});
+
+test('stale spec-era oracle RPC names are gone; real ones are allowed with real-shaped mocks', async () => {
+  await withServer(async (base) => {
+    for (const stale of ['getoraclestatus', 'listoracles', 'listredemptionpaths', 'getdigidollarspendinfo']) {
+      const res = await fetch(base + '/api/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: stale }),
+      });
+      assert.equal(res.status, 403, stale + ' must be gone');
+    }
+    const price = await (await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getoracleprice' }),
+    })).json();
+    assert.ok(price.result.price_micro_usd > 0);
+    assert.equal(price.result.is_stale, false);
+    const oracles = await (await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getoracles' }),
+    })).json();
+    assert.ok(Array.isArray(oracles.result) && oracles.result[0].total_oracle_slots > 0);
+  });
+});
