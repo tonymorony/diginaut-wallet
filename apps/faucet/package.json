@@ -1,0 +1,11 @@
+{
+  "name": "@digidollar/faucet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DigiDollar testnet Faucet — dispenses mint-meaningful DGB with rate limits",
+  "type": "module",
+  "scripts": { "start": "node server.js", "test": "node --test" },
+  "dependencies": { "digidollar-js": "*" },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}
