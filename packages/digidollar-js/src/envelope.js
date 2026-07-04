@@ -75,6 +75,34 @@ export function parseMintMetadata(scriptHex) {
   };
 }
 
+// ---- Transfer OP_RETURN metadata ----
+// On-wire layout (from real regtest transfers, test/fixtures/transfer-tx.json):
+//   OP_RETURN(0x6a) push2 "DD"(0x4444) push1 <type=2> pushN <amountCents LE, minimal>...
+// One CScriptNum amount per zero-value DD P2TR output, in output order
+// (recipients first, DD change last). Consensus pairs them positionally
+// (ValidateTransferTransaction in src/digidollar/validation.cpp).
+
+/** Parse a transfer OP_RETURN scriptPubKey (hex) into its DD amounts (cents). */
+export function parseTransferMetadata(scriptHex) {
+  const pushes = readPushes(hexToBytes(scriptHex));
+  const [magic, type, ...amounts] = pushes;
+  if (pushes.length < 3 || bytesToHex(magic) !== '4444') throw new RangeError('not a transfer metadata script');
+  if (type.length !== 1 || type[0] !== CODE_BY_TYPE.transfer) throw new RangeError(`not a transfer metadata script (type ${type[0]})`);
+  return { amountsCents: amounts.map(leToBigInt) };
+}
+
+/** Build a transfer OP_RETURN scriptPubKey (hex) — byte-exact vs Core's encoding. */
+export function buildTransferMetadata({ amountsCents }) {
+  if (!amountsCents.length) throw new RangeError('at least one DD amount required');
+  const push = (bytes) => [bytes.length, ...bytes];
+  const parts = [0x6a, ...push([0x44, 0x44]), ...push([CODE_BY_TYPE.transfer])];
+  for (const cents of amountsCents) {
+    if (BigInt(cents) <= 0n) throw new RangeError('DD amounts must be positive');
+    parts.push(...push(leMinimal(cents)));
+  }
+  return bytesToHex(Uint8Array.from(parts));
+}
+
 /** Build a mint OP_RETURN scriptPubKey (hex) — byte-exact vs Core's encoding. */
 export function buildMintMetadata({ ddCents, unlockHeight, lockTier, ownerKeyHex }) {
   const ownerKey = hexToBytes(ownerKeyHex);
