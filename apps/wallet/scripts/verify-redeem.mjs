@@ -2,7 +2,7 @@
 // the CLTV lock → redeem from the position's button → collateral back in the
 // DGB balance. Proves the locked-until state, the no-fee-coin error, the
 // confirmation screen before signing, and the position closing. Setup: same
-// as verify-mint.mjs (wallet server with FEATURE_MINT=1).
+// as verify-mint.mjs.
 import { writeFileSync } from 'node:fs';
 
 const CDP_PORT = 9224;

@@ -2,8 +2,8 @@
 // stack. Wallet A mints in the UI, transfers to wallet B's address; the driver
 // then restores wallet B in the same browser and sees the DigiDollar arrive.
 // Also proves the distinct error states: non-taproot recipient, insufficient
-// DigiDollar, and no fee coin on the DD-holding address. Setup: same as
-// verify-mint.mjs (wallet server with FEATURE_MINT=1).
+// DigiDollar, and no fee coin on the DD-holding address.
+// Setup: same as verify-mint.mjs.
 import { writeFileSync } from 'node:fs';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 

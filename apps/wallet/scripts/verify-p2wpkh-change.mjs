@@ -5,7 +5,7 @@
 //   2. the Send flow spends that P2WPKH coin fully client-side (BIP-143),
 //      verified by the node: the spend's input IS the mint's change output,
 //      its witness is the 2-item v0 stack, and it mines.
-// Setup: same as verify-mint.mjs (indexer 8789, wallet 8791 with FEATURE_MINT=1,
+// Setup: same as verify-mint.mjs (indexer 8789, wallet 8791,
 // headless Chrome CDP on 9224 with a FRESH profile).
 import { writeFileSync } from 'node:fs';
 
@@ -75,10 +75,7 @@ const collateralSats = (ceilDiv(1000n * 100_000_000n * 1000n * 100n, 13_420n) * 
 const expectedChangeSats = 8_000n * 100_000_000n - collateralSats - 12_000_000n;
 const fmt = (sats) => (Number(sats) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
-// ---- Arrange: flag on; fresh wallet; ONE 8000-DGB coin (the mint consumes it whole).
-const cfg = await (await fetch(APP + '/api/config')).json();
-check(cfg.mint === true, 'mint flow is enabled by the feature flag (FEATURE_MINT=1)');
-
+// ---- Arrange: fresh wallet; ONE 8000-DGB coin (the mint consumes it whole).
 await cdp('Page.navigate', { url: APP }, sessionId);
 await waitFor(`document.getElementById('w-none').style.display !== 'none'`, 'no-wallet state');
 await setVal('w-create-pass', 'p2wpkh change pass');

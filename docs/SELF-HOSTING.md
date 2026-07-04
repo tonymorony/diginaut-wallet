@@ -86,10 +86,10 @@ wallet shows no balances.
 
 ## Stablecoin flows (mint / transfer / redeem)
 
-`FEATURE_MINT` gates all three flows **together** (ADR-0002: mint is never
-exposed without transfer and redeem). Leave it empty until the release gate
-(#17) signs off; set `FEATURE_MINT=1` and `docker compose up -d wallet` to
-flip it.
+Mint, Transfer and Redeem ship **together as one unit** and are always on
+(ADR-0002: mint is never exposed without transfer and redeem). The release
+gate (#17) removed the former `FEATURE_MINT` flag — there is nothing to
+configure.
 
 ## Updating
 

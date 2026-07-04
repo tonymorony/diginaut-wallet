@@ -49,18 +49,11 @@ test('allows broadcasting a client-signed raw transaction (issue #6)', async () 
   });
 });
 
-test('mint flow is feature-flagged OFF by default and opt-in via config (#14, ADR-0002)', async () => {
+test('stablecoin flows ship unconditionally — no mint feature flag in config (#17, ADR-0002)', async () => {
   await withServer(async (base) => {
-    assert.equal((await (await fetch(base + '/api/config')).json()).mint, false);
+    const cfg = await (await fetch(base + '/api/config')).json();
+    assert.equal('mint' in cfg, false); // mint/transfer/redeem are always on, together
   });
-  const server = startServer({ port: 0, mintFlow: true });
-  await once(server, 'listening');
-  try {
-    const res = await fetch(`http://127.0.0.1:${server.address().port}/api/config`);
-    assert.equal((await res.json()).mint, true);
-  } finally {
-    server.close();
-  }
 });
 
 test('refuses fund-moving RPCs at the proxy', async () => {

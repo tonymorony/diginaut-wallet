@@ -61,8 +61,7 @@ services:
       DGB_RPC_PASS: ${DGB_RPC_PASS}
       FAUCET_URL: http://faucet:8788
       INDEXER_URL: http://indexer:8789
-      # ADR-0002 release gate (#17): mint/transfer/redeem ship together, default OFF
-      FEATURE_MINT: ${FEATURE_MINT:-}
+      # Mint/transfer/redeem ship together, always on (ADR-0002, release gate #17)
     ports:
       - "${WALLET_PORT:-8791}:8791"
     depends_on: [indexer, faucet]
