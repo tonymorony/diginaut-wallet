@@ -16,4 +16,15 @@ class DigiByteRegtest(coins.DigiByte):
     REORG_LIMIT = 200
 
 
+class DigiByteTestnet(coins.DigiByte):
+    NET = "testnet"
+    P2PKH_VERBYTE = bytes.fromhex("7e")  # 126
+    P2SH_VERBYTES = (bytes.fromhex("8c"),)  # 140
+    # from DigiByte v9.26.4 src/kernel/chainparams.cpp CTestNetParams
+    GENESIS_HASH = "0c9af936f28f7bd0e90c8f6235399063a026ed267bb53da398313b5d7aa55d82"
+    PEERS = []
+    REORG_LIMIT = 2000
+
+
 coins.DigiByteRegtest = DigiByteRegtest
+coins.DigiByteTestnet = DigiByteTestnet
