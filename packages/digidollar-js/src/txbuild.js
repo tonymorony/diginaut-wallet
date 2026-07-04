@@ -162,6 +162,7 @@ export function buildSignedTransferTx({
   privKeyHex,
   recipients, // [{ outputKeyHex, cents: bigint }]
   feeSats = 12_000_000n, // 0.12 DGB ≥ Core's DD fee floor
+  dgbChangeScriptHex, // optional: route DGB change here (default: Core's P2WPKH convention)
 }) {
   if (feeSats < MIN_DD_TX_FEE_SATS) throw new RangeError('fee below the DigiDollar fee floor (0.1 DGB)');
   const sentCents = recipients.reduce((s, r) => s + r.cents, 0n);
@@ -181,7 +182,7 @@ export function buildSignedTransferTx({
     ddChangeCents,
     changeOwnerKeyHex: ownerKey,
     dgbChangeSats,
-    dgbChangeScriptHex: bytesToHex(p2wpkhScript(privKeyHex)),
+    dgbChangeScriptHex: dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex)),
   });
 
   const version = buildDDVersion('transfer');
@@ -239,6 +240,7 @@ export function buildSignedRedeemTx({
   feeUtxo, // { txidHex, vout, valueSats }
   privKeyHex,
   feeSats = 16_000_000n, // 0.16 DGB ≥ Core's DD fee floor
+  dgbChangeScriptHex, // optional: route DGB change here (default: Core's P2WPKH convention)
 }) {
   if (feeSats < MIN_DD_TX_FEE_SATS) throw new RangeError('fee below the DigiDollar fee floor (0.1 DGB)');
   const totalDDIn = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
@@ -263,7 +265,7 @@ export function buildSignedRedeemTx({
     ddChangeCents,
     changeOwnerKeyHex: ownerKey,
     dgbChangeSats,
-    dgbChangeScriptHex: bytesToHex(p2wpkhScript(privKeyHex)),
+    dgbChangeScriptHex: dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex)),
   });
 
   const version = buildDDVersion('redeem');

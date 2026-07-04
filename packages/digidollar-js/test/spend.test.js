@@ -120,6 +120,39 @@ test('planSpend throws when the balance cannot cover amount + fee', () => {
   );
 });
 
+// DGB fee change on transfers/redeems defaults to Core's P2WPKH convention,
+// but the wallet needs it on a WATCHED address (its P2TR) — the builders
+// accept an explicit change script for that (#16).
+test('transfer and redeem route DGB change to an explicit script when given', async () => {
+  const { buildSignedTransferTx, buildSignedRedeemTx } = await import('digidollar-js');
+  const key = '11'.repeat(32);
+  const changeScriptHex = '5120' + ddTokenOutputKey(xOnlyPubKey(key)); // owner's own P2TR
+  const transfer = buildSignedTransferTx({
+    ddUtxo: { txidHex: 'aa'.repeat(32), vout: 1, ddCents: 5_000n },
+    feeUtxo: { txidHex: 'bb'.repeat(32), vout: 0, valueSats: 100_000_000n },
+    privKeyHex: key,
+    recipients: [{ outputKeyHex: ddTokenOutputKey(xOnlyPubKey('22'.repeat(32))), cents: 2_000n }],
+    dgbChangeScriptHex: changeScriptHex,
+  });
+  // vout: recipient DD, DD change, DGB change, OP_RETURN — DGB change is index 2
+  const tOut = parseTx(transfer.hex).vout[2];
+  assert.equal(tOut.scriptHex, changeScriptHex);
+  assert.equal(tOut.valueSats, transfer.dgbChangeSats);
+
+  const redeem = buildSignedRedeemTx({
+    collateralUtxo: { txidHex: 'cc'.repeat(32), vout: 0, valueSats: 500_000_000n, lockHeight: 1000, ddCents: 5_000n },
+    ddUtxos: [{ txidHex: 'aa'.repeat(32), vout: 1, ddCents: 5_000n }],
+    feeUtxo: { txidHex: 'bb'.repeat(32), vout: 0, valueSats: 100_000_000n },
+    privKeyHex: key,
+    feeSats: 12_000_000n,
+    dgbChangeScriptHex: changeScriptHex,
+  });
+  // exact burn: vout = [collateral return, DGB change]
+  const rOut = parseTx(redeem.hex).vout[1];
+  assert.equal(rOut.scriptHex, changeScriptHex);
+  assert.equal(rOut.valueSats, redeem.dgbChangeSats);
+});
+
 // ---- Known-good fixture (test/fixtures/spend-tx.json, txid 496dda24…) ----
 // A 2-DGB spend with change, built by this library, ACCEPTED AND MINED by the
 // Core v9.26.4 regtest node — the node's decoded view is the reference.
