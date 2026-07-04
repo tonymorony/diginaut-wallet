@@ -34,6 +34,9 @@ export function configFromEnv() {
     faucetUrl: process.env.FAUCET_URL || '',
     // Indexer façade base URL (apps/indexer); unset = no balance/history in the UI.
     indexerUrl: process.env.INDEXER_URL || '',
+    // Mint flow feature flag (ADR-0002: mint is never exposed without transfer
+    // and redeem — the release gate flips this). Default OFF.
+    mintFlow: process.env.FEATURE_MINT === '1',
   };
 }
 
@@ -232,7 +235,7 @@ export function startServer(overrides = {}) {
       if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
       if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, config);
       if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, config);
-      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl) });
+      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl), mint: Boolean(config.mintFlow) });
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {
