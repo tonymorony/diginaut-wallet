@@ -186,9 +186,9 @@
           </div>
           <div class="hint" id="w-rd-out"></div>
           <div class="err" id="w-rd-err"></div>
-          <!-- Mint DigiDollar (#14): feature-flagged (ADR-0002), client-signed.
-               Hidden unless the server config enables the mint flow. -->
-          <div id="w-mint" style="display:none">
+          <!-- Mint DigiDollar (#14): client-signed. Ships together with
+               Transfer and Redeem as one unit (ADR-0002, release gate #17). -->
+          <div id="w-mint">
             <label for="w-mint-amount">Mint DigiDollar — amount (DD)</label>
             <input id="w-mint-amount" inputmode="decimal" autocomplete="off" placeholder="100" />
             <label for="w-mint-tier">Lock tier</label>
@@ -209,8 +209,8 @@
             <div class="hint" id="w-mint-out"></div>
             <div class="err" id="w-mint-err"></div>
           </div>
-          <!-- Transfer DigiDollar (#15): same stablecoin feature flag as Mint -->
-          <div id="w-transfer" style="display:none">
+          <!-- Transfer DigiDollar (#15): ships together with Mint and Redeem (ADR-0002) -->
+          <div id="w-transfer">
             <label for="w-tr-to">Send DigiDollar — recipient address</label>
             <input id="w-tr-to" class="mono" placeholder="dgb…1p…" autocomplete="off" autocapitalize="off" spellcheck="false" />
             <label for="w-tr-amount">Amount (DD)</label>

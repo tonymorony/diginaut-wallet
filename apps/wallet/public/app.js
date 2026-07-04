@@ -129,7 +129,7 @@ async function loadOracle() {
 $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1'; $('c-pricesrc').textContent = ''; });
 
 // ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
-let appConfig = { mock: true, faucet: false, indexer: false, mint: false };
+let appConfig = { mock: true, faucet: false, indexer: false };
 const chainState = { ddActive: null }; // null until getdeploymentinfo answers
 const wallet = {
   mnemonic: null, // set only while unlocked
@@ -303,9 +303,7 @@ function renderPositions(perAddr) {
     // offering a redeem that consensus (CLTV) would reject.
     const state = blocksLeft > 0
       ? `<span class="warn-text">locked until ≈ ${new Date(Date.now() + blocksLeft * SECONDS_PER_BLOCK * 1000).toLocaleDateString('en-CA')} (block ${p.unlockHeight.toLocaleString('en-US')})</span>`
-      : appConfig.mint
-        ? `<button class="secondary" data-redeem="${p.txid}" style="width:auto;padding:1px 10px;margin:0">Redeem</button>`
-        : '<span style="color:var(--good)">unlockable now</span>';
+      : `<button class="secondary" data-redeem="${p.txid}" style="width:auto;padding:1px 10px;margin:0">Redeem</button>`;
     return `<div>${fmtUSD(Number(p.ddCents) / 100)} · ${p.tierLabel} · ` +
       `locked ${fmtSats(BigInt(p.collateralSats))} DGB · ${state}</div>`;
   }).join('');
@@ -719,6 +717,9 @@ async function bootWallet() {
 // ---- Boot ----
 async function boot() {
   initCalculator();
+  // Stablecoin flows (mint/transfer/redeem) are always on, as one unit — the
+  // release gate (#17) removed the feature flag per ADR-0002.
+  initMintTiers();
   try {
     const cfg = await (await fetch('/api/config')).json();
     appConfig = cfg;
@@ -731,11 +732,6 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
     if (cfg.faucet) $('w-faucet').style.display = 'block';
-    if (cfg.mint) { // the shared stablecoin flag gates mint AND transfer (ADR-0002)
-      initMintTiers();
-      $('w-mint').style.display = 'block';
-      $('w-transfer').style.display = 'block';
-    }
   } catch { /* ignore */ }
   bootWallet();
   loadStatus();

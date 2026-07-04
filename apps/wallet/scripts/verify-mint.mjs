@@ -1,9 +1,9 @@
 // Drive #14: the Mint flow in the wallet UI through the full real stack.
-// Proves: feature flag on, confirmation screen (collateral / oracle price /
-// expiry) BEFORE signing, client-signed broadcast, the position appearing in
-// the wallet, and DISTINCT actionable errors for stale-oracle, insufficient
-// and fragmented funds. Setup: same as verify-send.mjs but the wallet server
-// needs FEATURE_MINT=1.
+// Proves: mint section on by default (#17 removed the flag), confirmation
+// screen (collateral / oracle price / expiry) BEFORE signing, client-signed
+// broadcast, the position appearing in the wallet, and DISTINCT actionable
+// errors for stale-oracle, insufficient and fragmented funds. Setup: same as
+// verify-send.mjs.
 import { writeFileSync } from 'node:fs';
 
 const CDP_PORT = 9224;
@@ -64,17 +64,15 @@ const click = (id) => evaluate(`document.getElementById('${id}').click()`);
 let step = 0;
 const check = (cond, what) => { step++; console.log(`${cond ? '✅' : '❌'} ${step}. ${what}`); if (!cond) process.exitCode = 1; };
 
-// ---- Arrange: flag on; fresh wallet; two 500-DGB coins (fragmented on purpose).
-const cfg = await (await fetch(APP + '/api/config')).json();
-check(cfg.mint === true, 'mint flow is enabled by the feature flag (FEATURE_MINT=1)');
-
+// ---- Arrange: fresh wallet; two 500-DGB coins (fragmented on purpose).
 await cdp('Page.navigate', { url: APP }, sessionId);
 await waitFor(`document.getElementById('w-none').style.display !== 'none'`, 'no-wallet state');
 await setVal('w-create-pass', 'mint flow pass');
 await setVal('w-create-pass2', 'mint flow pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked');
-check(await evaluate(`document.getElementById('w-mint').style.display !== 'none'`), 'mint section visible when the flag is on');
+check(await evaluate(`document.getElementById('w-mint').style.display !== 'none'`), 'mint section visible by default — no feature flag (#17, ADR-0002)');
+check(await evaluate(`document.getElementById('w-transfer').style.display !== 'none'`), 'transfer section visible by default too (ADR-0002: never mint alone)');
 const addr0 = await evaluate(text('w-address'));
 const miner = await nodeRpc('getnewaddress', [], 'stand');
 await nodeRpc('sendtoaddress', [addr0, 500], 'stand');
