@@ -7,7 +7,7 @@ import {
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
-  buildSignedTransferTx,
+  buildSignedTransferTx, buildSignedRedeemTx,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 
@@ -167,9 +167,11 @@ function lockWallet() {
   resetSend(); // pendingSend holds per-UTXO private keys — drop them with the seed
   resetMint(); // pendingMint holds the funding UTXO's private key — same
   resetTransfer(); // pendingTransfer holds DD + fee UTXO keys — same
+  resetRedeem(); // pendingRedeem holds burn + fee UTXO keys — same
   $('w-send-out').textContent = '';
   $('w-mint-out').textContent = '';
   $('w-tr-out').textContent = '';
+  $('w-rd-out').textContent = '';
   clearInterval(moneyTimer);
   $('w-money').style.display = 'none';
   $('w-seed-words').textContent = '';
@@ -282,10 +284,12 @@ function watchedAddresses() {
 // DigiDollar positions (#13): locked mints are NOT part of the DGB balance —
 // they render as their own list ($ amount, tier, collateral, expiry date).
 const SECONDS_PER_BLOCK = 15;
+let openPositions = new Map(); // txid → { position, address } — feeds the redeem flow
 function renderPositions(perAddr) {
   const seen = new Set();
-  const positions = perAddr.flatMap((r) => r.positions.positions)
+  const positions = perAddr.flatMap((r) => r.positions.positions.map((p) => ({ ...p, address: r.positions.address })))
     .filter((p) => (seen.has(p.txid) ? false : seen.add(p.txid)));
+  openPositions = new Map(positions.map((p) => [p.txid, p]));
   const tipHeight = Math.max(0, ...perAddr.map((r) => r.positions.tipHeight));
   const totalCents = positions.reduce((n, p) => n + Number(p.ddCents), 0);
   $('w-dd-total').textContent = positions.length ? fmtUSD(totalCents / 100) : '';
@@ -295,11 +299,15 @@ function renderPositions(perAddr) {
   }
   $('w-positions').innerHTML = positions.map((p) => {
     const blocksLeft = p.unlockHeight - tipHeight;
-    const unlock = blocksLeft <= 0
-      ? '<span style="color:var(--good)">unlockable now</span>'
-      : `unlocks ≈ ${new Date(Date.now() + blocksLeft * SECONDS_PER_BLOCK * 1000).toLocaleDateString('en-CA')} (block ${p.unlockHeight.toLocaleString('en-US')})`;
+    // AC (#16): a still-locked position says exactly when it opens instead of
+    // offering a redeem that consensus (CLTV) would reject.
+    const state = blocksLeft > 0
+      ? `<span class="warn-text">locked until ≈ ${new Date(Date.now() + blocksLeft * SECONDS_PER_BLOCK * 1000).toLocaleDateString('en-CA')} (block ${p.unlockHeight.toLocaleString('en-US')})</span>`
+      : appConfig.mint
+        ? `<button class="secondary" data-redeem="${p.txid}" style="width:auto;padding:1px 10px;margin:0">Redeem</button>`
+        : '<span style="color:var(--good)">unlockable now</span>';
     return `<div>${fmtUSD(Number(p.ddCents) / 100)} · ${p.tierLabel} · ` +
-      `locked ${fmtSats(BigInt(p.collateralSats))} DGB · ${unlock}</div>`;
+      `locked ${fmtSats(BigInt(p.collateralSats))} DGB · ${state}</div>`;
   }).join('');
 }
 
@@ -594,12 +602,85 @@ $('w-tr-go').addEventListener('click', (e) =>
       privKeyHex: ddUtxo.privKeyHex,
       recipients: [{ outputKeyHex, cents }],
       feeSats: TRANSFER_FEE_SATS,
+      // fee change back to the WATCHED address (default P2WPKH would vanish from view)
+      dgbChangeScriptHex: scriptPubKeyFromAddress(ddUtxo.address),
     });
     const txid = await rpc('sendrawtransaction', [hex]);
     resetTransfer();
     $('w-tr-to').value = '';
     $('w-tr-amount').value = '';
     $('w-tr-out').textContent = `Transferred — tx ${txid.slice(0, 16)}…`;
+    refreshMoney();
+  }));
+
+// ---- Redeem DigiDollar (#16): pick a position → confirmation → sign → broadcast ----
+// Full redemption via the Normal tapscript path (expired CLTV + owner sig):
+// burns DD covering the minted amount, returns the whole collateral to the
+// owner's P2TR — which IS a wallet address, so the DGB balance grows by it.
+const REDEEM_FEE_SATS = 12_000_000n; // 0.12 DGB, above Core's DD fee floor
+
+let pendingRedeem = null; // { position, ddUtxos, feeUtxo (keys inside!) } while confirming
+
+function resetRedeem() {
+  pendingRedeem = null;
+  $('w-redeem-confirm').style.display = 'none';
+}
+
+$('w-positions').addEventListener('click', (e) => {
+  const txid = e.target?.dataset?.redeem;
+  if (!txid || !openPositions.has(txid)) return;
+  busy(e.target, 'w-rd-err', async () => {
+    $('w-rd-out').textContent = '';
+    const p = openPositions.get(txid);
+    const needCents = BigInt(p.ddCents);
+    const fmtDD = (c) => (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    // burnable DD must sit on the position's own address (one signing key)
+    const all = await ddUtxosWithKeys();
+    const onAddr = all.filter((u) => u.address === p.address).sort((a, b) => (a.ddCents < b.ddCents ? 1 : -1));
+    const burn = [];
+    let got = 0n;
+    for (const u of onAddr) { if (got >= needCents) break; burn.push(u); got += u.ddCents; }
+    if (got < needCents) {
+      const totalCents = all.reduce((s, u) => s + u.ddCents, 0n);
+      throw new Error(totalCents >= needCents
+        ? `redemption burns the full $${fmtDD(needCents)}, but only $${fmtDD(got)} sits on the position's address — transfer $${fmtDD(needCents - got)} to ${p.address} first`
+        : `you no longer hold enough DigiDollar: redeeming burns $${fmtDD(needCents)}, you hold $${fmtDD(totalCents)} (some was transferred away)`);
+    }
+    const feeUtxo = (await spendableUtxos())
+      .filter((u) => u.privKeyHex === burn[0].privKeyHex && u.valueSats >= REDEEM_FEE_SATS)
+      .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    if (!feeUtxo) {
+      throw new Error(`no DGB for the fee on the position's address — send at least ${fmtSats(REDEEM_FEE_SATS)} DGB to ${p.address}, then retry`);
+    }
+    pendingRedeem = { position: p, ddUtxos: burn, feeUtxo };
+    $('w-rd-c-txid').textContent = p.txid.slice(0, 12) + '…';
+    $('w-rd-c-dd').textContent = fmtDD(needCents);
+    $('w-rd-c-coll').textContent = fmtSats(BigInt(p.collateralSats));
+    $('w-rd-c-fee').textContent = fmtSats(REDEEM_FEE_SATS);
+    $('w-redeem-confirm').style.display = 'block';
+  });
+});
+
+$('w-rd-cancel').addEventListener('click', resetRedeem);
+
+$('w-rd-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-rd-err', async () => {
+    const { position: p, ddUtxos, feeUtxo } = pendingRedeem;
+    if (!wallet.seed) throw new Error('wallet is locked');
+    const { hex } = buildSignedRedeemTx({
+      collateralUtxo: {
+        txidHex: p.txid, vout: 0, valueSats: BigInt(p.collateralSats),
+        lockHeight: p.unlockHeight, ddCents: BigInt(p.ddCents),
+      },
+      ddUtxos: ddUtxos.map((u) => ({ txidHex: u.txidHex, vout: u.vout, ddCents: u.ddCents })),
+      feeUtxo: { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats },
+      privKeyHex: ddUtxos[0].privKeyHex,
+      feeSats: REDEEM_FEE_SATS,
+      dgbChangeScriptHex: scriptPubKeyFromAddress(p.address), // keep change visible
+    });
+    const txid = await rpc('sendrawtransaction', [hex]);
+    resetRedeem();
+    $('w-rd-out').textContent = `Redeemed — tx ${txid.slice(0, 16)}… The collateral returns to your DGB balance once confirmed.`;
     refreshMoney();
   }));
 

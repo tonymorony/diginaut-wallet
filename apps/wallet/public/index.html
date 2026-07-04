@@ -173,6 +173,19 @@
           <!-- DigiDollar positions (#13): locked mints, distinct from the DGB balance above -->
           <div class="row"><span class="k">DigiDollar positions</span><span class="v" id="w-dd-total"></span></div>
           <div id="w-positions" class="hint" style="margin:6px 0 10px">No open positions.</div>
+          <!-- Redeem DigiDollar (#16): same stablecoin feature flag; opens from a position's button -->
+          <div id="w-redeem-confirm" style="display:none">
+            <div class="row"><span class="k">Redeeming position</span><span class="v mono" id="w-rd-c-txid"></span></div>
+            <div class="row"><span class="k">Burning</span><span class="v">$<span id="w-rd-c-dd"></span></span></div>
+            <div class="row"><span class="k">Collateral returned</span><span class="v"><span id="w-rd-c-coll"></span> DGB</span></div>
+            <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-rd-c-fee"></span> DGB</span></div>
+            <div class="grid">
+              <button id="w-rd-go">Confirm &amp; redeem</button>
+              <button id="w-rd-cancel" class="secondary">Cancel</button>
+            </div>
+          </div>
+          <div class="hint" id="w-rd-out"></div>
+          <div class="err" id="w-rd-err"></div>
           <!-- Mint DigiDollar (#14): feature-flagged (ADR-0002), client-signed.
                Hidden unless the server config enables the mint flow. -->
           <div id="w-mint" style="display:none">
