@@ -85,6 +85,9 @@ const ALLOWED_METHODS = new Set([
   // spec-discussion names (getoraclestatus, listoracles, …) don't exist.
   'getoracleprice',
   'getoracles',
+  // Broadcast of CLIENT-SIGNED transactions (issue #6). The node only relays;
+  // it cannot spend anything the browser didn't already sign.
+  'sendrawtransaction',
   // mintdigidollar / redeemdigidollar / senddigidollar intentionally NOT
   // exposed — fund-moving flows arrive client-signed via M2/M3 (ADR-0001).
 ]);
@@ -132,6 +135,14 @@ function mockResponse(method, params) {
         total_oracle_slots: 35,
         consensus_threshold: 7,
       }));
+    case 'sendrawtransaction': {
+      // Fake txid: sha256 would be overkill for a mock — a stable-looking hash
+      // derived from the hex keeps the UI flow exercisable offline.
+      const hex = String(params?.[0] ?? '');
+      let h = 0;
+      for (const c of hex) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      return h.toString(16).padStart(8, '0').repeat(8);
+    }
     default:
       throw new Error(`No mock for method: ${method}`);
   }

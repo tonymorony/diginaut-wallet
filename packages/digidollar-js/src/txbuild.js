@@ -288,6 +288,82 @@ export function buildSignedRedeemTx({
   return { hex, ddChangeCents, dgbChangeSats };
 }
 
+// ---- Standard DGB spend (issue #6) ----
+// Not a DigiDollar transaction: plain version-2 segwit, key-path P2TR inputs,
+// standard relay fee (no 0.1 DGB DD floor — that applies to DD txs only).
+
+export const STANDARD_FEE_RATE_SATS_PER_KVB = 100_000n; // DGB default relay fee 0.001 DGB/kvB
+const CHANGE_FOLD_SATS = 100_000n; // change smaller than this goes to the fee, not an output
+
+// BIP-141 weights for a key-path P2TR spend, in weight units (see spend.test.js).
+const TX_OVERHEAD_WU = 42n; // version+counts+locktime (10 vB ·4) + segwit marker/flag (2 wu)
+const P2TR_INPUT_WU = 230n; // outpoint+len+sequence (41 vB ·4) + witness [64B sig] (66 wu)
+const P2TR_OUTPUT_WU = 172n; // 8 value + 1 len + 34 script, ·4
+
+/**
+ * Coin selection + fee plan for a standard 2-output (recipient + change) spend.
+ * Largest-first: fewest inputs, fewest signatures. Returns { inputs, feeSats,
+ * changeSats } where `inputs` are the selected UTXO objects verbatim.
+ */
+export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_RATE_SATS_PER_KVB }) {
+  const sorted = [...utxos].sort((a, b) => (a.valueSats < b.valueSats ? 1 : -1));
+  const inputs = [];
+  let total = 0n;
+  for (const u of sorted) {
+    inputs.push(u);
+    total += u.valueSats;
+    const weight = TX_OVERHEAD_WU + P2TR_INPUT_WU * BigInt(inputs.length) + P2TR_OUTPUT_WU * 2n;
+    // Core rounds weight→vsize FIRST (GetVirtualTransactionSize = ceil(weight/4)),
+    // then prices per vbyte — rounding at the end under-pays by up to 75 sats/kvB.
+    const vsize = (weight + 3n) / 4n;
+    const feeSats = (vsize * feeRateSatsPerKvB + 999n) / 1000n; // ceil
+    const changeSats = total - amountSats - feeSats;
+    if (changeSats >= 0n) return { inputs, feeSats, changeSats };
+  }
+  throw new RangeError('insufficient funds for amount + fee');
+}
+
+/**
+ * Build and sign a standard (non-DD) DGB spend, client-side. Every UTXO must be
+ * a key-path-only P2TR and carries its own private key (wallet UTXOs span
+ * derivation indices). Change below 0.001 DGB (the relay-fee unit — negligible
+ * value, guaranteed dust under any DGB dust policy) is folded into the fee
+ * instead of creating an output. Returns { hex, changeSats } — the change
+ * output's actual value, 0n when folded.
+ */
+export function buildSignedSpendTx({
+  utxos, // [{ txidHex, vout, valueSats: bigint, privKeyHex }]
+  recipientScriptHex,
+  amountSats,
+  changeScriptHex,
+  feeSats,
+}) {
+  const total = utxos.reduce((s, u) => s + u.valueSats, 0n);
+  let changeSats = total - amountSats - feeSats;
+  if (changeSats < 0n) throw new RangeError('inputs do not cover amount + fee');
+  if (changeSats < CHANGE_FOLD_SATS) changeSats = 0n; // fold near-dust change into the fee
+
+  const inputs = utxos.map((u) => ({
+    txidHex: u.txidHex,
+    vout: u.vout,
+    valueSats: u.valueSats,
+    scriptPubKeyHex: bytesToHex(p2trScript(ddTokenOutputKey(xOnlyPubKey(u.privKeyHex)))),
+    sequence: 0xfffffffd,
+  }));
+  const outputs = [{ valueSats: amountSats, script: hexToBytes(recipientScriptHex) }];
+  if (changeSats > 0n) outputs.push({ valueSats: changeSats, script: hexToBytes(changeScriptHex) });
+
+  const version = 2; // plain spend: no DD envelope in the version field
+  const witnesses = utxos.map((u, inputIndex) => [
+    schnorr.sign(
+      taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex }),
+      hexToBytes(tapTweakPrivKey(u.privKeyHex)),
+    ),
+  ]);
+  const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses });
+  return { hex, changeSats };
+}
+
 /**
  * Build and sign a complete DigiDollar mint transaction, client-side.
  * The funding UTXO must be a key-path-only P2TR of `privKeyHex` (the owner key).
