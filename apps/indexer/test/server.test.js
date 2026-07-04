@@ -231,6 +231,52 @@ test('health reports the electrum tip height', async () => {
   });
 });
 
+test('reconnect after a dropped TCP session re-does the server.version handshake (#32)', async () => {
+  // Strict fake: like real ElectrumX ≥1.4, it KILLS any connection whose first
+  // message is not server.version. The façade must survive its long-lived
+  // connection being dropped (idle timeout, ElectrumX restart) without a
+  // process restart.
+  const sockets = new Set();
+  let handshakes = 0;
+  const electrum = createTcpServer((sock) => {
+    sockets.add(sock);
+    sock.on('close', () => sockets.delete(sock));
+    let handshaken = false;
+    let buf = '';
+    sock.on('data', (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const msg = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (!handshaken && msg.method !== 'server.version') return sock.destroy();
+        if (msg.method === 'server.version') { handshaken = true; handshakes++; }
+        const result = msg.method === 'server.version' ? ['StrictFake 0.0', '1.4']
+          : msg.method === 'blockchain.scripthash.listunspent' ? []
+          : msg.method === 'blockchain.headers.subscribe' ? { height: 1, hex: '00' }
+          : null;
+        sock.write(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result }) + '\n');
+      }
+    });
+  });
+  await new Promise((r) => electrum.listen(0, r));
+  const server = startServer({ port: 0, hrp: 'dgbrt', electrum: { host: '127.0.0.1', port: electrum.address().port } });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    assert.equal((await fetch(`${base}/api/address/${ADDR}/utxos`)).status, 200, 'first query works');
+    // drop the live TCP session server-side, as an idle timeout would
+    for (const s of sockets) s.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+    const res = await fetch(`${base}/api/address/${ADDR}/utxos`);
+    assert.equal(res.status, 200, 'query after reconnect must succeed without a façade restart');
+    assert.equal(handshakes, 2, 'a fresh server.version handshake on the new connection');
+  } finally {
+    server.close();
+    electrum.close();
+  }
+});
+
 test('electrum backend down → 502 with an error body, not a hang', async () => {
   const server = startServer({ port: 0, hrp: 'dgbrt', electrum: { host: '127.0.0.1', port: 1 } });
   await once(server, 'listening');
