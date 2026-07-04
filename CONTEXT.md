@@ -19,8 +19,8 @@ DGB locked to back minted DigiDollar; released back to the owner on redemption.
 _Avoid_: deposit, stake, escrow
 
 **Lock tier**:
-A fixed (lock period, collateral ratio) pairing that sets how much DGB backs a mint — from
-30 days at 300% down to 10 years at 100%.
+A fixed (lock period, collateral ratio) pairing that sets how much DGB backs a mint — ten
+consensus tiers from 1 hour at 1000% down to 10 years at 200% (Core v9.26.4).
 _Avoid_: term, plan, option
 
 **Transfer**:
@@ -33,8 +33,8 @@ Converting DigiDollar back into its locked DGB collateral.
 _Avoid_: burn, withdraw, cash-out, unlock
 
 **Oracle**:
-The on-chain price-feed network (15 selected signers, 8-of-15 Schnorr consensus) that supplies the
-DGB/USD price the protocol uses.
+The on-chain price-feed network (35 oracle slots, 7-signature Schnorr threshold in Core v9.26.4)
+that supplies the DGB/USD price the protocol uses, in micro-USD per DGB.
 _Avoid_: price feed (as a proper noun), aggregator, data source
 
 **Faucet**:

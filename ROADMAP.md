@@ -15,9 +15,10 @@ Derived from ADR-0001..0004. User-facing releases are M1 and M3; M0 and M2 are i
 - Create/restore wallet in the browser (BIP39 mnemonic, encrypted IndexedDB, optional backup —
   testnet-only banner; see TODO.md for the mainnet bar).
 - Client-side address derivation; DGB send/receive via the indexer.
-- Faucet: dispenses a mint-meaningful amount (sized to ~mint 25–50 DigiDollar at the
-  6-month/200% tier), rate-limited per address + per IP, 24h cooldown, manually topped-up
-  testnet hot wallet.
+- Faucet: dispenses a mint-meaningful amount — enough to mint Core's $100 minimum with headroom;
+  the 1-hour/1000% onboarding tier implies ~$1000+ of testnet DGB at oracle price (Core v9.26.4:
+  min mint $100, cheapest ratio 200%, onboarding tier 1000%). Rate-limited per address + per IP,
+  24h cooldown, manually topped-up testnet hot wallet.
 - Status dashboard (softfork, oracle feed) + mint calculator (already built).
 
 Nothing consensus-novel here: standard DGB transactions only.
@@ -25,7 +26,8 @@ Nothing consensus-novel here: standard DGB transactions only.
 ## M2 — Differential harness (internal gate, runs in parallel with M1 feedback)
 
 - **First task — discovery:** can regtest run the DigiDollar oracle system locally
-  (`startoracle`)? Mint needs an oracle price; redeem needs 8-of-15 oracle signatures. Answer
+  (`startoracle`)? Mint needs an oracle price; redeem needs threshold oracle signatures
+  (7-of-35 in Core v9.26.4). Answer
   lives in the DigiByte Core source. If regtest can't host oracles, M2 gets significantly harder —
   find out before building anything on top.
 - Extract the exact DigiDollar output script / oracle-binding structure from Core source; confirm
