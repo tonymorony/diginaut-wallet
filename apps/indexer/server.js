@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { decodeWitnessAddress } from 'digidollar-js';
+import { decodeWitnessAddress, parseDDVersion, parseMintMetadata, ddTokenOutputKey, LOCK_TIERS } from 'digidollar-js';
 
 export function configFromEnv() {
   return {
@@ -91,6 +91,49 @@ export function addressToScripthash(address, expectedHrp) {
   return createHash('sha256').update(spk).digest().reverse().toString('hex');
 }
 
+// ---- DigiDollar positions (#13) ----
+// A position = a mint owned by this address whose collateral (vout[0]) is still
+// unspent. The address IS the mint's DD-token P2TR (vout[1]), so every mint by
+// this owner appears in the address's Electrum history; the OP_RETURN metadata
+// (vout[2]) carries amount/tier/unlock, and the collateral scripthash tells us
+// whether the position was since redeemed.
+async function scanPositions(withElectrum, programHex, history) {
+  const positions = [];
+  for (const h of history) {
+    const tx = await withElectrum('blockchain.transaction.get', [h.tx_hash, true]);
+    if (parseDDVersion(tx.version).type !== 'mint') continue;
+    const opReturn = tx.vout.find((o) => o.scriptPubKey.hex.startsWith('6a'));
+    if (!opReturn) continue;
+    let meta;
+    try {
+      meta = parseMintMetadata(opReturn.scriptPubKey.hex);
+    } catch {
+      continue; // DD-marked but not a well-formed mint — not a position
+    }
+    if (ddTokenOutputKey(meta.ownerKeyHex) !== programHex) continue; // someone else's mint
+    const collateral = tx.vout[0];
+    const collateralUnspent = (await withElectrum('blockchain.scripthash.listunspent', [
+      scriptPubKeyToScripthash(collateral.scriptPubKey.hex),
+    ])).some((u) => u.tx_hash === tx.txid && u.tx_pos === 0);
+    if (!collateralUnspent) continue; // redeemed (or otherwise closed)
+    const tier = LOCK_TIERS[meta.lockTier];
+    positions.push({
+      txid: tx.txid,
+      height: h.height,
+      ddCents: String(meta.ddCents),
+      tierId: tier?.id ?? null,
+      tierLabel: tier?.label ?? `tier ${meta.lockTier}`,
+      unlockHeight: meta.unlockHeight,
+      collateralSats: String(BigInt(Math.round(collateral.value * 1e8))),
+    });
+  }
+  return positions;
+}
+
+function scriptPubKeyToScripthash(spkHex) {
+  return createHash('sha256').update(Buffer.from(spkHex, 'hex')).digest().reverse().toString('hex');
+}
+
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
@@ -111,14 +154,23 @@ export function startServer(overrides = {}) {
 
   const server = createServer(async (req, res) => {
     try {
-      const match = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history)$/);
+      const match = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions)$/);
       if (req.method === 'GET' && match) {
         const [, address, what] = match;
-        let scripthash;
+        let scripthash, programHex;
         try {
+          ({ programHex } = decodeWitnessAddress(address));
           scripthash = addressToScripthash(address, config.hrp);
         } catch (e) {
           return sendJson(res, 400, { error: `invalid address: ${e.message}` });
+        }
+        if (what === 'positions') {
+          const history = await withElectrum('blockchain.scripthash.get_history', [scripthash]);
+          const [positions, tip] = await Promise.all([
+            scanPositions(withElectrum, programHex, history),
+            withElectrum('blockchain.headers.subscribe', []),
+          ]);
+          return sendJson(res, 200, { address, tipHeight: tip.height, positions });
         }
         if (what === 'utxos') {
           const unspent = await withElectrum('blockchain.scripthash.listunspent', [scripthash]);
