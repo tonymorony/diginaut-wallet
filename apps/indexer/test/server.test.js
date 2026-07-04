@@ -103,6 +103,72 @@ test('bad checksum / wrong-network / junk addresses → 400 and Electrum is neve
   });
 });
 
+// ---- DigiDollar positions (#13) ----
+// Reference data is the Core-built mint fixture from digidollar-js
+// (test/fixtures/mint-tx.json): $100 at the 6-months tier, unlock 1037552.
+const { readFile } = await import('node:fs/promises');
+const MINT = JSON.parse(await readFile(
+  new URL('../../../packages/digidollar-js/test/fixtures/mint-tx.json', import.meta.url), 'utf8',
+)).result;
+const TRANSFER = JSON.parse(await readFile(
+  new URL('../../../packages/digidollar-js/test/fixtures/transfer-tx.json', import.meta.url), 'utf8',
+)).result;
+const OWNER_ADDR = MINT.vout[1].scriptPubKey.address; // the DD token P2TR = wallet receive address
+const scripthashOfHex = (hex) =>
+  createHash('sha256').update(Buffer.from(hex, 'hex')).digest().reverse().toString('hex');
+const OWNER_SCRIPTHASH = scripthashOfHex(MINT.vout[1].scriptPubKey.hex);
+const COLLATERAL_SCRIPTHASH = scripthashOfHex(MINT.vout[0].scriptPubKey.hex);
+
+const POSITION_HANDLERS = (collateralUnspent) => ({
+  'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+  'blockchain.headers.subscribe': () => ({ height: 1825, hex: '00' }),
+  'blockchain.scripthash.get_history': (params) =>
+    params[0] === OWNER_SCRIPTHASH
+      ? [
+          { tx_hash: MINT.txid, height: 1800 },
+          { tx_hash: TRANSFER.txid, height: 1810 }, // DD transfer — not a position
+          { tx_hash: 'ee'.repeat(32), height: 1811 }, // plain DGB tx — not a position
+        ]
+      : [],
+  'blockchain.transaction.get': (params) => {
+    if (params[0] === MINT.txid) return MINT;
+    if (params[0] === TRANSFER.txid) return TRANSFER;
+    return { txid: params[0], version: 2, vout: [] }; // plain spend
+  },
+  'blockchain.scripthash.listunspent': (params) =>
+    collateralUnspent && params[0] === COLLATERAL_SCRIPTHASH
+      ? [{ tx_hash: MINT.txid, tx_pos: 0, value: 2_634_128_166_915, height: 1800 }]
+      : [],
+});
+
+test('positions: a mint in history becomes an open position; transfers and plain txs do not', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/address/${OWNER_ADDR}/positions`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      address: OWNER_ADDR,
+      tipHeight: 1825,
+      positions: [{
+        txid: MINT.txid,
+        height: 1800,
+        ddCents: '10000',           // $100
+        tierId: '6months',
+        tierLabel: '6 months',
+        unlockHeight: 1037552,
+        collateralSats: '2634128166915',
+      }],
+    });
+  }, POSITION_HANDLERS(true));
+});
+
+test('positions: a redeemed mint (collateral spent) is no longer an open position', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/address/${OWNER_ADDR}/positions`);
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).positions, []);
+  }, POSITION_HANDLERS(false));
+});
+
 test('health reports the electrum tip height', async () => {
   await withIndexer(async (base) => {
     const res = await fetch(`${base}/api/health`);
