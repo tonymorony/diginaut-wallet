@@ -10,8 +10,8 @@ letting people actually *play* with DigiDollar, which includes paying each other
 All three are consensus-critical operations of differing difficulty: mint key-path-signs the
 user's own collateral inputs (easiest); transfer spends a DigiDollar output carrying
 `OP_DIGIDOLLAR` and its tapscript structure (not a plain payment); redemption spends via the
-tapscript MAST path and must satisfy the oracle-threshold condition (8-of-15 Schnorr via
-`OP_CHECKSIGADD`) (hardest).
+tapscript MAST path and must satisfy the oracle-threshold condition (7-of-35 Schnorr via
+`OP_CHECKSIGADD` in Core v9.26.4) (hardest).
 
 ## Decision
 

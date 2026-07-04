@@ -1,16 +1,8 @@
-// DigiDollar Testnet UI — frontend logic.
-
-// Real lock tiers from the DigiDollar Implementation Spec v5.0 (Taproot Enhanced).
-// label → { days, ratio } where ratio is required collateral as a fraction (3.0 = 300%).
-const TIERS = [
-  { label: '30 days', days: 30, ratio: 3.0 },
-  { label: '3 months', days: 90, ratio: 2.5 },
-  { label: '6 months', days: 180, ratio: 2.0 },
-  { label: '1 year', days: 365, ratio: 1.75 },
-  { label: '3 years', days: 1095, ratio: 1.5 },
-  { label: '5 years', days: 1825, ratio: 1.25 },
-  { label: '10 years', days: 3650, ratio: 1.0 },
-];
+// DigiDollar wallet — frontend logic.
+// Consensus math comes from the digidollar-js protocol library (served at /lib/),
+// which mirrors DigiByte Core v9.26.4 exactly — the same code the differential
+// harness (M2) will verify against Core.
+import { LOCK_TIERS, requiredCollateralSats } from '/lib/index.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -28,24 +20,31 @@ async function rpc(method, params = []) {
 const fmtDGB = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
 const fmtUSD = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// ---- Mint calculator (pure client-side) ----
+// ---- Mint calculator (pure client-side, exact Core arithmetic via digidollar-js) ----
 function tierFor() {
-  return TIERS[Number($('c-tier').value)] || TIERS[0];
+  return LOCK_TIERS.find((t) => t.id === $('c-tier').value) || LOCK_TIERS[0];
 }
 function recalc() {
   const amount = Math.max(0, Number($('c-amount').value) || 0);
   const price = Math.max(0, Number($('c-price').value) || 0);
   const tier = tierFor();
-  const collUsd = amount * tier.ratio;
-  const collDgb = price > 0 ? collUsd / price : 0;
-  $('r-ratio').textContent = (tier.ratio * 100).toFixed(0) + '%';
-  $('r-usd').textContent = fmtUSD(collUsd);
-  $('r-dgb').textContent = price > 0 ? fmtDGB(collDgb) : '—';
+  $('r-ratio').textContent = tier.ratioPercent + '%';
+  $('r-usd').textContent = fmtUSD((amount * tier.ratioPercent) / 100);
+  try {
+    const sats = requiredCollateralSats({
+      ddCents: BigInt(Math.round(amount * 100)),
+      tierId: tier.id,
+      oraclePriceMicroUsd: BigInt(Math.round(price * 1_000_000)),
+    });
+    $('r-dgb').textContent = fmtDGB(Number(sats) / 1e8);
+  } catch {
+    $('r-dgb').textContent = '—'; // zero/invalid input
+  }
 }
 
 function initCalculator() {
   const sel = $('c-tier');
-  sel.innerHTML = TIERS.map((t, i) => `<option value="${i}">${t.label} — ${(t.ratio * 100).toFixed(0)}% collateral</option>`).join('');
+  sel.innerHTML = LOCK_TIERS.map((t) => `<option value="${t.id}">${t.label} — ${t.ratioPercent}% collateral</option>`).join('');
   ['c-amount', 'c-tier', 'c-price'].forEach((id) => $(id).addEventListener('input', recalc));
   recalc();
 }

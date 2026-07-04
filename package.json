@@ -1,10 +1,16 @@
 {
-  "name": "digidollar-testnet-ui",
+  "name": "digidollar-wallet-monorepo",
   "version": "0.1.0",
-  "description": "Simple web interface for DigiByte DigiDollar on testnet — mint calculator, oracle status, address generation. Works with a real DigiByte Core node or in mock mode.",
+  "private": true,
+  "description": "Non-custodial browser wallet for DigiByte DigiDollar — monorepo",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "start": "node server.js"
+    "start": "npm start --workspace apps/wallet",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"

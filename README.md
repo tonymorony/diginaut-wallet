@@ -1,59 +1,68 @@
-# DigiDollar Testnet UI
+# DigiDollar Wallet
 
-A simple, dependency-free web interface for **DigiByte DigiDollar** — the decentralized USD
-stablecoin (DigiByte Core v9.26+). Built for the testnet phase while DigiDollar awaits mainnet
-activation.
+A **non-custodial, browser-based wallet** for [DigiByte](https://digibyte.org)'s **DigiDollar**
+stablecoin — built so a newcomer can create a wallet, get testnet DGB from a faucet, and mint
+DigiDollar **without running their own node**, and without anyone else ever holding their keys.
 
-Three things it does:
+> **TESTNET ONLY.** DigiDollar awaits mainnet activation; this project targets testnet while the
+> stablecoin feature matures. Do not use with real funds.
 
-1. **Mint calculator** — pick an amount + lock period, see required DGB collateral. Uses the real
-   lock tiers from the DigiDollar Implementation Spec v5.0. Works with no node at all.
-2. **Network & oracle status** — reads `getblockchaininfo`, `getdeploymentinfo`, `getoraclestatus`,
-   `listoracles` to show whether the DigiDollar softfork is active and whether the oracle price feed
-   is healthy.
-3. **Address generation** — `getnewdigidollaraddress` to get a P2TR (`dgbt1p…`) receive address.
+## How it works
+
+- **Keys live in your browser** (BIP39/BIP86), never on a server (ADR-0001).
+- Consensus-critical transactions (mint / transfer / redeem) are **built and signed client-side**
+  by the pure-protocol library, then broadcast through a shared read/broadcast node that never
+  sees a private key.
+- Before any fund-moving code ships, it must pass a **differential harness**: JS-built
+  transactions byte-identical to DigiByte Core-built ones on regtest (ADR-0001, ADR-0002).
+
+## Monorepo layout
+
+| Path | What it is |
+|---|---|
+| `packages/digidollar-js` | Pure-protocol DigiDollar library — deterministic functions, zero I/O (ADR-0004). Mirrors DigiByte Core v9.26.4 arithmetic exactly. |
+| `apps/wallet` | Wallet web app — dashboard, mint calculator, RPC allow-list proxy. First consumer of the library. |
+| `docs/adr/` | Architecture decisions. `CONTEXT.md` is the domain glossary, `ROADMAP.md` the milestone plan. |
 
 ## Run
 
 ```bash
-npm start          # → http://localhost:8787
+npm install   # links workspaces (no external dependencies)
+npm start     # → http://localhost:8787
+npm test      # node:test across all workspaces
 ```
 
-No `npm install` needed — it uses only the Node standard library (Node 18+).
+**Mock mode (default):** without RPC credentials the app serves realistic fake data shaped like
+real RPC responses — usable before you have a node.
 
-### Mock mode vs real node
+**Real node:** copy `apps/wallet/.env.example` → `.env`, set `DGB_RPC_USER` / `DGB_RPC_PASS` /
+`DGB_RPC_URL` (the `rpcport` from your `digibyte.conf`), load it and `npm start`.
 
-- **Mock mode (default):** with no RPC credentials set, all data is realistic fake data shaped like
-  the real RPC responses. Good for building/demoing the UI before you have a node.
-- **Real node:** copy `.env.example` → `.env`, set `DGB_RPC_USER` / `DGB_RPC_PASS` and
-  `DGB_RPC_URL` (use the `rpcport` from your `digibyte.conf`), then load it and `npm start`.
+## Consensus lock tiers (DigiByte Core v9.26.4)
 
-  ```bash
-  set -a && source .env && set +a && npm start
-  ```
+Collateral required to mint, by lock period — from `src/consensus/digidollar.h`:
 
-  Your `digibyte.conf` needs `server=1`, `rpcuser=`, `rpcpassword=`, and the node run with
-  `-testnet`. Check the testnet `rpcport` in your config — it differs from mainnet.
+| Lock period | Collateral | | Lock period | Collateral |
+|---|---|---|---|---|
+| 1 hour | 1000% | | 2 years | 275% |
+| 30 days | 500% | | 3 years | 250% |
+| 3 months | 400% | | 5 years | 225% |
+| 6 months | 350% | | 7 years | 212% |
+| 1 year | 300% | | 10 years | 200% |
 
-## Lock tiers (DigiDollar Spec v5.0)
+Plus a 1% safety margin, and a Dynamic Collateral Adjustment (DCA) surcharge when system-wide
+collateralization degrades. `digidollar-js` reproduces this arithmetic exactly (integer/BigInt,
+ceiling division — see its tests).
 
-| Lock period | Collateral ratio |
-|---|---|
-| 30 days  | 300% |
-| 3 months | 250% |
-| 6 months | 200% |
-| 1 year   | 175% |
-| 3 years  | 150% |
-| 5 years  | 125% |
-| 10 years | 100% |
+## Safety posture
 
-## Safety
-
-The RPC proxy exposes only a small allow-list of **read / address** methods. Fund-moving calls
-(`mintdigidollartaproot`, `redeemdigidollar`) are deliberately **not** reachable from the browser —
-add them only behind proper auth and a confirmation step.
+- The RPC proxy exposes an explicit **allow-list of read methods only**; fund-moving RPCs are not
+  reachable from the browser.
+- Mint is **never shipped without redeem and transfer** (ADR-0002) — no one-way traps.
+- Known deferrals and their triggers live in `TODO.md`.
 
 ## Status
 
-Testnet-ready today. When miners activate DigiDollar on mainnet, just point `DGB_RPC_URL` at a
-mainnet node — the same UI works unchanged.
+Issue tracker: [PRD (#1)](../../issues/1), work sliced into #2–#17. Currently at **M0**
+(restructure) of the [roadmap](ROADMAP.md): M0 → M1 nodeless onboarding → M2 differential
+harness → M3 stablecoin release.
