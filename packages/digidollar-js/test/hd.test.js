@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { mnemonicToSeed, deriveTaprootAddress, generateMnemonic, validateMnemonic, HD_NETWORKS } from '../src/hd.js';
+import { mnemonicToSeed, deriveTaprootAddress, p2wpkhAddress, generateMnemonic, validateMnemonic, HD_NETWORKS } from '../src/hd.js';
 import { decodeWitnessAddress } from '../src/address.js';
 
 const bip39Vectors = JSON.parse(readFileSync(new URL('./fixtures/bip39-vectors.json', import.meta.url)));
@@ -68,6 +68,29 @@ test('BIP39: checksum failures and junk are rejected by validateMnemonic', () =>
   // last word altered → bad checksum
   assert.equal(validateMnemonic('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon'), false);
   assert.equal(validateMnemonic('definitely not a mnemonic'), false);
+});
+
+// ---- P2WPKH companion (#38): mint change goes to P2WPKH by consensus, so the
+// wallet must know each key's witness-v0 twin. The expected address below is
+// CORE-VERIFIED, not derived from this library: the regtest node was asked
+//   getdescriptorinfo "wpkh(034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa)"
+//   deriveaddresses  "wpkh(…)#nfw46r9a"
+// for the compressed pubkey of privkey 0x11…11 and answered this address.
+test('p2wpkhAddress matches the Core-derived wpkh() descriptor address (regtest)', () => {
+  assert.equal(
+    p2wpkhAddress('11'.repeat(32), 'dgbrt'),
+    'dgbrt1ql3e9pgs3mmwuwrh95fecme0s0qtn2880esm4k4',
+  );
+});
+
+test('deriveTaprootAddress also returns the P2WPKH twin of the same key', () => {
+  const seed = mnemonicToSeed(BIP86_MNEMONIC);
+  const d = deriveTaprootAddress(seed, { ...HD_NETWORKS.regtest, index: 0 });
+  assert.equal(d.p2wpkhAddress, p2wpkhAddress(d.privKeyHex, 'dgbrt'));
+  const dec = decodeWitnessAddress(d.p2wpkhAddress);
+  assert.equal(dec.hrp, 'dgbrt');
+  assert.equal(dec.version, 0); // witness v0
+  assert.equal(dec.programHex.length, 40); // 20-byte hash160
 });
 
 test('DigiByte networks: regtest derivation yields a dgbrt1p… address that decodes back to the output key', () => {

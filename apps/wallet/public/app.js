@@ -275,10 +275,10 @@ async function fetchIndexer(path) {
   return json;
 }
 
-/** Addresses the wallet watches: every derived index up to the current one, +2 lookahead. */
-function watchedAddresses() {
+/** Every derivation the wallet watches: indices up to the current one, +2 lookahead. */
+function watchedDerivations() {
   return Array.from({ length: wallet.index + 3 }, (_, i) =>
-    deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }).address);
+    deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }));
 }
 
 // DigiDollar positions (#13): locked mints are NOT part of the DGB balance —
@@ -314,12 +314,19 @@ function renderPositions(perAddr) {
 async function refreshMoney() {
   if (!wallet.seed || !appConfig.indexer) return;
   try {
-    const addrs = watchedAddresses();
-    const perAddr = await Promise.all(addrs.map(async (a) => ({
+    // Each derivation is watched at TWO addresses: its P2TR (receive address,
+    // carries DD positions/tokens) and its P2WPKH twin — mint change lands
+    // there by consensus (#38), so it must count toward balance and history.
+    // DD lives on P2TR only; the twin contributes plain DGB.
+    const addrs = watchedDerivations().flatMap((d) => [
+      { address: d.address, dd: true },
+      { address: d.p2wpkhAddress, dd: false },
+    ]);
+    const perAddr = await Promise.all(addrs.map(async ({ address: a, dd }) => ({
       utxos: (await fetchIndexer(`/address/${a}/utxos`)).utxos,
       history: (await fetchIndexer(`/address/${a}/history`)).history,
-      positions: await fetchIndexer(`/address/${a}/positions`),
-      ddCents: BigInt((await fetchIndexer(`/address/${a}/dd-utxos`)).totalCents),
+      positions: dd ? await fetchIndexer(`/address/${a}/positions`) : { address: a, positions: [], tipHeight: 0 },
+      ddCents: dd ? BigInt((await fetchIndexer(`/address/${a}/dd-utxos`)).totalCents) : 0n,
     })));
     if (!wallet.seed) return; // locked while we were fetching
     const utxos = perAddr.flatMap((r) => r.utxos);
@@ -364,16 +371,19 @@ function dgbToSats(text) {
 }
 const satsToDgb = (sats) => (Number(sats) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 });
 
-/** Every watched derivation (address + its key), spendable UTXOs attached. */
+/** Every watched derivation (address + its key), spendable UTXOs attached.
+ * Includes each key's P2WPKH twin — mint change (#38) — tagged type:'p2wpkh'
+ * so planSpend prices it and buildSignedSpendTx signs it per BIP-143. */
 async function spendableUtxos() {
-  const derived = Array.from({ length: wallet.index + 3 }, (_, i) =>
-    deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }));
-  const perAddr = await Promise.all(derived.map(async (d) => {
-    const { utxos } = await fetchIndexer(`/address/${d.address}/utxos`);
+  const perAddr = await Promise.all(watchedDerivations().flatMap((d) => [
+    { address: d.address, type: undefined, privKeyHex: d.privKeyHex },
+    { address: d.p2wpkhAddress, type: 'p2wpkh', privKeyHex: d.privKeyHex },
+  ].map(async ({ address, type, privKeyHex }) => {
+    const { utxos } = await fetchIndexer(`/address/${address}/utxos`);
     return utxos.map((u) => ({
-      txidHex: u.txid, vout: u.vout, valueSats: BigInt(u.valueSats), privKeyHex: d.privKeyHex,
+      txidHex: u.txid, vout: u.vout, valueSats: BigInt(u.valueSats), privKeyHex, ...(type && { type }),
     }));
-  }));
+  })));
   return perAddr.flat();
 }
 
@@ -475,10 +485,13 @@ $('w-mint-review').addEventListener('click', (e) =>
     const priceMicroUsd = BigInt(price.price_micro_usd);
     const collateralSats = requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd: priceMicroUsd });
     const needSats = collateralSats + MINT_FEE_SATS;
-    // 3. funding gate — the mint spends ONE UTXO, so it must cover everything
+    // 3. funding gate — the mint spends ONE UTXO, so it must cover everything.
+    // Only P2TR coins qualify: buildSignedMintTx signs key-path taproot (a
+    // p2wpkh coin — earlier mint change — is consolidated via Send first).
     const utxos = await spendableUtxos();
     const totalSats = utxos.reduce((s, u) => s + u.valueSats, 0n);
-    const utxo = utxos.filter((u) => u.valueSats >= needSats).sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    const utxo = utxos.filter((u) => u.type !== 'p2wpkh' && u.valueSats >= needSats)
+      .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
     if (!utxo) {
       throw new Error(totalSats >= needSats
         ? `your balance covers it, but no single coin is large enough (a mint spends one coin). Send ${fmtSats(needSats)} DGB to your own address to consolidate, then retry.`
@@ -574,9 +587,10 @@ $('w-tr-review').addEventListener('click', (e) =>
         ? `your DigiDollar covers it, but it is split across smaller coins (a transfer spends one DD coin, largest is $${fmtDD(ddUtxos.reduce((m, u) => (u.ddCents > m ? u.ddCents : m), 0n))}). Transfer that amount or less, or consolidate by transferring to your own address.`
         : `insufficient DigiDollar: you are sending $${fmtDD(cents)} but hold $${fmtDD(totalCents)}`);
     }
-    // the fee coin must sit on the SAME address as the DD coin being spent
+    // the fee coin must sit on the SAME address as the DD coin being spent —
+    // and be P2TR: buildSignedTransferTx signs key-path taproot, not v0
     const feeUtxo = (await spendableUtxos())
-      .filter((u) => u.privKeyHex === ddUtxo.privKeyHex && u.valueSats >= TRANSFER_FEE_SATS)
+      .filter((u) => u.type !== 'p2wpkh' && u.privKeyHex === ddUtxo.privKeyHex && u.valueSats >= TRANSFER_FEE_SATS)
       .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
     if (!feeUtxo) {
       throw new Error(`no DGB for the fee on the address holding this DigiDollar — send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to ${ddUtxo.address}, then retry`);
@@ -646,8 +660,9 @@ $('w-positions').addEventListener('click', (e) => {
         ? `redemption burns the full $${fmtDD(needCents)}, but only $${fmtDD(got)} sits on the position's address — transfer $${fmtDD(needCents - got)} to ${p.address} first`
         : `you no longer hold enough DigiDollar: redeeming burns $${fmtDD(needCents)}, you hold $${fmtDD(totalCents)} (some was transferred away)`);
     }
+    // P2TR only: buildSignedRedeemTx signs the fee input key-path, not v0
     const feeUtxo = (await spendableUtxos())
-      .filter((u) => u.privKeyHex === burn[0].privKeyHex && u.valueSats >= REDEEM_FEE_SATS)
+      .filter((u) => u.type !== 'p2wpkh' && u.privKeyHex === burn[0].privKeyHex && u.valueSats >= REDEEM_FEE_SATS)
       .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
     if (!feeUtxo) {
       throw new Error(`no DGB for the fee on the position's address — send at least ${fmtSats(REDEEM_FEE_SATS)} DGB to ${p.address}, then retry`);
