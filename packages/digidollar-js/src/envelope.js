@@ -1,0 +1,90 @@
+// DigiDollar transaction envelope: nVersion marker + OP_RETURN mint metadata.
+// Mirrors DigiByte Core v9.26.4 src/consensus/digidollar.cpp
+// (HasDigiDollarMarker / GetDigiDollarTxType) and the on-wire OP_RETURN layout
+// observed in real regtest mints (test/fixtures/mint-tx.json).
+
+const DD_MARKER = 0x0770; // low 16 bits of nVersion
+const TYPE_BY_CODE = { 1: 'mint', 2: 'transfer', 3: 'redeem' };
+const CODE_BY_TYPE = { mint: 1, transfer: 2, redeem: 3 };
+
+/** nVersion for a DigiDollar transaction of the given type ('mint'|'transfer'|'redeem'). */
+export function buildDDVersion(type) {
+  const code = CODE_BY_TYPE[type];
+  if (!code) throw new RangeError(`unknown DigiDollar tx type: ${type}`);
+  return (code << 24) | DD_MARKER;
+}
+
+/** Classify an nVersion: is it DigiDollar-marked, and which type. */
+export function parseDDVersion(version) {
+  if ((version & 0xffff) !== DD_MARKER) return { isDigiDollar: false, type: null };
+  const code = (version >>> 24) & 0xff;
+  return { isDigiDollar: true, type: TYPE_BY_CODE[code] ?? null };
+}
+
+// ---- Mint OP_RETURN metadata ----
+// On-wire layout (from real regtest mints):
+//   OP_RETURN(0x6a) push2 "DD"(0x4444) push1 <type> pushN <ddCents LE, minimal>
+//   pushN <unlockHeight LE, minimal> push1 <lockTier> push32 <owner x-only key>
+// All pushes are direct-length opcodes (1–75 bytes).
+
+const hexToBytes = (hex) => Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)));
+const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+function leMinimal(value) {
+  // minimal-length little-endian encoding of a non-negative integer
+  let v = BigInt(value);
+  if (v < 0n) throw new RangeError('negative value');
+  const out = [];
+  do {
+    out.push(Number(v & 0xffn));
+    v >>= 8n;
+  } while (v > 0n);
+  return Uint8Array.from(out);
+}
+
+const leToBigInt = (bytes) => bytes.reduceRight((acc, b) => (acc << 8n) | BigInt(b), 0n);
+
+function readPushes(script) {
+  // Parse a script consisting of OP_RETURN followed by direct-length pushes.
+  if (script[0] !== 0x6a) throw new RangeError('not an OP_RETURN script');
+  const pushes = [];
+  for (let i = 1; i < script.length; ) {
+    const len = script[i];
+    if (len < 1 || len > 75) throw new RangeError(`unsupported push opcode 0x${len.toString(16)} at ${i}`);
+    pushes.push(script.subarray(i + 1, i + 1 + len));
+    i += 1 + len;
+  }
+  return pushes;
+}
+
+/** Parse a mint OP_RETURN scriptPubKey (hex) into its fields. */
+export function parseMintMetadata(scriptHex) {
+  const pushes = readPushes(hexToBytes(scriptHex));
+  const [magic, type, ddCents, unlockHeight, lockTier, ownerKey] = pushes;
+  if (pushes.length !== 6 || bytesToHex(magic) !== '4444') throw new RangeError('not a DigiDollar metadata script');
+  if (type.length !== 1 || type[0] !== CODE_BY_TYPE.mint) throw new RangeError(`not a mint metadata script (type ${type[0]})`);
+  if (ownerKey.length !== 32) throw new RangeError('owner key must be 32 bytes');
+  return {
+    ddCents: leToBigInt(ddCents),
+    unlockHeight: Number(leToBigInt(unlockHeight)),
+    lockTier: lockTier[0],
+    ownerKeyHex: bytesToHex(ownerKey),
+  };
+}
+
+/** Build a mint OP_RETURN scriptPubKey (hex) — byte-exact vs Core's encoding. */
+export function buildMintMetadata({ ddCents, unlockHeight, lockTier, ownerKeyHex }) {
+  const ownerKey = hexToBytes(ownerKeyHex);
+  if (ownerKey.length !== 32) throw new RangeError('owner key must be 32 bytes');
+  const push = (bytes) => [bytes.length, ...bytes];
+  const script = Uint8Array.from([
+    0x6a,
+    ...push([0x44, 0x44]),
+    ...push([CODE_BY_TYPE.mint]),
+    ...push(leMinimal(ddCents)),
+    ...push(leMinimal(unlockHeight)),
+    ...push([lockTier]),
+    ...push(ownerKey),
+  ]);
+  return bytesToHex(script);
+}

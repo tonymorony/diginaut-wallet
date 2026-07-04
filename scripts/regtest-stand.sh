@@ -19,6 +19,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DGB_BIN="${DGB_BIN:?set DGB_BIN to a digibyted or DigiByte-Qt binary}"
 DATADIR="${DATADIR:-$(mktemp -d /tmp/dgb-regtest-stand.XXXXXX)}"
+mkdir -p "$DATADIR"
 RPCPORT="${RPCPORT:-18500}"
 RPCUSER=dd RPCPASS=ddpass
 MOCK_PRICE_MICRO_USD="${MOCK_PRICE_MICRO_USD:-13420}"   # $0.01342/DGB
