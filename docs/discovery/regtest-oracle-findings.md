@@ -92,12 +92,22 @@ need renaming (follow-up in #4/#5 wiring).
 3. Tier table, DCA bps math, ceiling division, and the +1% margin are already mirrored and tested
    in `digidollar-js` (see #2 / PR #18).
 
-## Remaining to complete #9's acceptance criteria
+## Live verification (2026-07-04, macOS x86_64 release binary v9.26.4)
 
-- [ ] Scripted, reproducible regtest stand: build/obtain `digibyted` v9.26.4, script
-      `-regtest` node + mine 650 blocks + `enablemockoracle true` + `setmockoracleprice` +
-      smoke `mintdigidollar`. (Requires building Core locally — decision on build vs release
-      binaries pending.)
+Everything above was verified against a running regtest node — see
+`scripts/regtest-stand.sh` (reproducible: fresh datadir → node → mine 651 → DigiDollar ACTIVE →
+mock oracle @ 13,420 micro-USD → `mintdigidollar 10000 3`):
+
+- Mint succeeded: $100 DD locked **26,341.28166915 DGB** (tier 3, 350%, unlock height 1,037,552,
+  fee 0.119 DGB).
+- **Differential check: `digidollar-js` computed 2,634,128,166,915 sats — satoshi-for-satoshi
+  identical to Core's mint.** First live proof of the harness approach (ADR-0001).
+- Note: the macOS release zip ships only `DigiByte-Qt.app`; the Qt binary embeds the full node
+  and accepts daemon flags (`-regtest -server=1 -min -splash=0`) — no local build needed.
+
+## #9 acceptance criteria
+
+- [x] Scripted, reproducible regtest stand — `scripts/regtest-stand.sh`
 - [x] Can oracles run on regtest / how mint & redeem get price data — **answered above**
 - [x] DigiDollar output-script + oracle-binding structure from Core C++ — **documented above**
 - [x] Read-RPC list for the "script oracle" — **documented above**
