@@ -64,3 +64,4 @@ export function requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd, d
 }
 
 export { buildDDVersion, parseDDVersion, parseMintMetadata, buildMintMetadata } from './envelope.js';
+export { ddTokenOutputKey, collateralOutputKey, COLLATERAL_NUMS_KEY } from './taproot.js';
