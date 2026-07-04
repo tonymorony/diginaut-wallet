@@ -5,6 +5,7 @@
 import {
   LOCK_TIERS, requiredCollateralSats,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
+  planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 
@@ -159,6 +160,8 @@ function openWallet(mnemonic) {
 function lockWallet() {
   wallet.mnemonic = null;
   wallet.seed = null;
+  resetSend(); // pendingSend holds per-UTXO private keys — drop them with the seed
+  $('w-send-out').textContent = '';
   clearInterval(moneyTimer);
   $('w-money').style.display = 'none';
   $('w-seed-words').textContent = '';
@@ -303,6 +306,79 @@ async function refreshMoney() {
     $('w-open-err').textContent = 'indexer: ' + e.message;
   }
 }
+
+// ---- Send DGB (#6): plan → confirmation screen → sign → broadcast ----
+// Nothing is signed until the user presses "Confirm & send"; the plan step only
+// selects UTXOs and prices the fee so the confirmation can display them.
+
+/** "1.5" → 150000000n without float rounding (8 decimal places max). */
+function dgbToSats(text) {
+  const m = String(text).trim().match(/^(\d+)(?:\.(\d{1,8}))?$/);
+  if (!m) throw new Error('enter the amount as a plain number, e.g. 1.5');
+  return BigInt(m[1]) * 100_000_000n + BigInt((m[2] ?? '').padEnd(8, '0') || '0');
+}
+const satsToDgb = (sats) => (Number(sats) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 });
+
+/** Every watched derivation (address + its key), spendable UTXOs attached. */
+async function spendableUtxos() {
+  const derived = Array.from({ length: wallet.index + 3 }, (_, i) =>
+    deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }));
+  const perAddr = await Promise.all(derived.map(async (d) => {
+    const { utxos } = await fetchIndexer(`/address/${d.address}/utxos`);
+    return utxos.map((u) => ({
+      txidHex: u.txid, vout: u.vout, valueSats: BigInt(u.valueSats), privKeyHex: d.privKeyHex,
+    }));
+  }));
+  return perAddr.flat();
+}
+
+let pendingSend = null; // { plan, recipientScriptHex, amountSats, address } while confirming
+
+function resetSend() {
+  pendingSend = null;
+  $('w-send-confirm').style.display = 'none';
+  $('w-send-review').disabled = false;
+}
+
+$('w-send-review').addEventListener('click', (e) =>
+  busy(e.target, 'w-send-err', async () => {
+    $('w-send-out').textContent = '';
+    const address = $('w-send-to').value.trim();
+    const { hrp } = decodeWitnessAddress(address); // throws on malformed input
+    if (hrp !== wallet.network.hrp) throw new Error(`address is not for this network (expected ${wallet.network.hrp}…)`);
+    const amountSats = dgbToSats($('w-send-amount').value);
+    if (amountSats <= 0n) throw new Error('amount must be positive');
+    const plan = planSpend({ utxos: await spendableUtxos(), amountSats });
+    pendingSend = { plan, recipientScriptHex: scriptPubKeyFromAddress(address), amountSats, address };
+    $('w-send-c-to').textContent = address;
+    $('w-send-c-amount').textContent = satsToDgb(amountSats);
+    $('w-send-c-fee').textContent = satsToDgb(plan.feeSats);
+    $('w-send-confirm').style.display = 'block';
+    $('w-send-review').disabled = true;
+  }));
+
+$('w-send-cancel').addEventListener('click', resetSend);
+
+$('w-send-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-send-err', async () => {
+    const { plan, recipientScriptHex, amountSats } = pendingSend;
+    if (!wallet.seed) throw new Error('wallet is locked');
+    // change returns to the wallet's current receive address
+    const changeAddress = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
+    const { hex } = buildSignedSpendTx({
+      utxos: plan.inputs,
+      recipientScriptHex,
+      amountSats,
+      changeScriptHex: scriptPubKeyFromAddress(changeAddress),
+      feeSats: plan.feeSats,
+    });
+    const txid = await rpc('sendrawtransaction', [hex]);
+    resetSend();
+    $('w-send-to').value = '';
+    $('w-send-amount').value = '';
+    $('w-send-out').textContent = `Sent — tx ${txid.slice(0, 16)}…`;
+    refreshMoney();
+  }));
 
 let moneyTimer = null;
 function startMoneyPolling() {

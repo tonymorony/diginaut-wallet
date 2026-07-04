@@ -168,6 +168,26 @@
           <div class="row"><span class="k">Balance</span><span class="v"><span id="w-balance">—</span> DGB</span></div>
           <div class="row" id="w-pending-row" style="display:none"><span class="k">Incoming (pending)</span><span class="v warn-text">+<span id="w-pending"></span> DGB</span></div>
           <div id="w-history" class="hint" style="margin:6px 0 10px"></div>
+          <!-- Send DGB (issue #6): built & signed client-side, node only relays -->
+          <div id="w-send">
+            <label for="w-send-to">Send DGB — recipient address</label>
+            <input id="w-send-to" class="mono" placeholder="dgb…1…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <label for="w-send-amount">Amount (DGB)</label>
+            <input id="w-send-amount" inputmode="decimal" autocomplete="off" />
+            <button id="w-send-review">Review send</button>
+            <!-- confirmation screen: nothing is signed until "Confirm & send" -->
+            <div id="w-send-confirm" style="display:none">
+              <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-send-c-to" style="word-break:break-all"></span></div>
+              <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB</span></div>
+              <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-send-c-fee"></span> DGB</span></div>
+              <div class="grid">
+                <button id="w-send-go">Confirm &amp; send</button>
+                <button id="w-send-cancel" class="secondary">Cancel</button>
+              </div>
+            </div>
+            <div class="hint" id="w-send-out"></div>
+            <div class="err" id="w-send-err"></div>
+          </div>
         </div>
         <div class="row"><span class="k">Receive address <span class="mono" id="w-path"></span></span><span></span></div>
         <div class="out mono" id="w-address"></div>

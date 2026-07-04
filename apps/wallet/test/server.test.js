@@ -36,6 +36,19 @@ test('proxies allow-listed read RPCs (mock mode)', async () => {
   });
 });
 
+test('allows broadcasting a client-signed raw transaction (issue #6)', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'sendrawtransaction', params: ['02000000' + '00'.repeat(60)] }),
+    });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.match(json.result, /^[0-9a-f]{64}$/); // mock echoes a txid
+  });
+});
+
 test('refuses fund-moving RPCs at the proxy', async () => {
   await withServer(async (base) => {
     for (const method of ['mintdigidollartaproot', 'redeemdigidollar', 'sendtoaddress']) {

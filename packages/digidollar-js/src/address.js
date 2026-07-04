@@ -55,6 +55,14 @@ export function encodeWitnessAddress(hrp, version, programHex) {
   return hrp + '1' + [...data, ...checksum].map((d) => CHARSET[d]).join('');
 }
 
+/** scriptPubKey (hex) paying to a segwit address: OP_n <program>. Throws on bad address. */
+export function scriptPubKeyFromAddress(addr) {
+  const { version, programHex } = decodeWitnessAddress(addr);
+  const opN = version === 0 ? 0x00 : 0x50 + version;
+  const program = hexToBytes(programHex);
+  return bytesToHex(Uint8Array.from([opN, program.length, ...program]));
+}
+
 /** Decode a segwit address → { hrp, version, programHex }. Throws on bad checksum. */
 export function decodeWitnessAddress(addr) {
   const lower = addr.toLowerCase();
