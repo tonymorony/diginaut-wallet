@@ -53,10 +53,16 @@
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(30px,1fr)); gap: 6px; margin-top: 6px; }
     .oracle { height: 28px; border-radius: 6px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
     footer { max-width: 960px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 12px; }
+    .testnet-banner {
+      position: sticky; top: 0; z-index: 10; text-align: center; padding: 7px 12px;
+      background: rgba(247,185,85,.14); color: var(--warn); border-bottom: 1px solid rgba(247,185,85,.4);
+      font-size: 12px; font-weight: 700; letter-spacing: .5px; backdrop-filter: blur(6px);
+    }
     a { color: var(--accent); }
   </style>
 </head>
 <body>
+  <div class="testnet-banner">TESTNET ONLY — no real value. Keys live in this browser; there is no server-side backup.</div>
   <header>
     <h1>DigiDollar <span style="color:var(--muted)">· Testnet UI</span><span id="modeBadge" class="badge mock">loading…</span></h1>
     <div class="sub">Decentralized USD stablecoin on DigiByte — mint calculator, oracle health & address generation.</div>

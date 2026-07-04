@@ -14,6 +14,12 @@ const PUBLIC_DIR = join(__dirname, 'public');
 // wallet is the lib's first consumer — same code runs in Node and browser).
 // Resolved via Node's module resolution — works wherever npm hoists the package.
 const LIB_DIR = dirname(fileURLToPath(import.meta.resolve('digidollar-js')));
+// Crypto deps of the lib, served under /vendor/ so the browser import map can
+// resolve the lib's bare specifiers (@noble/*, @scure/*) to real URLs.
+const VENDOR_PACKAGES = ['@noble/curves', '@noble/hashes', '@scure/base', '@scure/bip32', '@scure/bip39'];
+const VENDOR_ROOTS = Object.fromEntries(
+  VENDOR_PACKAGES.map((pkg) => [pkg, dirname(fileURLToPath(import.meta.resolve(pkg)))]),
+);
 
 export function configFromEnv() {
   return {
@@ -34,7 +40,6 @@ const ALLOWED_METHODS = new Set([
   'getdeploymentinfo',
   'getoraclestatus',
   'listoracles',
-  'getnewdigidollaraddress', // TODO(#3): remove with client-side derivation
   'listredemptionpaths',
   'getdigidollarspendinfo',
   // mintdigidollartaproot / redeemdigidollar intentionally NOT exposed to the
@@ -77,8 +82,6 @@ function mockResponse(method, params) {
         reliability: 0.96 + (i % 4) * 0.01,
         lastSeenBlock: 1_284_510 - (i % 3),
       }));
-    case 'getnewdigidollaraddress':
-      return 'dgbt1p' + 'q9x2mock' + Math.abs(hashStr(JSON.stringify(params) + Date.now())).toString(36).padStart(20, '0');
     case 'listredemptionpaths':
       return [];
     case 'getdigidollarspendinfo':
@@ -86,12 +89,6 @@ function mockResponse(method, params) {
     default:
       throw new Error(`No mock for method: ${method}`);
   }
-}
-
-function hashStr(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-  return h;
 }
 
 async function callNode(rpc, method, params) {
@@ -159,6 +156,12 @@ async function serveStatic(req, res) {
   let urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   if (urlPath === '/') urlPath = '/index.html';
   if (urlPath.startsWith('/lib/')) return serveFrom(LIB_DIR, urlPath.slice('/lib/'.length), res);
+  if (urlPath.startsWith('/vendor/')) {
+    const rel = urlPath.slice('/vendor/'.length);
+    const pkg = VENDOR_PACKAGES.find((p) => rel.startsWith(p + '/'));
+    if (!pkg) return void res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
+    return serveFrom(VENDOR_ROOTS[pkg], rel.slice(pkg.length + 1), res);
+  }
   return serveFrom(PUBLIC_DIR, urlPath, res);
 }
 
