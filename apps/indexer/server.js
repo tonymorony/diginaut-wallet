@@ -35,6 +35,9 @@ class ElectrumClient {
 
   connect() {
     if (this.sock) return this.ready;
+    // The server.version handshake is part of CONNECTING, not of the process
+    // lifetime: ElectrumX ≥1.4 kills any connection whose first message is
+    // something else, so every reconnect must re-handshake (#32).
     this.ready = new Promise((resolve, reject) => {
       const sock = createConnection(this.port, this.host);
       sock.setNoDelay(true);
@@ -49,8 +52,19 @@ class ElectrumClient {
       sock.on('error', fail);
       sock.on('close', () => fail());
       this.sock = sock;
-    });
+    }).then(() => this.#send('server.version', ['dd-indexer 0.1', '1.4']));
     return this.ready;
+  }
+
+  #send(method, params) {
+    const id = this.nextId++;
+    this.sock.write(JSON.stringify({ id, method, params }) + '\n');
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      setTimeout(() => {
+        if (this.pending.delete(id)) reject(new Error(`electrum timeout: ${method}`));
+      }, 15_000).unref();
+    });
   }
 
   #onData(d) {
@@ -70,14 +84,7 @@ class ElectrumClient {
 
   async request(method, params = []) {
     await this.connect();
-    const id = this.nextId++;
-    this.sock.write(JSON.stringify({ id, method, params }) + '\n');
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`electrum timeout: ${method}`));
-      }, 15_000).unref();
-    });
+    return this.#send(method, params);
   }
 }
 
@@ -181,13 +188,9 @@ export function startServer(overrides = {}) {
   const env = configFromEnv();
   const config = { ...env, ...overrides, electrum: { ...env.electrum, ...(overrides.electrum || {}) } };
   const electrum = new ElectrumClient(config.electrum);
-  let handshake; // server.version must be sent once before other requests
-
-  const withElectrum = async (method, params) => {
-    handshake ??= electrum.request('server.version', ['dd-indexer 0.1', '1.4']);
-    await handshake.catch(() => { handshake = null; throw new Error('electrum handshake failed'); });
-    return electrum.request(method, params);
-  };
+  // server.version happens inside connect() — once per CONNECTION, so a
+  // dropped TCP session re-handshakes transparently on the next request (#32)
+  const withElectrum = (method, params) => electrum.request(method, params);
 
   const server = createServer(async (req, res) => {
     try {
