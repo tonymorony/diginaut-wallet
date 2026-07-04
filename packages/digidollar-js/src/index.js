@@ -62,3 +62,5 @@ export function requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd, d
   if (withMargin > MAX_MONEY) throw new RangeError('required collateral exceeds MAX_MONEY');
   return withMargin;
 }
+
+export { buildDDVersion, parseDDVersion, parseMintMetadata, buildMintMetadata } from './envelope.js';
