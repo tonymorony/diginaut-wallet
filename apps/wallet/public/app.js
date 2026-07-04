@@ -6,6 +6,7 @@ import {
   LOCK_TIERS, requiredCollateralSats,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
+  buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 
@@ -79,6 +80,7 @@ async function loadStatus() {
     const dd = dep?.deployments?.digidollar;
     const tr = dep?.deployments?.taproot;
     const ddActive = dd?.active === true || dd?.bip9?.status === 'active';
+    chainState.ddActive = ddActive; // the mint flow refuses to start when inactive
     $('s-dd').innerHTML = statusLine(ddActive, 'active', dd?.bip9?.status || 'not active');
     $('s-tr').innerHTML = statusLine(tr?.active === true, 'active', tr?.bip9?.status || 'not active');
   } catch (e) {
@@ -126,7 +128,8 @@ async function loadOracle() {
 $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1'; $('c-pricesrc').textContent = ''; });
 
 // ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
-let appConfig = { mock: true, faucet: false, indexer: false };
+let appConfig = { mock: true, faucet: false, indexer: false, mint: false };
+const chainState = { ddActive: null }; // null until getdeploymentinfo answers
 const wallet = {
   mnemonic: null, // set only while unlocked
   seed: null,
@@ -161,7 +164,9 @@ function lockWallet() {
   wallet.mnemonic = null;
   wallet.seed = null;
   resetSend(); // pendingSend holds per-UTXO private keys — drop them with the seed
+  resetMint(); // pendingMint holds the funding UTXO's private key — same
   $('w-send-out').textContent = '';
+  $('w-mint-out').textContent = '';
   clearInterval(moneyTimer);
   $('w-money').style.display = 'none';
   $('w-seed-words').textContent = '';
@@ -406,6 +411,100 @@ $('w-send-go').addEventListener('click', (e) =>
     refreshMoney();
   }));
 
+// ---- Mint DigiDollar (#14): plan → confirmation screen → sign → broadcast ----
+// Feature-flagged (ADR-0002). Distinct, actionable errors for the three ways
+// this can be impossible: softfork inactive, stale oracle quote, and not
+// enough (or too fragmented) DGB for the collateral.
+const MINT_FEE_SATS = 12_000_000n; // 0.12 DGB, above Core's 0.1 DGB DD fee floor
+
+/** "100.5" → 10050n DD cents (2 decimal places max). */
+function ddToCents(text) {
+  const m = String(text).trim().match(/^(\d+)(?:\.(\d{1,2}))?$/);
+  if (!m) throw new Error('enter the DigiDollar amount as a plain number, e.g. 100 or 99.50');
+  return BigInt(m[1]) * 100n + BigInt((m[2] ?? '').padEnd(2, '0') || '0');
+}
+
+function initMintTiers() {
+  $('w-mint-tier').innerHTML = LOCK_TIERS
+    .map((t) => `<option value="${t.id}">${t.label} — ${t.ratioPercent}% collateral</option>`)
+    .join('');
+}
+
+let pendingMint = null; // { utxo (with privKeyHex!), ddCents, tierId, priceMicroUsd } while confirming
+
+function resetMint() {
+  pendingMint = null;
+  $('w-mint-confirm').style.display = 'none';
+  $('w-mint-review').disabled = false;
+}
+
+const blocksToDate = (blocks) =>
+  new Date(Date.now() + blocks * SECONDS_PER_BLOCK * 1000).toLocaleDateString('en-CA');
+
+$('w-mint-review').addEventListener('click', (e) =>
+  busy(e.target, 'w-mint-err', async () => {
+    $('w-mint-out').textContent = '';
+    // 1. softfork gate — minting is consensus-impossible while inactive
+    if (chainState.ddActive === false) {
+      throw new Error('DigiDollar is not active on this network yet — minting is impossible until the softfork activates. Watch the Status card.');
+    }
+    const ddCents = ddToCents($('w-mint-amount').value);
+    if (ddCents <= 0n) throw new Error('amount must be positive');
+    const tierId = $('w-mint-tier').value;
+    const tier = LOCK_TIERS.find((t) => t.id === tierId);
+    // 2. oracle gate — a stale quote would be rejected by mempool policy anyway
+    const price = await rpc('getoracleprice');
+    if (!price?.price_micro_usd) throw new Error('oracle price unavailable — the node returned no quote');
+    if (price.is_stale) {
+      throw new Error('the oracle price is stale — the network has not published a fresh quote; try again in a few minutes');
+    }
+    const priceMicroUsd = BigInt(price.price_micro_usd);
+    const collateralSats = requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd: priceMicroUsd });
+    const needSats = collateralSats + MINT_FEE_SATS;
+    // 3. funding gate — the mint spends ONE UTXO, so it must cover everything
+    const utxos = await spendableUtxos();
+    const totalSats = utxos.reduce((s, u) => s + u.valueSats, 0n);
+    const utxo = utxos.filter((u) => u.valueSats >= needSats).sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    if (!utxo) {
+      throw new Error(totalSats >= needSats
+        ? `your balance covers it, but no single coin is large enough (a mint spends one coin). Send ${fmtSats(needSats)} DGB to your own address to consolidate, then retry.`
+        : `insufficient funds: this mint needs ${fmtSats(needSats)} DGB (collateral + fee), you have ${fmtSats(totalSats)} DGB`);
+    }
+    const { blocks: tipHeight } = await rpc('getblockchaininfo');
+    const unlockHeight = tipHeight + 1 + MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS + tier.lockBlocks;
+    pendingMint = { utxo, ddCents, tierId, priceMicroUsd };
+    $('w-mint-c-dd').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    $('w-mint-c-coll').textContent = fmtSats(collateralSats);
+    $('w-mint-c-price').textContent = '$' + (Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 5 }) + ' / DGB';
+    $('w-mint-c-fee').textContent = fmtSats(MINT_FEE_SATS);
+    $('w-mint-c-unlock').textContent = `≈ ${blocksToDate(unlockHeight - tipHeight)} (block ${unlockHeight.toLocaleString('en-US')})`;
+    $('w-mint-confirm').style.display = 'block';
+    $('w-mint-review').disabled = true;
+  }));
+
+$('w-mint-cancel').addEventListener('click', resetMint);
+
+$('w-mint-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-mint-err', async () => {
+    const { utxo, ddCents, tierId, priceMicroUsd } = pendingMint;
+    if (!wallet.seed) throw new Error('wallet is locked');
+    const { blocks: tipHeight } = await rpc('getblockchaininfo'); // fresh height at sign time
+    const { hex } = buildSignedMintTx({
+      utxo,
+      privKeyHex: utxo.privKeyHex,
+      ddCents,
+      tierId,
+      oraclePriceMicroUsd: priceMicroUsd,
+      tipHeight,
+      feeSats: MINT_FEE_SATS,
+    });
+    const txid = await rpc('sendrawtransaction', [hex]);
+    resetMint();
+    $('w-mint-amount').value = '';
+    $('w-mint-out').textContent = `Minted — tx ${txid.slice(0, 16)}… The position appears below once confirmed.`;
+    refreshMoney();
+  }));
+
 let moneyTimer = null;
 function startMoneyPolling() {
   if (!appConfig.indexer) return;
@@ -438,6 +537,7 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
     if (cfg.faucet) $('w-faucet').style.display = 'block';
+    if (cfg.mint) { initMintTiers(); $('w-mint').style.display = 'block'; } // ADR-0002 flag
   } catch { /* ignore */ }
   bootWallet();
   loadStatus();

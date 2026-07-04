@@ -171,6 +171,29 @@
           <!-- DigiDollar positions (#13): locked mints, distinct from the DGB balance above -->
           <div class="row"><span class="k">DigiDollar positions</span><span class="v" id="w-dd-total"></span></div>
           <div id="w-positions" class="hint" style="margin:6px 0 10px">No open positions.</div>
+          <!-- Mint DigiDollar (#14): feature-flagged (ADR-0002), client-signed.
+               Hidden unless the server config enables the mint flow. -->
+          <div id="w-mint" style="display:none">
+            <label for="w-mint-amount">Mint DigiDollar — amount (DD)</label>
+            <input id="w-mint-amount" inputmode="decimal" autocomplete="off" placeholder="100" />
+            <label for="w-mint-tier">Lock tier</label>
+            <select id="w-mint-tier"></select>
+            <button id="w-mint-review">Review mint</button>
+            <!-- confirmation screen: nothing is signed until "Confirm & mint" -->
+            <div id="w-mint-confirm" style="display:none">
+              <div class="row"><span class="k">Minting</span><span class="v">$<span id="w-mint-c-dd"></span></span></div>
+              <div class="row"><span class="k">Collateral to lock</span><span class="v"><span id="w-mint-c-coll"></span> DGB</span></div>
+              <div class="row"><span class="k">Oracle price used</span><span class="v" id="w-mint-c-price"></span></div>
+              <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-mint-c-fee"></span> DGB</span></div>
+              <div class="row"><span class="k">Unlocks</span><span class="v" id="w-mint-c-unlock"></span></div>
+              <div class="grid">
+                <button id="w-mint-go">Confirm &amp; mint</button>
+                <button id="w-mint-cancel" class="secondary">Cancel</button>
+              </div>
+            </div>
+            <div class="hint" id="w-mint-out"></div>
+            <div class="err" id="w-mint-err"></div>
+          </div>
           <!-- Send DGB (issue #6): built & signed client-side, node only relays -->
           <div id="w-send">
             <label for="w-send-to">Send DGB — recipient address</label>
