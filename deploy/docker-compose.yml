@@ -1,0 +1,75 @@
+# DigiDollar wallet stack — everything EXCEPT the DigiByte node (#8).
+# You run your own DigiByte Core v9.26+ (txindex=1, server=1); this compose
+# stands up ElectrumX + indexer + faucet + wallet against it.
+# Copy .env.example → .env, fill it in, then: docker compose up --build -d
+# Full walkthrough: docs/SELF-HOSTING.md
+
+services:
+  electrumx:
+    build: ../scripts/electrumx-regtest
+    environment:
+      DAEMON_URL: ${DAEMON_URL:?http://rpcuser:rpcpass@host:port of your DigiByte node}
+      NET: ${DGB_NET:-regtest}
+    volumes:
+      - electrumx-data:/data
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: ..
+      dockerfile: deploy/node.Dockerfile
+      args: { APP: indexer }
+    environment:
+      PORT: 8789
+      DGB_HRP: ${DGB_HRP:-dgbrt} # dgb | dgbt | dgbrt — must match the node's chain
+      ELECTRUM_HOST: electrumx
+      ELECTRUM_PORT: 50001
+    depends_on: [electrumx]
+    restart: unless-stopped
+
+  faucet:
+    build:
+      context: ..
+      dockerfile: deploy/node.Dockerfile
+      args: { APP: faucet }
+    environment:
+      PORT: 8788
+      DGB_RPC_URL: ${DGB_RPC_URL:?http://host:port of your DigiByte node RPC}
+      DGB_RPC_USER: ${DGB_RPC_USER:?}
+      DGB_RPC_PASS: ${DGB_RPC_PASS:?}
+      DGB_RPC_WALLET: ${FAUCET_WALLET:-faucet} # the HOT wallet — never a user wallet
+      FAUCET_DATA_FILE: /data/faucet-claims.json
+      FAUCET_TARGET_DD_CENTS: ${FAUCET_TARGET_DD_CENTS:-5000}
+      FAUCET_COOLDOWN_HOURS: ${FAUCET_COOLDOWN_HOURS:-24}
+    volumes:
+      - faucet-data:/data
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+  wallet:
+    build:
+      context: ..
+      dockerfile: deploy/node.Dockerfile
+      args: { APP: wallet }
+    environment:
+      PORT: 8791
+      DGB_RPC_URL: ${DGB_RPC_URL}
+      DGB_RPC_USER: ${DGB_RPC_USER}
+      DGB_RPC_PASS: ${DGB_RPC_PASS}
+      FAUCET_URL: http://faucet:8788
+      INDEXER_URL: http://indexer:8789
+      # ADR-0002 release gate (#17): mint/transfer/redeem ship together, default OFF
+      FEATURE_MINT: ${FEATURE_MINT:-}
+    ports:
+      - "${WALLET_PORT:-8791}:8791"
+    depends_on: [indexer, faucet]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+volumes:
+  electrumx-data:
+  faucet-data:
