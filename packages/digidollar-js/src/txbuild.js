@@ -12,8 +12,8 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { LOCK_TIERS, requiredCollateralSats, tierById } from './index.js';
 import { buildDDVersion } from './envelope.js';
-import { buildMintMetadata, buildTransferMetadata } from './envelope.js';
-import { collateralOutputKey, ddTokenOutputKey } from './taproot.js';
+import { buildMintMetadata, buildTransferMetadata, buildRedeemMetadata } from './envelope.js';
+import { collateralOutputKey, ddTokenOutputKey, normalRedemptionLeafHex, normalRedemptionLeafHash, collateralControlBlockHex } from './taproot.js';
 
 const { taggedHash } = schnorr.utils;
 const Point = secp256k1.Point;
@@ -70,8 +70,12 @@ function tapTweakPrivKey(privKeyHex) {
   return dt.toString(16).padStart(64, '0');
 }
 
-/** BIP-341 key-path sighash, SIGHASH_DEFAULT, no annex. Single input index. */
-function taprootSighash({ version, locktime, inputs, outputs, inputIndex }) {
+/**
+ * BIP-341 sighash, SIGHASH_DEFAULT, no annex. Key path by default; pass
+ * `leafHash` (Uint8Array tapleaf hash) for a script-path (tapscript) spend —
+ * spend_type gains ext_flag=1 and the leaf-hash extension is appended.
+ */
+function taprootSighash({ version, locktime, inputs, outputs, inputIndex, leafHash }) {
   const shaPrevouts = sha256(concat(...inputs.map((i) => concat(hexToBytes(i.txidHex).reverse(), u32le(i.vout)))));
   const shaAmounts = sha256(concat(...inputs.map((i) => u64le(i.valueSats))));
   const shaScriptPubKeys = sha256(concat(...inputs.map((i) => {
@@ -87,8 +91,11 @@ function taprootSighash({ version, locktime, inputs, outputs, inputIndex }) {
     Uint8Array.from([0x00]),          // hash_type: SIGHASH_DEFAULT
     u32le(version), u32le(locktime),
     shaPrevouts, shaAmounts, shaScriptPubKeys, shaSequences, shaOutputs,
-    Uint8Array.from([0x00]),          // spend_type: key path, no annex
+    Uint8Array.from([leafHash ? 0x02 : 0x00]), // spend_type: (ext_flag·2)+annex
     u32le(inputIndex),
+    ...(leafHash
+      ? [leafHash, Uint8Array.from([0x00]), u32le(0xffffffff)] // key_version, codesep pos
+      : []),
   );
   return taggedHash('TapSighash', concat(Uint8Array.from([0x00]), msg)); // epoch 0
 }
@@ -184,6 +191,100 @@ export function buildSignedTransferTx({
   ]);
 
   const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses });
+  return { hex, ddChangeCents, dgbChangeSats };
+}
+
+// ---- Redeem ----
+// Anatomy mirrors real Core redemptions (test/fixtures/redeem-tx.json,
+// RedeemTxBuilder::BuildRedemptionTransaction):
+//   vin[0]  collateral P2TR — SCRIPT-PATH spend of the Normal leaf,
+//           witness [sig64, leafScript, controlBlock], sequence 0xfffffffe (CLTV)
+//   vin[1+] DD token UTXOs to burn — key-path, sequence 0xfffffffe
+//   vin[N]  DGB fee UTXO — key-path, sequence 0xffffffff
+//   vout[0] full collateral back to the owner
+//   vout[…] DD change P2TR + OP_RETURN "DD" <3> <change> — only if change > 0
+//   vout[…] DGB fee change — last
+//   nLockTime = lockHeight (consensus: height >= nLockTime, strict DD burn)
+
+/** Build the redeem output list in Core's exact order. */
+export function buildRedeemOutputs({
+  collateralReturnSats,
+  collateralReturnScriptHex,
+  ddChangeCents = 0n,
+  changeOwnerKeyHex, // owner x-only key for DD change (tweaked like CreateDigiDollarP2TR)
+  dgbChangeSats = 0n,
+  dgbChangeScriptHex,
+}) {
+  const outputs = [{ valueSats: collateralReturnSats, script: hexToBytes(collateralReturnScriptHex) }];
+  if (ddChangeCents > 0n) {
+    outputs.push({ valueSats: 0n, script: p2trScript(ddTokenOutputKey(changeOwnerKeyHex)) });
+    outputs.push({ valueSats: 0n, script: hexToBytes(buildRedeemMetadata({ ddChangeCents })) });
+  }
+  if (dgbChangeSats > 0n) {
+    outputs.push({ valueSats: dgbChangeSats, script: hexToBytes(dgbChangeScriptHex) });
+  }
+  return outputs;
+}
+
+/**
+ * Build and sign a complete DigiDollar redemption, client-side (Normal path).
+ * The collateral is spent via the Normal tapscript leaf (expired CLTV + owner
+ * signature — no oracle signatures involved); DD UTXOs and the fee UTXO must
+ * be key-path-only P2TR of `privKeyHex`. The full collateral value returns to
+ * the owner's key-path P2TR. Returns { hex, ddChangeCents, dgbChangeSats }.
+ */
+export function buildSignedRedeemTx({
+  collateralUtxo, // { txidHex, vout, valueSats, lockHeight, ddCents } — the mint's vout[0]
+  ddUtxos, // [{ txidHex, vout, ddCents }] — burned; must sum to ≥ collateralUtxo.ddCents
+  feeUtxo, // { txidHex, vout, valueSats }
+  privKeyHex,
+  feeSats = 16_000_000n, // 0.16 DGB ≥ Core's DD fee floor
+}) {
+  if (feeSats < MIN_DD_TX_FEE_SATS) throw new RangeError('fee below the DigiDollar fee floor (0.1 DGB)');
+  const totalDDIn = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
+  const ddChangeCents = totalDDIn - collateralUtxo.ddCents;
+  if (ddChangeCents < 0n) throw new RangeError('DD inputs must cover the full minted amount (full redemption only)');
+  const dgbChangeSats = feeUtxo.valueSats - feeSats;
+  if (dgbChangeSats < 0n) throw new RangeError('fee UTXO too small for the fee');
+
+  const ownerKey = xOnlyPubKey(privKeyHex);
+  const leafParams = { ownerKeyHex: ownerKey, lockHeight: collateralUtxo.lockHeight, ddCents: collateralUtxo.ddCents };
+  const collateralScriptHex = bytesToHex(p2trScript(collateralOutputKey(leafParams)));
+  const ownerScriptHex = bytesToHex(p2trScript(ddTokenOutputKey(ownerKey)));
+
+  const inputs = [
+    { txidHex: collateralUtxo.txidHex, vout: collateralUtxo.vout, valueSats: collateralUtxo.valueSats, scriptPubKeyHex: collateralScriptHex, sequence: 0xfffffffe },
+    ...ddUtxos.map((u) => ({ txidHex: u.txidHex, vout: u.vout, valueSats: 0n, scriptPubKeyHex: ownerScriptHex, sequence: 0xfffffffe })),
+    { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
+  ];
+  const outputs = buildRedeemOutputs({
+    collateralReturnSats: collateralUtxo.valueSats,
+    collateralReturnScriptHex: ownerScriptHex,
+    ddChangeCents,
+    changeOwnerKeyHex: ownerKey,
+    dgbChangeSats,
+    dgbChangeScriptHex: bytesToHex(p2wpkhScript(privKeyHex)),
+  });
+
+  const version = buildDDVersion('redeem');
+  const locktime = collateralUtxo.lockHeight;
+  const leafHash = normalRedemptionLeafHash(leafParams);
+  const rawKey = hexToBytes(privKeyHex); // leaf CHECKSIG verifies the UNTWEAKED owner key
+  const tweakedKey = hexToBytes(tapTweakPrivKey(privKeyHex));
+
+  const witnesses = inputs.map((_, inputIndex) => {
+    if (inputIndex === 0) {
+      const sighash = taprootSighash({ version, locktime, inputs, outputs, inputIndex, leafHash });
+      return [
+        schnorr.sign(sighash, rawKey),
+        hexToBytes(normalRedemptionLeafHex(leafParams)),
+        hexToBytes(collateralControlBlockHex(leafParams)),
+      ];
+    }
+    return [schnorr.sign(taprootSighash({ version, locktime, inputs, outputs, inputIndex }), tweakedKey)];
+  });
+
+  const hex = serializeTx({ version, locktime, inputs, outputs, witnesses });
   return { hex, ddChangeCents, dgbChangeSats };
 }
 

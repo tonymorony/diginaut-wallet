@@ -65,7 +65,7 @@ test('JS-built mint is accepted by Core and mined (differential gate)', { skip: 
   // …and it gets mined.
   await rpc('generatetoaddress', [1, minerAddr], 'stand');
   const mined = await rpc('getrawtransaction', [mintTxid, true]);
-  assert.equal(mined.confirmations, 1);
+  assert.ok(mined.confirmations >= 1); // >=1: parallel test files may mine extra blocks
   assert.equal(mined.version >>> 0, 0x01000770); // DD mint marker
   assert.equal(BigInt(Math.round(mined.vout[0].value * 1e8)), collateralSats);
 
@@ -99,6 +99,6 @@ test('JS-built mints are accepted across all ten lock tiers', { skip: !RPC_URL &
     const txid = await rpc('sendrawtransaction', [hex]);
     await rpc('generatetoaddress', [1, minerAddr], 'stand');
     const mined = await rpc('getrawtransaction', [txid, true]);
-    assert.equal(mined.confirmations, 1, `tier ${tier.id} not mined`);
+    assert.ok(mined.confirmations >= 1, `tier ${tier.id} not mined`);
   }
 });

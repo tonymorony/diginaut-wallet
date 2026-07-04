@@ -16,16 +16,19 @@ export const COLLATERAL_NUMS_KEY = '50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec
 const hexToBytes = (hex) => Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)));
 const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-/** BIP-341 output key: lift_x(internal) + H_TapTweak(internal || root?) · G */
-function tapTweakOutputKey(internalKeyHex, merkleRoot /* Uint8Array | undefined */) {
+/** BIP-341 output key: lift_x(internal) + H_TapTweak(internal || root?) · G. Returns x + y-parity. */
+function tapTweakOutputKeyWithParity(internalKeyHex, merkleRoot /* Uint8Array | undefined */) {
   const internal = hexToBytes(internalKeyHex);
   const data = merkleRoot ? new Uint8Array([...internal, ...merkleRoot]) : internal;
   const t = BigInt('0x' + bytesToHex(taggedHash('TapTweak', data)));
   if (t >= CURVE_N) throw new RangeError('tap tweak overflow');
   const P = schnorr.utils.lift_x(BigInt('0x' + internalKeyHex));
-  const Q = P.add(Point.BASE.multiply(t));
-  return Q.toAffine().x.toString(16).padStart(64, '0');
+  const Q = P.add(Point.BASE.multiply(t)).toAffine();
+  return { xHex: Q.x.toString(16).padStart(64, '0'), parity: Number(Q.y & 1n) };
 }
+
+const tapTweakOutputKey = (internalKeyHex, merkleRoot) =>
+  tapTweakOutputKeyWithParity(internalKeyHex, merkleRoot).xHex;
 
 /**
  * DD token P2TR output key (vout[1] of a mint): the owner's x-only key,
@@ -104,4 +107,28 @@ export function collateralOutputKey({ ownerKeyHex, lockHeight, ddCents }) {
     tapLeafHash(errRedemptionScript(params)),
   );
   return tapTweakOutputKey(COLLATERAL_NUMS_KEY, root);
+}
+
+/** The Normal redemption leaf script (hex) — the script revealed when redeeming. */
+export function normalRedemptionLeafHex({ ownerKeyHex, lockHeight, ddCents }) {
+  if (!/^[0-9a-f]{64}$/.test(ownerKeyHex)) throw new RangeError('owner key must be 32-byte hex');
+  return bytesToHex(normalRedemptionScript({ ownerKey: hexToBytes(ownerKeyHex), lockHeight, ddCents }));
+}
+
+/** BIP-341 tapleaf hash of the Normal redemption leaf (Uint8Array) — for script-path sighash. */
+export function normalRedemptionLeafHash(params) {
+  return tapLeafHash(hexToBytes(normalRedemptionLeafHex(params)));
+}
+
+/**
+ * Control block (hex) for spending the collateral via the Normal leaf:
+ * (0xc0 | output-key parity) ++ NUMS internal key ++ ERR-leaf sibling hash.
+ */
+export function collateralControlBlockHex({ ownerKeyHex, lockHeight, ddCents }) {
+  if (!/^[0-9a-f]{64}$/.test(ownerKeyHex)) throw new RangeError('owner key must be 32-byte hex');
+  const params = { ownerKey: hexToBytes(ownerKeyHex), lockHeight, ddCents };
+  const errLeafHash = tapLeafHash(errRedemptionScript(params));
+  const root = tapBranchHash(tapLeafHash(normalRedemptionScript(params)), errLeafHash);
+  const { parity } = tapTweakOutputKeyWithParity(COLLATERAL_NUMS_KEY, root);
+  return bytesToHex(Uint8Array.from([LEAF_VERSION | parity])) + COLLATERAL_NUMS_KEY + bytesToHex(errLeafHash);
 }
