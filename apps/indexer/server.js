@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { decodeWitnessAddress, parseDDVersion, parseMintMetadata, ddTokenOutputKey, LOCK_TIERS } from 'digidollar-js';
+import { decodeWitnessAddress, parseDDVersion, parseMintMetadata, parseTransferMetadata, parseRedeemMetadata, ddTokenOutputKey, LOCK_TIERS } from 'digidollar-js';
 
 export function configFromEnv() {
   return {
@@ -130,6 +130,43 @@ async function scanPositions(withElectrum, programHex, history) {
   return positions;
 }
 
+// ---- DigiDollar spendable balance (#15) ----
+// DD amounts are not on the UTXO itself (zero value): the creating tx's
+// OP_RETURN lists cents which consensus pairs POSITIONALLY with the tx's
+// zero-value canonical P2TR outputs, in output order (mint: [ddCents],
+// transfer: amountsCents, redeem: [ddChangeCents]).
+function ddAmountsByVout(tx) {
+  const type = parseDDVersion(tx.version).type;
+  if (!type) return null;
+  const opReturn = tx.vout.find((o) => o.scriptPubKey.hex.startsWith('6a'));
+  let amounts;
+  try {
+    if (type === 'mint') amounts = [parseMintMetadata(opReturn.scriptPubKey.hex).ddCents];
+    else if (type === 'transfer') amounts = parseTransferMetadata(opReturn.scriptPubKey.hex).amountsCents;
+    else if (type === 'redeem') amounts = opReturn ? [parseRedeemMetadata(opReturn.scriptPubKey.hex).ddChangeCents] : [];
+    else return null;
+  } catch {
+    return null; // DD-marked but malformed — carries no DD value
+  }
+  const ddVouts = tx.vout.filter((o) => o.value === 0 && o.scriptPubKey.hex.startsWith('5120'));
+  return new Map(ddVouts.map((o, i) => [o.n, amounts[i]]).filter(([, cents]) => cents !== undefined));
+}
+
+/** Resolve the address's zero-value UTXOs to DD cents via their creating txs. */
+async function scanDDUtxos(withElectrum, unspent) {
+  const out = [];
+  const txCache = new Map();
+  for (const u of unspent.filter((x) => x.value === 0)) {
+    if (!txCache.has(u.tx_hash)) {
+      txCache.set(u.tx_hash, ddAmountsByVout(await withElectrum('blockchain.transaction.get', [u.tx_hash, true])));
+    }
+    const cents = txCache.get(u.tx_hash)?.get(u.tx_pos);
+    if (cents === undefined) continue; // zero-value but not a DD token output
+    out.push({ txid: u.tx_hash, vout: u.tx_pos, cents: String(cents), height: u.height });
+  }
+  return out;
+}
+
 function scriptPubKeyToScripthash(spkHex) {
   return createHash('sha256').update(Buffer.from(spkHex, 'hex')).digest().reverse().toString('hex');
 }
@@ -154,7 +191,7 @@ export function startServer(overrides = {}) {
 
   const server = createServer(async (req, res) => {
     try {
-      const match = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions)$/);
+      const match = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions|dd-utxos)$/);
       if (req.method === 'GET' && match) {
         const [, address, what] = match;
         let scripthash, programHex;
@@ -163,6 +200,12 @@ export function startServer(overrides = {}) {
           scripthash = addressToScripthash(address, config.hrp);
         } catch (e) {
           return sendJson(res, 400, { error: `invalid address: ${e.message}` });
+        }
+        if (what === 'dd-utxos') {
+          const unspent = await withElectrum('blockchain.scripthash.listunspent', [scripthash]);
+          const utxos = await scanDDUtxos(withElectrum, unspent);
+          const totalCents = utxos.reduce((s, u) => s + BigInt(u.cents), 0n);
+          return sendJson(res, 200, { address, totalCents: String(totalCents), utxos });
         }
         if (what === 'positions') {
           const history = await withElectrum('blockchain.scripthash.get_history', [scripthash]);

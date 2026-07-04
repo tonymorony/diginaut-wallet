@@ -169,6 +169,61 @@ test('positions: a redeemed mint (collateral spent) is no longer an open positio
   }, POSITION_HANDLERS(false));
 });
 
+// ---- DigiDollar spendable balance (#15) ----
+// DD tokens live in zero-value P2TR outputs; their amounts come from the
+// creating tx's OP_RETURN, paired positionally (mint: [ddCents], transfer:
+// amountsCents in output order). dd-utxos resolves each zero-value UTXO on the
+// address to its DD cents so the wallet can display and spend DigiDollar.
+const TRANSFER_RECIPIENT_ADDR = TRANSFER.vout[0].scriptPubKey.address;
+const TRANSFER_RECIPIENT_SCRIPTHASH = scripthashOfHex(TRANSFER.vout[0].scriptPubKey.hex);
+
+const DD_UTXO_HANDLERS = {
+  'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+  'blockchain.headers.subscribe': () => ({ height: 1825, hex: '00' }),
+  'blockchain.scripthash.listunspent': (params) => {
+    if (params[0] === OWNER_SCRIPTHASH) {
+      return [
+        { tx_hash: MINT.txid, tx_pos: 1, value: 0, height: 1800 },     // fresh mint DD
+        { tx_hash: TRANSFER.txid, tx_pos: 1, value: 0, height: 1810 }, // DD change of a transfer
+        { tx_hash: 'aa'.repeat(32), tx_pos: 0, value: 150_000_000, height: 1805 }, // plain DGB
+      ];
+    }
+    if (params[0] === TRANSFER_RECIPIENT_SCRIPTHASH) {
+      return [{ tx_hash: TRANSFER.txid, tx_pos: 0, value: 0, height: 1810 }];
+    }
+    return [];
+  },
+  'blockchain.transaction.get': (params) => {
+    if (params[0] === MINT.txid) return MINT;
+    if (params[0] === TRANSFER.txid) return TRANSFER;
+    return { txid: params[0], version: 2, vout: [] };
+  },
+};
+
+test('dd-utxos: zero-value DD outputs resolve to cents (mint full amount, transfer change)', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/address/${OWNER_ADDR}/dd-utxos`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      address: OWNER_ADDR,
+      totalCents: '17000', // $100 mint + $70 transfer change
+      utxos: [
+        { txid: MINT.txid, vout: 1, cents: '10000', height: 1800 },
+        { txid: TRANSFER.txid, vout: 1, cents: '7000', height: 1810 },
+      ],
+    });
+  }, DD_UTXO_HANDLERS);
+});
+
+test('dd-utxos: a transfer RECIPIENT sees the positional amount for their output', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/address/${TRANSFER_RECIPIENT_ADDR}/dd-utxos`);
+    assert.deepEqual((await res.json()).utxos, [
+      { txid: TRANSFER.txid, vout: 0, cents: '3000', height: 1810 },
+    ]);
+  }, DD_UTXO_HANDLERS);
+});
+
 test('health reports the electrum tip height', async () => {
   await withIndexer(async (base) => {
     const res = await fetch(`${base}/api/health`);
