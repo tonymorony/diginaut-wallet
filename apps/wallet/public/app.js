@@ -53,7 +53,51 @@ function initCalculator() {
   const sel = $('c-tier');
   sel.innerHTML = LOCK_TIERS.map((t) => `<option value="${t.id}">${t.label} — ${t.ratioPercent}% collateral</option>`).join('');
   ['c-amount', 'c-tier', 'c-price'].forEach((id) => $(id).addEventListener('input', recalc));
+  enhanceSelect('c-tier');
   recalc();
+}
+
+// Kit Dropdown component over a hidden native <select> (the select stays the
+// source of truth, so scripts that set .value directly keep working).
+function enhanceSelect(id) {
+  const sel = $(id);
+  if (sel.parentNode.classList?.contains('dd')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'dd';
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  const trig = document.createElement('button');
+  trig.type = 'button';
+  trig.className = 'dd-trigger';
+  trig.innerHTML = '<span class="dd-label"></span><svg class="dd-caret" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 6l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const list = document.createElement('div');
+  list.className = 'dd-list';
+  wrap.append(trig, list);
+  const label = trig.querySelector('.dd-label');
+  const sync = () => { label.textContent = sel.selectedOptions[0]?.textContent ?? ''; };
+  const rebuild = () => {
+    list.innerHTML = '';
+    for (const o of sel.options) {
+      const el = document.createElement('div');
+      el.className = 'dd-option' + (o.value === sel.value ? ' selected' : '');
+      el.textContent = o.textContent;
+      el.addEventListener('click', () => {
+        sel.value = o.value;
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        sync();
+        wrap.classList.remove('open');
+      });
+      list.appendChild(el);
+    }
+  };
+  trig.addEventListener('click', () => {
+    const opening = !wrap.classList.contains('open');
+    document.querySelectorAll('.dd.open').forEach((d) => d.classList.remove('open'));
+    if (opening) { sync(); rebuild(); wrap.classList.add('open'); }
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) wrap.classList.remove('open'); });
+  sync();
 }
 
 // ---- Status ----
@@ -143,12 +187,59 @@ function show(state) {
   for (const s of ['loading', 'none', 'locked', 'open']) {
     $('w-' + s).style.display = s === state ? 'block' : 'none';
   }
+  // EVM-style corner control: Connect when idle, address chip when connected
+  const open = state === 'open';
+  $('w-connect').style.display = open || state === 'loading' ? 'none' : 'inline-block';
+  $('w-chip').style.display = open ? 'inline-flex' : 'none';
+  $('wallet-open-card').style.display = open ? 'block' : 'none';
+  if (open) {
+    if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
+  } else {
+    $('w-backup-view').style.display = 'none';
+  }
 }
+
+let freshMnemonicBackup = null; // set right after creating a NEW wallet, shown once
+
+function connectFormMode(mode) { // 'choice' | 'create' | 'restore'
+  $('w-choice').style.display = mode === 'choice' ? 'block' : 'none';
+  $('w-form').style.display = mode === 'choice' ? 'none' : 'block';
+  $('w-restore').style.display = mode === 'restore' ? 'block' : 'none';
+  $('w-create').style.display = mode === 'restore' ? 'none' : 'block';
+  $('w-restore-go').style.display = mode === 'restore' ? 'block' : 'none';
+  $('w-none-err').textContent = '';
+}
+function showBackupView() {
+  for (const id of ['w-choice', 'w-form']) $(id).style.display = 'none';
+  $('w-none').style.display = 'none';
+  document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Back up your seed phrase';
+  $('w-backup-view').style.display = 'block';
+  $('w-backup-words').textContent = freshMnemonicBackup;
+  $('w-connect-modal').classList.add('open');
+}
+function openConnectModal() {
+  connectFormMode('choice');
+  document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Connect wallet';
+  $('w-connect-modal').classList.add('open');
+}
+function closeConnectModal() {
+  $('w-connect-modal').classList.remove('open');
+  $('w-backup-words').textContent = ''; // never leave the seed in the DOM
+  freshMnemonicBackup = null;
+}
+$('w-create-choice').addEventListener('click', () => { connectFormMode('create'); $('w-create-pass').focus(); });
+$('w-form-back').addEventListener('click', () => connectFormMode('choice'));
+$('w-backup-done').addEventListener('click', closeConnectModal);
+$('w-connect').addEventListener('click', openConnectModal);
+$('w-modal-close').addEventListener('click', closeConnectModal);
+$('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) closeConnectModal(); });
+$('w-disconnect').addEventListener('click', () => lockWallet());
 
 function renderAddress() {
   const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
   $('w-path').textContent = path;
   $('w-address').textContent = address;
+  $('w-chip-addr').textContent = address.slice(0, 10) + '…' + address.slice(-4);
 }
 
 function openWallet(mnemonic) {
@@ -203,12 +294,13 @@ async function busy(btn, errId, fn) {
 }
 
 $('w-create').addEventListener('click', (e) =>
-  busy(e.target, 'w-none-err', () => createOrRestore(generateMnemonic())));
+  busy(e.target, 'w-none-err', () => {
+    const mnemonic = generateMnemonic();
+    freshMnemonicBackup = mnemonic; // shown once in the backup view, then wiped
+    return createOrRestore(mnemonic);
+  }));
 
-$('w-show-restore').addEventListener('click', () => {
-  const box = $('w-restore');
-  box.style.display = box.style.display === 'none' ? 'block' : 'none';
-});
+$('w-show-restore').addEventListener('click', () => { connectFormMode('restore'); $('w-restore-seed').focus(); });
 
 $('w-restore-go').addEventListener('click', (e) =>
   busy(e.target, 'w-none-err', async () => {
@@ -451,6 +543,7 @@ function initMintTiers() {
   $('w-mint-tier').innerHTML = LOCK_TIERS
     .map((t) => `<option value="${t.id}">${t.label} — ${t.ratioPercent}% collateral</option>`)
     .join('');
+  enhanceSelect('w-mint-tier');
 }
 
 let pendingMint = null; // { utxo (with privKeyHex!), ddCents, tierId, priceMicroUsd } while confirming
