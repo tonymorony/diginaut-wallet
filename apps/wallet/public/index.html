@@ -25,15 +25,13 @@
       background: var(--bg); color: var(--text); min-height: 100vh;
       -webkit-font-smoothing: antialiased;
     }
-    header { padding: 30px 20px 6px; max-width: 920px; margin: 0 auto; }
-    header h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
-    header .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
-    .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; vertical-align: middle; margin-left: 10px; letter-spacing: .02em; }
+    /* v3: narrow single column like a phone-first crypto wallet */
+    header { padding: 22px 20px 4px; max-width: 520px; margin: 0 auto; }
+    .badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; vertical-align: middle; letter-spacing: .02em; }
     .badge.mock { background: var(--warn-bg); color: var(--warn); }
     .badge.real { background: var(--good-bg); color: var(--good); }
-    main { max-width: 920px; margin: 0 auto; padding: 14px 20px 60px; display: grid; gap: 14px; }
+    main { max-width: 520px; margin: 0 auto; padding: 12px 20px 60px; display: grid; gap: 14px; }
     .grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
-    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
     .card { background: var(--card); border-radius: var(--radius); padding: 22px; box-shadow: 0 1px 2px rgba(21,24,30,.04); }
     .card h2 { margin: 0 0 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--gray-500); }
     .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--gray-100); }
@@ -75,13 +73,20 @@
       font-size: 12px; font-weight: 600; letter-spacing: .02em;
     }
     a { color: var(--accent); }
-    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-    .logo { display: flex; align-items: center; gap: 10px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .logo { display: flex; align-items: center; gap: 8px; }
     .corner { display: flex; align-items: center; gap: 8px; }
     .chip-btn { width: auto; margin: 0; padding: 9px 14px; font-size: 13px; }
     #w-chip { display: inline-flex; align-items: center; gap: 10px; background: #fff; border-radius: 999px; padding: 5px 6px 5px 14px; box-shadow: 0 1px 2px rgba(21,24,30,.06); }
-    #w-chip .mono { font-size: 12px; color: var(--gray-700); }
+    #w-chip .mono { font-size: 12px; color: var(--gray-700); white-space: nowrap; word-break: normal; }
+    .topbar { flex-wrap: wrap; }
     #w-chip .chip-btn { border-radius: 999px; padding: 7px 12px; }
+    /* header Network button: quiet chip with an aggregate status dot */
+    #net-btn { display: inline-flex; align-items: center; gap: 7px; margin: 0; width: auto;
+      background: #fff; color: var(--gray-700); border-radius: 999px; padding: 9px 14px; font-size: 13px;
+      box-shadow: 0 1px 2px rgba(21,24,30,.06); }
+    #net-btn:hover { background: var(--gray-50); box-shadow: inset 0 0 0 1px var(--gray-200); }
+    #net-btn .dot { margin: 0; }
     .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(21,24,30,.45); z-index: 50; }
     .modal-backdrop.open { display: grid; place-items: center; }
     .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
@@ -105,14 +110,63 @@
     .dd-option:hover { background: var(--gray-100); }
     .dd-option.selected { background: #f6fbff; font-weight: 600; }
     .dd-option.selected::after { content: '✓'; color: var(--accent); font-weight: 700; }
-    /* wallet sub-sections read as separate blocks inside the card */
-    #w-mint, #w-transfer, #w-send { border-top: 1px solid var(--gray-100); margin-top: 20px; padding-top: 8px; }
     /* confirmation screens sit on gray like the kit's modal inner blocks */
     #w-mint-confirm, #w-tr-confirm, #w-send-confirm, #w-redeem-confirm {
       background: var(--gray-100); border-radius: var(--radius-s); padding: 8px 16px 14px; margin-top: 14px;
     }
     #w-mint-confirm .row, #w-tr-confirm .row, #w-send-confirm .row, #w-redeem-confirm .row { border-bottom-color: var(--gray-200); }
     #w-mint-confirm button, #w-tr-confirm button, #w-send-confirm button, #w-redeem-confirm button { margin-top: 12px; }
+
+    /* ---- v3 hero: balance + action pills ---- */
+    .money-grid { display: grid; gap: 14px; }
+    #wallet-open-card, #w-open { display: grid; gap: 14px; }
+    .hero { text-align: center; padding: 30px 22px 24px; }
+    .hero .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--gray-500); }
+    .hero .balance { font-size: 40px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; margin-top: 6px; }
+    .hero .balance small { font-size: 18px; font-weight: 600; color: var(--gray-500); }
+    .hero .usd { color: var(--muted); font-size: 15px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .actions { display: flex; gap: 10px; margin-top: 20px; }
+    .action { flex: 1; display: grid; place-items: center; gap: 5px; margin: 0; padding: 13px 0 10px;
+      background: var(--gray-100); color: var(--text); border-radius: var(--radius); font-size: 12.5px; font-weight: 600; }
+    .action:hover { background: #f5f7fa; box-shadow: inset 0 0 0 1px var(--gray-200); }
+    .action svg { display: block; color: var(--accent); }
+    .action:disabled { opacity: .45; }
+    /* guest hero (no wallet / locked) */
+    .guest { text-align: center; padding: 36px 22px; }
+    .guest img { height: 44px; }
+    .guest h1 { margin: 14px 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
+    .guest p { margin: 0 auto; max-width: 320px; color: var(--muted); font-size: 13.5px; }
+    .guest button { max-width: 260px; }
+    /* price chart */
+    .price-head { display: flex; justify-content: space-between; align-items: baseline; }
+    .price-now { font-size: 22px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+    .price-delta { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .price-delta.up { color: var(--good); } .price-delta.down { color: var(--bad); }
+    .chart-wrap { position: relative; margin-top: 12px; }
+    .chart-wrap svg { display: block; width: 100%; height: 96px; }
+    .chart-tip { position: absolute; pointer-events: none; display: none; transform: translate(-50%, 0);
+      background: #fff; border-radius: var(--radius-s); box-shadow: 0 1px 5px rgba(38,38,38,.12), 0 6px 18px rgba(21,24,30,.12);
+      padding: 6px 10px; font-size: 12px; white-space: nowrap; z-index: 5; }
+    .chart-tip .tv { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .chart-tip .tk { color: var(--muted); margin-left: 6px; }
+    /* asset rows */
+    .asset { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--gray-100); }
+    .asset:last-child { border-bottom: 0; }
+    .asset-ic { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
+      font-weight: 700; font-size: 15px; flex: none; background: var(--accent); color: #fff; }
+    .asset-ic.dd { background: var(--accent-5); color: var(--accent); }
+    .asset-name { font-weight: 600; }
+    .asset-sub { font-size: 12px; color: var(--muted); }
+    .asset-amt { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
+    .asset-amt .a1 { font-weight: 600; }
+    .asset-amt .a2 { font-size: 12px; color: var(--muted); }
+    /* send modal: the asset dropdown decides which form shows — via classes on
+       the modal (NOT inline styles: verify drivers read w-send/w-transfer
+       inline display and clicks must keep working on the hidden form) */
+    #send-modal .send-forms > div { display: none; }
+    #send-modal.asset-dgb #w-send { display: block; }
+    #send-modal.asset-dd #w-transfer { display: block; }
+    section[hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -120,77 +174,114 @@
   <header>
     <div class="topbar">
       <div class="logo" aria-label="DigiDollar">
-        <img src="/logo.png" alt="DigiDollar" style="height:32px;display:block" />
+        <img src="/logo.png" alt="DigiDollar" style="height:30px;display:block" />
         <span id="modeBadge" class="badge mock">loading…</span>
       </div>
       <div class="corner">
         <span id="w-chip" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
+        <button id="net-btn" title="Network status"><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
     </div>
-    <div class="sub">Decentralized USD stablecoin on DigiByte — testnet playground.</div>
   </header>
 
   <main>
-    <div class="grid">
-      <!-- Network / DigiDollar status -->
-      <section class="card">
-        <h2>Network &amp; DigiDollar</h2>
-        <div class="row"><span class="k">Chain</span><span class="v" id="s-chain">—</span></div>
-        <div class="row"><span class="k">Block height</span><span class="v" id="s-height">—</span></div>
-        <div class="row"><span class="k">DigiDollar softfork</span><span class="v" id="s-dd">—</span></div>
-        <div class="row"><span class="k">Taproot</span><span class="v" id="s-tr">—</span></div>
-        <div class="err" id="s-err"></div>
-      </section>
-
-      <!-- Oracle status -->
-      <section class="card">
-        <h2>Oracle price feed</h2>
-        <div class="row"><span class="k">DGB / USD</span><span class="v" id="o-price">—</span></div>
-        <div class="row"><span class="k">Consensus</span><span class="v" id="o-consensus">—</span></div>
-        <div class="row"><span class="k">Active oracles</span><span class="v" id="o-active">—</span></div>
-        <div class="oracles" id="o-grid"></div>
-        <div class="hint" id="o-hint"></div>
-      </section>
-    </div>
-
-    <!-- Mint calculator (pure client-side; works with no node) -->
-    <section class="card">
-      <h2>Mint calculator</h2>
-      <div class="grid">
-        <div>
-          <label for="c-amount">DigiDollar to mint (USD)</label>
-          <input id="c-amount" type="number" min="0" step="1" value="100" />
-
-          <label for="c-tier">Lock period</label>
-          <select id="c-tier"></select>
-
-          <label for="c-price">DGB price (USD) <span id="c-pricesrc" class="hint" style="display:inline"></span></label>
-          <input id="c-price" type="number" min="0" step="0.0001" value="0.01342" />
-        </div>
-        <div>
-          <div class="out">
-            <div class="row"><span class="k">Collateral ratio</span><span class="v" id="r-ratio">—</span></div>
-            <div class="row"><span class="k">Collateral (USD)</span><span class="v" id="r-usd">—</span></div>
-            <div class="row" style="border:0;padding-top:12px">
-              <span class="k">DGB to lock</span>
-              <span class="big" style="text-align:right"><span id="r-dgb">—</span> <small>DGB</small></span>
-            </div>
-          </div>
-          <div class="hint">
-            Lower collateral requires a longer lock: from 1000% at 1 hour down to 200% at 10 years.
-            Exact DigiByte Core v9.26 arithmetic incl. the 1% safety margin; assumes a healthy
-            system (no DCA surcharge).
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Wallet chrome lives in the top-right corner; no placeholder card (keys never leave this browser, ADR-0001) -->
+    <!-- boot placeholder (drivers key on w-loading via show()) -->
     <div id="wallet-card" style="display:none">
       <div id="w-loading">Loading wallet…</div>
       <div id="w-disconnected" style="display:none"></div>
     </div>
+
+    <!-- guest hero: no wallet yet / locked -->
+    <section class="card guest" id="hero-guest" style="display:none">
+      <img src="/logo.png" alt="" aria-hidden="true" />
+      <h1>DigiDollar wallet</h1>
+      <p>Decentralized USD stablecoin on DigiByte. Keys are generated in this browser and never leave it.</p>
+      <button id="hero-connect">Connect wallet</button>
+    </section>
+
+    <!-- connected: hero balance + actions, then assets / DigiDollar / activity -->
+    <div id="wallet-open-card" style="display:none">
+    <div id="w-open" style="display:none">
+    <div id="w-money" class="money-grid" style="display:none">
+      <section class="card hero">
+        <div class="eyebrow">Total balance</div>
+        <div class="balance"><span id="w-balance">—</span> <small>DGB</small></div>
+        <div class="usd" id="w-balance-usd"></div>
+        <div class="row" id="w-pending-row" style="display:none;justify-content:center;border:0;padding:2px 0 0"><span class="k">Incoming (pending)</span><span class="v warn-text">+<span id="w-pending"></span> DGB</span></div>
+        <div class="actions">
+          <button class="action" id="act-send" type="button">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M3 13L13 3M13 3H6M13 3v7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Send</button>
+          <button class="action" id="act-receive" type="button">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M13 3L3 13M3 13h7M3 13V6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Receive</button>
+          <button class="action" id="act-mint" type="button">
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2"/><path d="M8 5.5v5M5.5 8h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Mint</button>
+        </div>
+      </section>
+
+      <!-- assets -->
+      <section class="card">
+        <h2>Assets</h2>
+        <div class="asset">
+          <div class="asset-ic">Ð</div>
+          <div><div class="asset-name">DigiByte</div><div class="asset-sub">DGB</div></div>
+          <div class="asset-amt"><div class="a1"><span id="as-dgb">—</span> DGB</div><div class="a2" id="as-dgb-usd"></div></div>
+        </div>
+        <div class="asset">
+          <div class="asset-ic dd">$</div>
+          <div><div class="asset-name">DigiDollar</div><div class="asset-sub">spendable</div></div>
+          <div class="asset-amt"><div class="a1">$<span id="w-dd-balance">0.00</span></div><div class="a2">USD-pegged</div></div>
+        </div>
+      </section>
+
+      <!-- DigiDollar positions (#13) + redeem (#16) -->
+      <section class="card">
+        <h2>DigiDollar positions</h2>
+        <div class="row" style="border:0;padding-top:0"><span class="k">Locked in positions</span><span class="v" id="w-dd-total"></span></div>
+        <div id="w-positions" class="hint" style="margin:6px 0 10px">No open positions.</div>
+        <div id="w-redeem-confirm" style="display:none">
+          <div class="row"><span class="k">Redeeming position</span><span class="v mono" id="w-rd-c-txid"></span></div>
+          <div class="row"><span class="k">Burning</span><span class="v">$<span id="w-rd-c-dd"></span></span></div>
+          <div class="row"><span class="k">Collateral returned</span><span class="v"><span id="w-rd-c-coll"></span> DGB</span></div>
+          <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-rd-c-fee"></span> DGB</span></div>
+          <div class="grid">
+            <button id="w-rd-go">Confirm &amp; redeem</button>
+            <button id="w-rd-cancel" class="secondary">Cancel</button>
+          </div>
+        </div>
+        <div class="hint" id="w-rd-out"></div>
+        <div class="err" id="w-rd-err"></div>
+        <button id="dd-mint-open" class="secondary">Mint DigiDollar</button>
+      </section>
+
+      <!-- activity -->
+      <section class="card">
+        <h2>Activity</h2>
+        <div id="w-history" class="hint" style="margin:0"></div>
+      </section>
+    </div>
+    <div class="err" id="w-open-err"></div>
+    </div>
+    </div>
+
+    <!-- DGB price (public: shows with or without a wallet) -->
+    <section class="card">
+      <div class="price-head">
+        <div>
+          <h2 style="margin-bottom:4px">DGB price</h2>
+          <div class="price-now" id="o-price">—</div>
+        </div>
+        <div class="price-delta" id="price-delta"></div>
+      </div>
+      <div class="chart-wrap" id="chart-wrap">
+        <svg id="price-chart" role="img" aria-label="DGB price, last 24 hours"></svg>
+        <div class="chart-tip" id="chart-tip"><span class="tv"></span><span class="tk"></span></div>
+      </div>
+      <div class="hint" id="price-hint"></div>
+    </section>
 
     <!-- Connect modal: create / restore / unlock (EVM-style corner flow) -->
     <div id="w-connect-modal" class="modal-backdrop">
@@ -240,58 +331,39 @@
       </div>
     </div>
 
-    <!-- unlocked wallet contents (main card) -->
-    <section class="card" id="wallet-open-card" style="display:none">
-      <h2>Wallet</h2>
-      <div id="w-open" style="display:none">
-        <div id="w-money" style="display:none">
-          <div class="row"><span class="k">Balance</span><span class="v"><span id="w-balance">—</span> DGB</span></div>
-          <div class="row" id="w-pending-row" style="display:none"><span class="k">Incoming (pending)</span><span class="v warn-text">+<span id="w-pending"></span> DGB</span></div>
-          <div id="w-history" class="hint" style="margin:6px 0 10px"></div>
-          <!-- DigiDollar (#15): spendable DD tokens, distinct from DGB and from locked positions -->
-          <div class="row"><span class="k">DigiDollar (spendable)</span><span class="v">$<span id="w-dd-balance">0.00</span></span></div>
-          <!-- DigiDollar positions (#13): locked mints, distinct from the DGB balance above -->
-          <div class="row"><span class="k">DigiDollar positions</span><span class="v" id="w-dd-total"></span></div>
-          <div id="w-positions" class="hint" style="margin:6px 0 10px">No open positions.</div>
-          <!-- Redeem DigiDollar (#16): same stablecoin feature flag; opens from a position's button -->
-          <div id="w-redeem-confirm" style="display:none">
-            <div class="row"><span class="k">Redeeming position</span><span class="v mono" id="w-rd-c-txid"></span></div>
-            <div class="row"><span class="k">Burning</span><span class="v">$<span id="w-rd-c-dd"></span></span></div>
-            <div class="row"><span class="k">Collateral returned</span><span class="v"><span id="w-rd-c-coll"></span> DGB</span></div>
-            <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-rd-c-fee"></span> DGB</span></div>
-            <div class="grid">
-              <button id="w-rd-go">Confirm &amp; redeem</button>
-              <button id="w-rd-cancel" class="secondary">Cancel</button>
-            </div>
-          </div>
-          <div class="hint" id="w-rd-out"></div>
-          <div class="err" id="w-rd-err"></div>
-          <!-- Mint DigiDollar (#14): client-signed. Ships together with
-               Transfer and Redeem as one unit (ADR-0002, release gate #17). -->
-          <div id="w-mint">
-            <label for="w-mint-amount">Mint DigiDollar — amount (DD)</label>
-            <input id="w-mint-amount" inputmode="decimal" autocomplete="off" placeholder="100" />
-            <label for="w-mint-tier">Lock tier</label>
-            <select id="w-mint-tier"></select>
-            <button id="w-mint-review">Review mint</button>
-            <!-- confirmation screen: nothing is signed until "Confirm & mint" -->
-            <div id="w-mint-confirm" style="display:none">
-              <div class="row"><span class="k">Minting</span><span class="v">$<span id="w-mint-c-dd"></span></span></div>
-              <div class="row"><span class="k">Collateral to lock</span><span class="v"><span id="w-mint-c-coll"></span> DGB</span></div>
-              <div class="row"><span class="k">Oracle price used</span><span class="v" id="w-mint-c-price"></span></div>
-              <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-mint-c-fee"></span> DGB</span></div>
-              <div class="row"><span class="k">Unlocks</span><span class="v" id="w-mint-c-unlock"></span></div>
+    <!-- Send modal: one flow, the asset dropdown picks DGB (#6) or DigiDollar (#15) -->
+    <div id="send-modal" class="modal-backdrop asset-dgb">
+      <div class="modal">
+        <div class="modal-head"><h3>Send</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <label for="send-asset">Asset</label>
+        <select id="send-asset">
+          <option value="dgb">DigiByte (DGB)</option>
+          <option value="dd">DigiDollar (USD)</option>
+        </select>
+        <div class="send-forms">
+          <!-- Send DGB (issue #6): built & signed client-side, node only relays -->
+          <div id="w-send">
+            <label for="w-send-to">Recipient address</label>
+            <input id="w-send-to" class="mono" placeholder="dgb…1…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <label for="w-send-amount">Amount (DGB)</label>
+            <input id="w-send-amount" inputmode="decimal" autocomplete="off" />
+            <button id="w-send-review">Review send</button>
+            <!-- confirmation screen: nothing is signed until "Confirm & send" -->
+            <div id="w-send-confirm" style="display:none">
+              <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-send-c-to" style="word-break:break-all"></span></div>
+              <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB</span></div>
+              <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-send-c-fee"></span> DGB</span></div>
               <div class="grid">
-                <button id="w-mint-go">Confirm &amp; mint</button>
-                <button id="w-mint-cancel" class="secondary">Cancel</button>
+                <button id="w-send-go">Confirm &amp; send</button>
+                <button id="w-send-cancel" class="secondary">Cancel</button>
               </div>
             </div>
-            <div class="hint" id="w-mint-out"></div>
-            <div class="err" id="w-mint-err"></div>
+            <div class="hint" id="w-send-out"></div>
+            <div class="err" id="w-send-err"></div>
           </div>
           <!-- Transfer DigiDollar (#15): ships together with Mint and Redeem (ADR-0002) -->
           <div id="w-transfer">
-            <label for="w-tr-to">Send DigiDollar — recipient address</label>
+            <label for="w-tr-to">Recipient address</label>
             <input id="w-tr-to" class="mono" placeholder="dgb…1p…" autocomplete="off" autocapitalize="off" spellcheck="false" />
             <label for="w-tr-amount">Amount (DD)</label>
             <input id="w-tr-amount" inputmode="decimal" autocomplete="off" placeholder="25" />
@@ -310,46 +382,96 @@
             <div class="hint" id="w-tr-out"></div>
             <div class="err" id="w-tr-err"></div>
           </div>
-          <!-- Send DGB (issue #6): built & signed client-side, node only relays -->
-          <div id="w-send">
-            <label for="w-send-to">Send DGB — recipient address</label>
-            <input id="w-send-to" class="mono" placeholder="dgb…1…" autocomplete="off" autocapitalize="off" spellcheck="false" />
-            <label for="w-send-amount">Amount (DGB)</label>
-            <input id="w-send-amount" inputmode="decimal" autocomplete="off" />
-            <button id="w-send-review">Review send</button>
-            <!-- confirmation screen: nothing is signed until "Confirm & send" -->
-            <div id="w-send-confirm" style="display:none">
-              <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-send-c-to" style="word-break:break-all"></span></div>
-              <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB</span></div>
-              <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-send-c-fee"></span> DGB</span></div>
-              <div class="grid">
-                <button id="w-send-go">Confirm &amp; send</button>
-                <button id="w-send-cancel" class="secondary">Cancel</button>
-              </div>
-            </div>
-            <div class="hint" id="w-send-out"></div>
-            <div class="err" id="w-send-err"></div>
-          </div>
         </div>
-        <div class="row"><span class="k">Receive address <span class="mono" id="w-path"></span></span><span></span></div>
-        <div class="out mono" id="w-address"></div>
+      </div>
+    </div>
+
+    <!-- Receive modal -->
+    <div id="receive-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Receive</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="row" style="border:0"><span class="k">Receive address <span class="mono" id="w-path"></span></span><span></span></div>
+        <div class="out mono" style="margin-top:0" id="w-address"></div>
         <div class="grid" style="margin-top:0">
           <button id="w-copy">Copy address</button>
           <button id="w-next" class="secondary">Next address</button>
         </div>
         <button id="w-faucet" style="display:none">Get testnet DGB</button>
         <div class="hint" id="w-faucet-out"></div>
-        <div class="grid">
-          <button id="w-backup" class="secondary">Show seed phrase</button>
-          <button id="w-lock" class="secondary">Lock wallet</button>
-        </div>
-        <div id="w-seed" style="display:none">
-          <p class="hint warn-text">Anyone with these words controls the wallet. Write them down; this is the only backup.</p>
-          <div class="out mono" id="w-seed-words"></div>
-        </div>
-        <div class="err" id="w-open-err"></div>
       </div>
-    </section>
+    </div>
+
+    <!-- Mint modal: Mint DigiDollar (#14), client-signed. Ships together with
+         Transfer and Redeem as one unit (ADR-0002, release gate #17). -->
+    <div id="mint-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Mint DigiDollar</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div id="w-mint">
+          <label for="w-mint-amount">Amount (DD)</label>
+          <input id="w-mint-amount" inputmode="decimal" autocomplete="off" placeholder="100" />
+          <label for="w-mint-tier">Lock tier</label>
+          <select id="w-mint-tier"></select>
+          <div class="hint" id="mint-estimate"></div>
+          <button id="w-mint-review">Review mint</button>
+          <!-- confirmation screen: nothing is signed until "Confirm & mint" -->
+          <div id="w-mint-confirm" style="display:none">
+            <div class="row"><span class="k">Minting</span><span class="v">$<span id="w-mint-c-dd"></span></span></div>
+            <div class="row"><span class="k">Collateral to lock</span><span class="v"><span id="w-mint-c-coll"></span> DGB</span></div>
+            <div class="row"><span class="k">Oracle price used</span><span class="v" id="w-mint-c-price"></span></div>
+            <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-mint-c-fee"></span> DGB</span></div>
+            <div class="row"><span class="k">Unlocks</span><span class="v" id="w-mint-c-unlock"></span></div>
+            <div class="grid">
+              <button id="w-mint-go">Confirm &amp; mint</button>
+              <button id="w-mint-cancel" class="secondary">Cancel</button>
+            </div>
+          </div>
+          <div class="hint" id="w-mint-out"></div>
+          <div class="err" id="w-mint-err"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Network modal: chain / softfork / oracle detail, plus wallet security -->
+    <div id="net-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Network</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="row"><span class="k">Chain</span><span class="v" id="s-chain">—</span></div>
+        <div class="row"><span class="k">Block height</span><span class="v" id="s-height">—</span></div>
+        <div class="row"><span class="k">DigiDollar softfork</span><span class="v" id="s-dd">—</span></div>
+        <div class="row"><span class="k">Taproot</span><span class="v" id="s-tr">—</span></div>
+        <div class="err" id="s-err"></div>
+        <h2 style="margin-top:18px">Oracle price feed</h2>
+        <div class="row"><span class="k">Consensus</span><span class="v" id="o-consensus">—</span></div>
+        <div class="row"><span class="k">Active oracles</span><span class="v" id="o-active">—</span></div>
+        <div class="oracles" id="o-grid"></div>
+        <div class="hint" id="o-hint"></div>
+        <div id="net-wallet-sec" style="display:none">
+          <h2 style="margin-top:18px">Wallet</h2>
+          <div class="grid">
+            <button id="w-backup" class="secondary">Show seed phrase</button>
+            <button id="w-lock" class="secondary">Lock wallet</button>
+          </div>
+          <div id="w-seed" style="display:none">
+            <p class="hint warn-text">Anyone with these words controls the wallet. Write them down; this is the only backup.</p>
+            <div class="out mono" id="w-seed-words"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Legacy mint calculator: hidden, kept alive — the c-* inputs stay the
+         oracle-seeded source for the mint estimate and drivers still set them -->
+    <div id="calc-legacy" style="display:none" aria-hidden="true">
+      <label for="c-amount">DigiDollar to mint (USD)</label>
+      <input id="c-amount" type="number" min="0" step="1" value="100" />
+      <label for="c-tier">Lock period</label>
+      <select id="c-tier"></select>
+      <label for="c-price">DGB price (USD) <span id="c-pricesrc" class="hint" style="display:inline"></span></label>
+      <input id="c-price" type="number" min="0" step="0.0001" value="0.01342" />
+      <div class="row"><span class="k">Collateral ratio</span><span class="v" id="r-ratio">—</span></div>
+      <div class="row"><span class="k">Collateral (USD)</span><span class="v" id="r-usd">—</span></div>
+      <div class="row"><span class="k">DGB to lock</span><span class="big"><span id="r-dgb">—</span> <small>DGB</small></span></div>
+    </div>
   </main>
 
 

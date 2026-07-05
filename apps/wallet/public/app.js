@@ -91,12 +91,16 @@ function enhanceSelect(id) {
       list.appendChild(el);
     }
   };
+  trig.setAttribute('aria-haspopup', 'listbox');
+  trig.setAttribute('aria-expanded', 'false');
   trig.addEventListener('click', () => {
     const opening = !wrap.classList.contains('open');
-    document.querySelectorAll('.dd.open').forEach((d) => d.classList.remove('open'));
+    document.querySelectorAll('.dd.open').forEach((d) => { d.classList.remove('open'); d.querySelector('.dd-trigger')?.setAttribute('aria-expanded', 'false'); });
     if (opening) { sync(); rebuild(); wrap.classList.add('open'); }
+    trig.setAttribute('aria-expanded', String(opening));
   });
-  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) wrap.classList.remove('open'); });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) { wrap.classList.remove('open'); trig.setAttribute('aria-expanded', 'false'); } });
+  sel.addEventListener('change', sync); // keyboard changes on the native select stay in sync
   sync();
 }
 
@@ -104,6 +108,14 @@ function enhanceSelect(id) {
 function statusLine(active, textActive, textInactive) {
   const cls = active ? 'good' : 'warn';
   return `<span class="dot ${cls}"></span>${active ? textActive : textInactive}`;
+}
+
+// header dot = aggregate of softfork state + oracle freshness
+const netHealth = { dd: null, oracle: null };
+function renderNetDot() {
+  const bad = netHealth.dd === false || netHealth.oracle === false;
+  const ok = netHealth.dd === true && netHealth.oracle === true;
+  $('net-dot').className = 'dot ' + (bad ? 'bad' : ok ? 'good' : 'warn');
 }
 
 async function loadStatus() {
@@ -127,12 +139,18 @@ async function loadStatus() {
     const tr = dep?.deployments?.taproot;
     const ddActive = dd?.active === true || dd?.bip9?.status === 'active';
     chainState.ddActive = ddActive; // the mint flow refuses to start when inactive
+    netHealth.dd = ddActive;
     $('s-dd').innerHTML = statusLine(ddActive, 'active', dd?.bip9?.status || 'not active');
     $('s-tr').innerHTML = statusLine(tr?.active === true, 'active', tr?.bip9?.status || 'not active');
   } catch (e) {
+    netHealth.dd = false;
     $('s-err').textContent += (e ? ' · deployment: ' + e.message : '');
   }
+  renderNetDot();
 }
+
+let lastPriceUsd = null; // feeds the fiat equivalents in the hero and asset rows
+let lastPriceMicroUsd = null; // feeds the live mint collateral estimate
 
 async function loadOracle() {
   try {
@@ -140,6 +158,11 @@ async function loadOracle() {
     if (price?.price_usd) {
       // sub-cent DGB prices need more than fmtUSD's 2 decimals
       $('o-price').textContent = '$' + price.price_usd.toLocaleString('en-US', { maximumFractionDigits: 5 }) + (price.is_stale ? ' (stale)' : '');
+      lastPriceUsd = price.price_usd;
+      if (price.price_micro_usd) lastPriceMicroUsd = BigInt(price.price_micro_usd);
+      netHealth.oracle = !price.is_stale;
+      renderFiat();
+      updateMintEstimate();
       // seed the calculator price with the live oracle price
       const priceInput = $('c-price');
       if (priceInput && !priceInput.dataset.touched) {
@@ -149,8 +172,10 @@ async function loadOracle() {
       }
     }
   } catch (e) {
+    netHealth.oracle = false;
     $('o-hint').innerHTML = `<span class="err">oracle: ${e.message}</span>`;
   }
+  renderNetDot();
   try {
     const list = await rpc('getoracles');
     if (Array.isArray(list) && list.length) {
@@ -185,18 +210,23 @@ const wallet = {
 
 function show(state) {
   for (const s of ['loading', 'none', 'locked', 'open']) {
-    $('w-' + s).style.display = s === state ? 'block' : 'none';
+    $('w-' + s).style.display = s === state ? (s === 'open' ? 'grid' : 'block') : 'none';
   }
   // EVM-style corner control: Connect when idle, address chip when connected
   const open = state === 'open';
+  $('hero-guest').style.display = state === 'none' || state === 'locked' ? 'block' : 'none';
   $('w-connect').style.display = open || state === 'loading' ? 'none' : 'inline-block';
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
-  $('wallet-open-card').style.display = open ? 'block' : 'none';
+  $('wallet-open-card').style.display = open ? 'grid' : 'none';
+  $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
   if (open) {
     if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
   } else {
     $('w-backup-view').style.display = 'none';
     $('w-backup-words').textContent = ''; // never leave a seed in the DOM
+    document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Connect wallet';
+    // action modals must not survive a lock/disconnect
+    for (const id of ['send-modal', 'receive-modal', 'mint-modal']) $(id).classList.remove('open');
   }
 }
 
@@ -230,7 +260,30 @@ function closeConnectModal() {
   $('w-connect-modal').classList.remove('open');
   $('w-backup-words').textContent = ''; // never leave the seed in the DOM
   freshMnemonicBackup = null;
+  // the backup view retitles the modal; don't let that leak into the next open
+  document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Connect wallet';
 }
+
+// ---- v3 action modals: Send / Receive / Mint / Network ----
+const openModal = (id) => $(id).classList.add('open');
+document.querySelectorAll('[data-close]').forEach((b) =>
+  b.addEventListener('click', () => b.closest('.modal-backdrop').classList.remove('open')));
+for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal']) {
+  $(id).addEventListener('click', (e) => { if (e.target === $(id)) $(id).classList.remove('open'); });
+}
+$('act-send').addEventListener('click', () => openModal('send-modal'));
+$('act-receive').addEventListener('click', () => openModal('receive-modal'));
+$('act-mint').addEventListener('click', () => { openModal('mint-modal'); updateMintEstimate(); });
+$('dd-mint-open').addEventListener('click', () => { openModal('mint-modal'); updateMintEstimate(); });
+$('net-btn').addEventListener('click', () => openModal('net-modal'));
+$('hero-connect').addEventListener('click', () => openConnectModal());
+// the asset dropdown decides which send form shows — via classes on the modal,
+// never inline styles on w-send/w-transfer (drivers read their inline display)
+$('send-asset').addEventListener('change', () => {
+  const dgb = $('send-asset').value === 'dgb';
+  $('send-modal').classList.toggle('asset-dgb', dgb);
+  $('send-modal').classList.toggle('asset-dd', !dgb);
+});
 $('w-create-choice').addEventListener('click', () => { connectFormMode('create'); $('w-create-pass').focus(); });
 $('w-form-back').addEventListener('click', () => connectFormMode('choice'));
 $('w-backup-done').addEventListener('click', closeConnectModal);
@@ -428,6 +481,9 @@ async function refreshMoney() {
     const confirmed = utxos.filter((u) => u.height > 0).reduce((n, u) => n + Number(u.valueSats), 0);
     const pending = utxos.filter((u) => u.height === 0).reduce((n, u) => n + Number(u.valueSats), 0);
     $('w-balance').textContent = fmtDGB(confirmed / 1e8);
+    $('as-dgb').textContent = fmtDGB(confirmed / 1e8);
+    lastConfirmedDgb = confirmed / 1e8;
+    renderFiat();
     $('w-pending-row').style.display = pending > 0 ? 'flex' : 'none';
     if (pending > 0) $('w-pending').textContent = fmtDGB(pending / 1e8);
 
@@ -448,10 +504,104 @@ async function refreshMoney() {
     const ddCents = perAddr.reduce((s, r) => s + r.ddCents, 0n);
     $('w-dd-balance').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
-    $('w-money').style.display = 'block';
+    $('w-money').style.display = 'grid';
   } catch (e) {
     $('w-open-err').textContent = 'indexer: ' + e.message;
   }
+}
+
+// fiat equivalents (hero + asset row) from the latest oracle price
+let lastConfirmedDgb = null;
+function renderFiat() {
+  const has = lastPriceUsd != null && lastConfirmedDgb != null;
+  $('w-balance-usd').textContent = has ? '≈ ' + fmtUSD(lastConfirmedDgb * lastPriceUsd) : '';
+  $('as-dgb-usd').textContent = has ? fmtUSD(lastConfirmedDgb * lastPriceUsd) : '';
+}
+
+// live collateral estimate in the mint modal (exact Core arithmetic, same
+// requiredCollateralSats the review step uses — just non-binding and instant)
+function updateMintEstimate() {
+  const el = $('mint-estimate');
+  try {
+    const cents = ddToCents($('w-mint-amount').value || '0');
+    if (cents <= 0n || lastPriceMicroUsd == null) { el.textContent = ''; return; }
+    const tier = LOCK_TIERS.find((t) => t.id === $('w-mint-tier').value) || LOCK_TIERS[0];
+    const sats = requiredCollateralSats({ ddCents: cents, tierId: tier.id, oraclePriceMicroUsd: lastPriceMicroUsd });
+    el.textContent = `≈ ${fmtSats(sats)} DGB collateral (${tier.ratioPercent}% · ${tier.label} lock)`;
+  } catch {
+    el.textContent = ''; // partial input while typing
+  }
+}
+$('w-mint-amount').addEventListener('input', updateMintEstimate);
+$('w-mint-tier').addEventListener('change', updateMintEstimate);
+
+// ---- DGB price sparkline (24h, /api/price-history) ----
+async function loadPriceChart() {
+  try {
+    const { series } = await (await fetch('/api/price-history')).json();
+    renderSparkline(series);
+  } catch { /* chart is decorative — never block the wallet on it */ }
+}
+
+function renderSparkline(series) {
+  const svg = $('price-chart');
+  const tip = $('chart-tip');
+  if (!Array.isArray(series) || series.length < 2) {
+    svg.replaceChildren();
+    $('price-delta').textContent = '';
+    $('price-hint').textContent = 'Collecting price history — the chart appears after a few samples.';
+    return;
+  }
+  $('price-hint').textContent = '';
+  const W = $('chart-wrap').clientWidth || 430;
+  const H = 96;
+  const PAD = 6;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const ts = series.map((p) => p.t);
+  const vs = series.map((p) => p.price_micro_usd);
+  const t0 = ts[0];
+  const t1 = ts[ts.length - 1];
+  let vMin = Math.min(...vs);
+  let vMax = Math.max(...vs);
+  if (vMin === vMax) { vMin -= 1; vMax += 1; } // flat series still draws a line
+  const x = (t) => PAD + ((t - t0) / (t1 - t0)) * (W - 2 * PAD);
+  const y = (v) => PAD + (1 - (v - vMin) / (vMax - vMin)) * (H - 2 * PAD);
+  const pts = series.map((p) => `${x(p.t).toFixed(1)},${y(p.price_micro_usd).toFixed(1)}`);
+  const line = 'M' + pts.join('L');
+  const last = series[series.length - 1];
+  // 2px accent line over a 10% wash; end-dot with a 2px surface ring
+  svg.innerHTML =
+    `<path d="${line}L${x(t1).toFixed(1)},${H}L${x(t0).toFixed(1)},${H}Z" fill="var(--accent)" opacity=".1"></path>` +
+    `<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>` +
+    `<line class="hair" y1="0" y2="${H}" stroke="var(--gray-300)" stroke-width="1" style="display:none"></line>` +
+    `<circle class="hover-dot" r="4" fill="var(--accent)" stroke="#fff" stroke-width="2" style="display:none"></circle>` +
+    `<circle cx="${x(last.t).toFixed(1)}" cy="${y(last.price_micro_usd).toFixed(1)}" r="4" fill="var(--accent)" stroke="#fff" stroke-width="2"></circle>`;
+  const delta = ((last.price_micro_usd - vs[0]) / vs[0]) * 100;
+  $('price-delta').textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}% · 24h`;
+  $('price-delta').className = 'price-delta ' + (delta >= 0 ? 'up' : 'down');
+  // crosshair snaps to the nearest sample; tooltip shows its value + time
+  const fmtP = (micro) => '$' + (micro / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 });
+  svg.onpointermove = (ev) => {
+    const rect = svg.getBoundingClientRect();
+    const tAt = t0 + ((ev.clientX - rect.left) / rect.width) * (t1 - t0);
+    let best = 0;
+    for (let i = 1; i < ts.length; i++) if (Math.abs(ts[i] - tAt) < Math.abs(ts[best] - tAt)) best = i;
+    const p = series[best];
+    const hair = svg.querySelector('.hair');
+    const dot = svg.querySelector('.hover-dot');
+    hair.setAttribute('x1', x(p.t)); hair.setAttribute('x2', x(p.t)); hair.style.display = '';
+    dot.setAttribute('cx', x(p.t)); dot.setAttribute('cy', y(p.price_micro_usd)); dot.style.display = '';
+    tip.querySelector('.tv').textContent = fmtP(p.price_micro_usd);
+    tip.querySelector('.tk').textContent = new Date(p.t * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    tip.style.left = `${(x(p.t) / W) * 100}%`;
+    tip.style.top = '0';
+    tip.style.display = 'block';
+  };
+  svg.onpointerleave = () => {
+    tip.style.display = 'none';
+    svg.querySelector('.hair').style.display = 'none';
+    svg.querySelector('.hover-dot').style.display = 'none';
+  };
 }
 
 // ---- Send DGB (#6): plan → confirmation screen → sign → broadcast ----
@@ -831,6 +981,9 @@ async function boot() {
   // Stablecoin flows (mint/transfer/redeem) are always on, as one unit — the
   // release gate (#17) removed the feature flag per ADR-0002.
   initMintTiers();
+  enhanceSelect('send-asset');
+  loadPriceChart();
+  setInterval(loadPriceChart, 60_000);
   try {
     const cfg = await (await fetch('/api/config')).json();
     appConfig = cfg;
