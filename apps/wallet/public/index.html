@@ -118,8 +118,33 @@
     #w-mint-confirm button, #w-tr-confirm button, #w-send-confirm button, #w-redeem-confirm button { margin-top: 12px; }
 
     /* ---- v3 hero: balance + action pills ---- */
-    .money-grid { display: grid; gap: 14px; }
+    .money-grid, .money-col { display: grid; gap: 14px; align-content: start; }
     #wallet-open-card, #w-open { display: grid; gap: 14px; }
+    /* adaptive: single phone-like column by default, two columns on desktop */
+    @media (min-width: 960px) {
+      header, main { max-width: 1000px; }
+      .money-grid { grid-template-columns: 1.08fr .92fr; align-items: start; }
+    }
+    /* tier slider (mint modal): 7 discrete stops over the lock tiers */
+    .tier-picker { position: relative; background: var(--gray-100); border-radius: var(--radius-s); padding: 14px 16px 10px; }
+    .tier-picker > select { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; }
+    .tier-readout { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    #tier-name { font-weight: 600; font-size: 15px; }
+    #tier-ratio { font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-5); border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+    #tier-slider { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 6px; border-radius: 999px;
+      background: var(--gray-200); margin: 16px 0 8px; padding: 0; border: 0; outline: none; cursor: pointer; }
+    #tier-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
+      background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(21,24,30,.25); cursor: grab; }
+    #tier-slider::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(21,24,30,.25); cursor: grab; }
+    #tier-slider:focus-visible { box-shadow: 0 0 0 3px var(--accent-5); }
+    .tier-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+    /* the price block docked inside the hero card (connected state) */
+    .hero #price-block { text-align: left; margin: 18px 0 4px; }
+    .hero #price-block .price-now { font-size: 16px; }
+    .hero #price-block h2 { margin-bottom: 0; }
+    .hero #price-block .chart-wrap { margin-top: 8px; }
+    .hero #price-block .chart-wrap svg { height: 72px; }
+    .hero #w-faucet { margin-top: 12px; }
     .hero { text-align: center; padding: 30px 22px 24px; }
     .hero .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--gray-500); }
     .hero .balance { font-size: 40px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; margin-top: 6px; }
@@ -132,8 +157,8 @@
     .action svg { display: block; color: var(--accent); }
     .action:disabled { opacity: .45; }
     /* guest hero (no wallet / locked) */
-    .guest { text-align: center; padding: 36px 22px; }
-    .guest img { height: 44px; }
+    .guest { text-align: center; padding: 28px 22px 36px; }
+    .guest img.guest-art { width: min(300px, 80%); height: auto; }
     .guest h1 { margin: 14px 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
     .guest p { margin: 0 auto; max-width: 320px; color: var(--muted); font-size: 13.5px; }
     .guest button { max-width: 260px; }
@@ -194,7 +219,7 @@
 
     <!-- guest hero: no wallet yet / locked -->
     <section class="card guest" id="hero-guest" style="display:none">
-      <img src="/logo.png" alt="" aria-hidden="true" />
+      <img src="/hero-art.png" alt="" aria-hidden="true" class="guest-art" />
       <h1>DigiDollar wallet</h1>
       <p>Decentralized USD stablecoin on DigiByte. Keys are generated in this browser and never leave it.</p>
       <button id="hero-connect">Connect wallet</button>
@@ -202,13 +227,21 @@
 
     <!-- connected: hero balance + actions, then assets / DigiDollar / activity -->
     <div id="wallet-open-card" style="display:none">
+    <!-- shown between unlock and the first indexer answer -->
+    <section class="card guest" id="loading-veil" style="display:none">
+      <video src="/loading.mp4" autoplay loop muted playsinline style="width:min(300px,80%);border-radius:12px"></video>
+      <p class="hint" style="margin-top:10px">Syncing your wallet…</p>
+    </section>
     <div id="w-open" style="display:none">
     <div id="w-money" class="money-grid" style="display:none">
+      <div class="money-col" id="money-col-a">
       <section class="card hero">
         <div class="eyebrow">Total balance</div>
         <div class="balance"><span id="w-balance">—</span> <small>DGB</small></div>
         <div class="usd" id="w-balance-usd"></div>
         <div class="row" id="w-pending-row" style="display:none;justify-content:center;border:0;padding:2px 0 0"><span class="k">Incoming (pending)</span><span class="v warn-text">+<span id="w-pending"></span> DGB</span></div>
+        <!-- the DGB price block (#price-block) docks here while connected -->
+        <div id="price-slot-hero"></div>
         <div class="actions">
           <button class="action" id="act-send" type="button">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M3 13L13 3M13 3H6M13 3v7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -218,10 +251,14 @@
             Receive</button>
           <button class="action" id="act-mint" type="button">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2"/><path d="M8 5.5v5M5.5 8h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            Mint</button>
+            Mint DigiDollar</button>
         </div>
+        <button id="w-faucet" class="secondary" style="display:none">Get testnet DGB</button>
+        <div class="hint" id="w-faucet-out"></div>
       </section>
+      </div>
 
+      <div class="money-col" id="money-col-b">
       <!-- assets -->
       <section class="card">
         <h2>Assets</h2>
@@ -262,25 +299,31 @@
         <h2>Activity</h2>
         <div id="w-history" class="hint" style="margin:0"></div>
       </section>
+      </div>
     </div>
     <div class="err" id="w-open-err"></div>
     </div>
     </div>
 
-    <!-- DGB price (public: shows with or without a wallet) -->
-    <section class="card">
-      <div class="price-head">
-        <div>
-          <h2 style="margin-bottom:4px">DGB price</h2>
-          <div class="price-now" id="o-price">—</div>
+    <!-- DGB price (public: standalone card while no wallet; the same block
+         docks into the hero card when connected — moved by show()) -->
+    <section class="card" id="price-card">
+      <div id="price-slot-guest">
+        <div id="price-block">
+          <div class="price-head">
+            <div>
+              <h2 style="margin-bottom:4px">DGB price</h2>
+              <div class="price-now" id="o-price">—</div>
+            </div>
+            <div class="price-delta" id="price-delta"></div>
+          </div>
+          <div class="chart-wrap" id="chart-wrap">
+            <svg id="price-chart" role="img" aria-label="DGB price, last 24 hours"></svg>
+            <div class="chart-tip" id="chart-tip"><span class="tv"></span><span class="tk"></span></div>
+          </div>
+          <div class="hint" id="price-hint"></div>
         </div>
-        <div class="price-delta" id="price-delta"></div>
       </div>
-      <div class="chart-wrap" id="chart-wrap">
-        <svg id="price-chart" role="img" aria-label="DGB price, last 24 hours"></svg>
-        <div class="chart-tip" id="chart-tip"><span class="tv"></span><span class="tk"></span></div>
-      </div>
-      <div class="hint" id="price-hint"></div>
     </section>
 
     <!-- Connect modal: create / restore / unlock (EVM-style corner flow) -->
@@ -396,8 +439,6 @@
           <button id="w-copy">Copy address</button>
           <button id="w-next" class="secondary">Next address</button>
         </div>
-        <button id="w-faucet" style="display:none">Get testnet DGB</button>
-        <div class="hint" id="w-faucet-out"></div>
       </div>
     </div>
 
@@ -409,8 +450,14 @@
         <div id="w-mint">
           <label for="w-mint-amount">Amount (DD)</label>
           <input id="w-mint-amount" inputmode="decimal" autocomplete="off" placeholder="100" />
-          <label for="w-mint-tier">Lock tier</label>
-          <select id="w-mint-tier"></select>
+          <label for="tier-slider">Lock period — longer lock, less collateral</label>
+          <div class="tier-picker">
+            <!-- the native select stays the source of truth (drivers set .value) -->
+            <select id="w-mint-tier" aria-hidden="true" tabindex="-1"></select>
+            <div class="tier-readout"><span id="tier-name">—</span><span id="tier-ratio"></span></div>
+            <input type="range" id="tier-slider" min="0" max="6" step="1" value="0" aria-label="Lock tier" />
+            <div class="tier-scale"><span>1 hour</span><span>10 years</span></div>
+          </div>
           <div class="hint" id="mint-estimate"></div>
           <button id="w-mint-review">Review mint</button>
           <!-- confirmation screen: nothing is signed until "Confirm & mint" -->

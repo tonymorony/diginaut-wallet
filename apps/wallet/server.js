@@ -37,6 +37,8 @@ export function configFromEnv() {
     indexerUrl: process.env.INDEXER_URL || '',
     // Where the price sampler persists its series; unset = memory only.
     priceHistory: { dataFile: process.env.PRICE_HISTORY_FILE || '' },
+    // Block-explorer tx URL prefix (e.g. https://…/tx/); unset = plain txids.
+    explorerTxUrl: process.env.EXPLORER_TX_URL || '',
   };
 }
 
@@ -102,6 +104,7 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.mp4': 'video/mp4',
   '.ico': 'image/x-icon',
 };
 
@@ -294,7 +297,7 @@ export function startServer(overrides = {}) {
       if (req.method === 'GET' && req.url === '/api/price-history') {
         return sendJson(res, 200, { series: mockMode ? syntheticPriceSeries() : priceSeries, mock: mockMode });
       }
-      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl) });
+      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl), explorerTxUrl: config.explorerTxUrl });
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {

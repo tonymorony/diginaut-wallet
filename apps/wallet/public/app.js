@@ -93,10 +93,21 @@ function enhanceSelect(id) {
   };
   trig.setAttribute('aria-haspopup', 'listbox');
   trig.setAttribute('aria-expanded', 'false');
+  // Inside a modal the absolutely-positioned list would be clipped by the
+  // modal's own scroll box (double scrollbars) — escape it with position:fixed
+  // anchored to the trigger. Viewport coordinates, so the modal never scrolls.
+  const positionList = () => {
+    if (!wrap.closest('.modal')) return;
+    const r = trig.getBoundingClientRect();
+    Object.assign(list.style, {
+      position: 'fixed', left: r.left + 'px', right: 'auto',
+      top: r.bottom + 6 + 'px', width: r.width + 'px', zIndex: 70,
+    });
+  };
   trig.addEventListener('click', () => {
     const opening = !wrap.classList.contains('open');
     document.querySelectorAll('.dd.open').forEach((d) => { d.classList.remove('open'); d.querySelector('.dd-trigger')?.setAttribute('aria-expanded', 'false'); });
-    if (opening) { sync(); rebuild(); wrap.classList.add('open'); }
+    if (opening) { sync(); rebuild(); wrap.classList.add('open'); positionList(); }
     trig.setAttribute('aria-expanded', String(opening));
   });
   document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) { wrap.classList.remove('open'); trig.setAttribute('aria-expanded', 'false'); } });
@@ -228,6 +239,24 @@ function show(state) {
     // action modals must not survive a lock/disconnect
     for (const id of ['send-modal', 'receive-modal', 'mint-modal']) $(id).classList.remove('open');
   }
+  dockPriceBlock(open);
+  // loading veil covers the gap between unlock and the first indexer answer
+  $('loading-veil').style.display =
+    open && appConfig.indexer && $('w-money').style.display === 'none' ? 'block' : 'none';
+}
+
+// The price block lives inside the hero card while connected (chart right
+// under the balance, like the reference wallets) and as its own card
+// otherwise. Same node, one set of ids — just re-parented.
+function dockPriceBlock(open) {
+  const docked = open && appConfig.indexer;
+  const slot = $(docked ? 'price-slot-hero' : 'price-slot-guest');
+  const block = $('price-block');
+  if (block.parentNode !== slot) {
+    slot.appendChild(block);
+    renderSparkline(lastPriceSeries); // the new slot has a different width
+  }
+  $('price-card').style.display = docked ? 'none' : 'block';
 }
 
 let freshMnemonicBackup = null; // set right after creating a NEW wallet, shown once
@@ -499,13 +528,24 @@ async function refreshMoney() {
         ? '<span class="warn-text">pending</span>'
         : `<span style="color:var(--good)">confirmed</span>`;
       const amt = receivedByTx[h.txid] ? ` · +${fmtSats(receivedByTx[h.txid])} DGB` : '';
-      return `<div class="mono">${h.txid.slice(0, 12)}… ${status}${amt}</div>`;
+      // txids link out to the configured block explorer (EXPLORER_TX_URL)
+      const short = h.txid.slice(0, 12) + '…';
+      const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(h.txid)
+        ? `<a href="${appConfig.explorerTxUrl}${h.txid}" target="_blank" rel="noopener">${short}</a>`
+        : short;
+      return `<div class="mono">${label} ${status}${amt}</div>`;
     }).join('') || 'No transactions yet.';
     const ddCents = perAddr.reduce((s, r) => s + r.ddCents, 0n);
     $('w-dd-balance').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
+    // a transient indexer hiccup shouldn't leave a stale error after recovery
+    if ($('w-open-err').textContent.startsWith('indexer:')) $('w-open-err').textContent = '';
+    const firstShow = $('w-money').style.display === 'none';
+    $('loading-veil').style.display = 'none';
     $('w-money').style.display = 'grid';
+    if (firstShow) renderSparkline(lastPriceSeries); // real width only now
   } catch (e) {
+    $('loading-veil').style.display = 'none';
     $('w-open-err').textContent = 'indexer: ' + e.message;
   }
 }
@@ -536,12 +576,20 @@ $('w-mint-amount').addEventListener('input', updateMintEstimate);
 $('w-mint-tier').addEventListener('change', updateMintEstimate);
 
 // ---- DGB price sparkline (24h, /api/price-history) ----
+let lastPriceSeries = null; // cached so re-docking/resizing can re-render
 async function loadPriceChart() {
   try {
     const { series } = await (await fetch('/api/price-history')).json();
+    lastPriceSeries = series;
     renderSparkline(series);
   } catch { /* chart is decorative — never block the wallet on it */ }
 }
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => renderSparkline(lastPriceSeries), 200);
+});
 
 function renderSparkline(series) {
   const svg = $('price-chart');
@@ -554,29 +602,62 @@ function renderSparkline(series) {
   }
   $('price-hint').textContent = '';
   const W = $('chart-wrap').clientWidth || 430;
-  const H = 96;
+  const isDocked = Boolean($('price-block').closest('.hero'));
+  const H = isDocked ? 72 : 96;
   const PAD = 6;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  const ts = series.map((p) => p.t);
-  const vs = series.map((p) => p.price_micro_usd);
+  // Downsample to a calm neobank-style curve: ~fifty averaged buckets instead
+  // of every raw sample, then a Catmull-Rom smooth through them.
+  const TARGET = 48;
+  let pts = series;
+  if (series.length > TARGET) {
+    const step = series.length / TARGET;
+    pts = Array.from({ length: TARGET }, (_, i) => {
+      const chunk = series.slice(Math.floor(i * step), Math.max(Math.floor((i + 1) * step), Math.floor(i * step) + 1));
+      return {
+        t: chunk[chunk.length - 1].t,
+        price_micro_usd: chunk.reduce((s, p) => s + p.price_micro_usd, 0) / chunk.length,
+      };
+    });
+    pts[pts.length - 1] = series[series.length - 1]; // end on the live price
+  }
+  const ts = pts.map((p) => p.t);
+  const vs = pts.map((p) => p.price_micro_usd);
   const t0 = ts[0];
   const t1 = ts[ts.length - 1];
   let vMin = Math.min(...vs);
   let vMax = Math.max(...vs);
   if (vMin === vMax) { vMin -= 1; vMax += 1; } // flat series still draws a line
+  const pad = (vMax - vMin) * 0.08;
+  vMin -= pad; vMax += pad;
   const x = (t) => PAD + ((t - t0) / (t1 - t0)) * (W - 2 * PAD);
   const y = (v) => PAD + (1 - (v - vMin) / (vMax - vMin)) * (H - 2 * PAD);
-  const pts = series.map((p) => `${x(p.t).toFixed(1)},${y(p.price_micro_usd).toFixed(1)}`);
-  const line = 'M' + pts.join('L');
-  const last = series[series.length - 1];
-  // 2px accent line over a 10% wash; end-dot with a 2px surface ring
+  const P = pts.map((p) => [x(p.t), y(p.price_micro_usd)]);
+  // Catmull-Rom → cubic beziers: one flowing line, no jagged segments
+  let line = `M${P[0][0].toFixed(1)},${P[0][1].toFixed(1)}`;
+  for (let i = 0; i < P.length - 1; i++) {
+    const p0 = P[Math.max(0, i - 1)];
+    const p1 = P[i];
+    const p2 = P[i + 1];
+    const p3 = P[Math.min(P.length - 1, i + 2)];
+    line += `C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)},${(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ` +
+      `${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)},${(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ` +
+      `${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  const last = pts[pts.length - 1];
+  // 2px accent curve over a soft vertical gradient; end-dot with surface ring
   svg.innerHTML =
-    `<path d="${line}L${x(t1).toFixed(1)},${H}L${x(t0).toFixed(1)},${H}Z" fill="var(--accent)" opacity=".1"></path>` +
+    `<defs><linearGradient id="price-grad" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0" stop-color="var(--accent)" stop-opacity=".20"></stop>` +
+    `<stop offset="1" stop-color="var(--accent)" stop-opacity="0"></stop>` +
+    `</linearGradient></defs>` +
+    `<path d="${line}L${x(t1).toFixed(1)},${H}L${x(t0).toFixed(1)},${H}Z" fill="url(#price-grad)"></path>` +
     `<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>` +
     `<line class="hair" y1="0" y2="${H}" stroke="var(--gray-300)" stroke-width="1" style="display:none"></line>` +
     `<circle class="hover-dot" r="4" fill="var(--accent)" stroke="#fff" stroke-width="2" style="display:none"></circle>` +
     `<circle cx="${x(last.t).toFixed(1)}" cy="${y(last.price_micro_usd).toFixed(1)}" r="4" fill="var(--accent)" stroke="#fff" stroke-width="2"></circle>`;
-  const delta = ((last.price_micro_usd - vs[0]) / vs[0]) * 100;
+  const raw = series.map((p) => p.price_micro_usd);
+  const delta = ((raw[raw.length - 1] - raw[0]) / raw[0]) * 100;
   $('price-delta').textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}% · 24h`;
   $('price-delta').className = 'price-delta ' + (delta >= 0 ? 'up' : 'down');
   // crosshair snaps to the nearest sample; tooltip shows its value + time
@@ -586,7 +667,7 @@ function renderSparkline(series) {
     const tAt = t0 + ((ev.clientX - rect.left) / rect.width) * (t1 - t0);
     let best = 0;
     for (let i = 1; i < ts.length; i++) if (Math.abs(ts[i] - tAt) < Math.abs(ts[best] - tAt)) best = i;
-    const p = series[best];
+    const p = pts[best];
     const hair = svg.querySelector('.hair');
     const dot = svg.querySelector('.hover-dot');
     hair.setAttribute('x1', x(p.t)); hair.setAttribute('x2', x(p.t)); hair.style.display = '';
@@ -697,7 +778,25 @@ function initMintTiers() {
   $('w-mint-tier').innerHTML = LOCK_TIERS
     .map((t) => `<option value="${t.id}">${t.label} — ${t.ratioPercent}% collateral</option>`)
     .join('');
-  enhanceSelect('w-mint-tier');
+  // Tier slider UI over the hidden native select (still the source of truth —
+  // drivers keep setting .value on it directly).
+  const slider = $('tier-slider');
+  slider.max = String(LOCK_TIERS.length - 1);
+  const syncFromSelect = () => {
+    const i = Math.max(0, LOCK_TIERS.findIndex((t) => t.id === $('w-mint-tier').value));
+    const tier = LOCK_TIERS[i];
+    slider.value = String(i);
+    $('tier-name').textContent = tier.label;
+    $('tier-ratio').textContent = tier.ratioPercent + '% collateral';
+    const p = (i / (LOCK_TIERS.length - 1)) * 100;
+    slider.style.background = `linear-gradient(90deg, var(--accent) ${p}%, var(--gray-200) ${p}%)`;
+  };
+  slider.addEventListener('input', () => {
+    $('w-mint-tier').value = LOCK_TIERS[Number(slider.value)].id;
+    $('w-mint-tier').dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  $('w-mint-tier').addEventListener('change', syncFromSelect);
+  syncFromSelect();
 }
 
 let pendingMint = null; // { utxo (with privKeyHex!), ddCents, tierId, priceMicroUsd } while confirming

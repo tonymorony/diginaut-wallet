@@ -334,3 +334,17 @@ test('price history is a 24h window — older points are pruned', async () => {
     unlinkSync(dataFile);
   }
 });
+
+test('config exposes the block-explorer tx prefix so the UI can link txids', async () => {
+  const server = startServer({ port: 0, explorerTxUrl: 'https://testnet-explorer.example/tx/' });
+  await once(server, 'listening');
+  try {
+    const cfg = await (await fetch(`http://127.0.0.1:${server.address().port}/api/config`)).json();
+    assert.equal(cfg.explorerTxUrl, 'https://testnet-explorer.example/tx/');
+  } finally {
+    server.close();
+  }
+  await withServer(async (base) => {
+    assert.equal((await (await fetch(base + '/api/config')).json()).explorerTxUrl, '', 'unset by default');
+  });
+});
