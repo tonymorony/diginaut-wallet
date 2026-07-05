@@ -117,7 +117,7 @@ async function loadOracle() {
       $('o-grid').innerHTML = list
         .map((o, i) => {
           const on = o.is_active !== false;
-          const bg = on ? 'rgba(22,199,154,.18)' : 'rgba(255,92,114,.18)';
+          const bg = on ? 'var(--good-bg)' : 'var(--bad-bg)';
           const col = on ? 'var(--good)' : 'var(--bad)';
           return `<div class="oracle" style="background:${bg};color:${col}" title="${o.name ?? ''} ${o.pubkey ?? ''}">${o.oracle_id ?? i}</div>`;
         })
