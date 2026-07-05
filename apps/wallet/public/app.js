@@ -7,7 +7,7 @@ import {
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
-  buildSignedTransferTx, buildSignedRedeemTx,
+  buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 
@@ -70,6 +70,7 @@ async function loadStatus() {
     // derive receive addresses for the chain the node is actually on
     const net = { main: 'mainnet', test: 'testnet', regtest: 'regtest' }[info.chain];
     if (net) {
+      chainState.netName = net; // consensus DD limits are per-network
       wallet.network = HD_NETWORKS[net];
       if (wallet.seed) renderAddress();
     }
@@ -130,7 +131,7 @@ $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1
 
 // ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
 let appConfig = { mock: true, faucet: false, indexer: false };
-const chainState = { ddActive: null }; // null until getdeploymentinfo answers
+const chainState = { ddActive: null, netName: 'testnet' }; // refined from the node's chain
 const wallet = {
   mnemonic: null, // set only while unlocked
   seed: null,
@@ -472,6 +473,15 @@ $('w-mint-review').addEventListener('click', (e) =>
     }
     const ddCents = ddToCents($('w-mint-amount').value);
     if (ddCents <= 0n) throw new Error('amount must be positive');
+    // consensus limits — the node would reject with bad-dd-mint-amount AFTER signing
+    const limits = DD_TX_LIMITS[chainState.netName];
+    const fmtC = (c) => '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    if (ddCents < limits.minMintCents) {
+      throw new Error(`this network's consensus minimum is ${fmtC(limits.minMintCents)} per mint — enter at least that`);
+    }
+    if (ddCents > limits.maxMintCents) {
+      throw new Error(`this network's consensus maximum is ${fmtC(limits.maxMintCents)} per mint`);
+    }
     const tierId = $('w-mint-tier').value;
     const tier = LOCK_TIERS.find((t) => t.id === tierId);
     // 2. oracle gate — a stale quote would be rejected by mempool policy anyway
@@ -576,6 +586,10 @@ $('w-tr-review').addEventListener('click', (e) =>
     }
     const cents = ddToCents($('w-tr-amount').value);
     if (cents <= 0n) throw new Error('amount must be positive');
+    const trLimits = DD_TX_LIMITS[chainState.netName];
+    if (cents < trLimits.minOutputCents) {
+      throw new Error(`consensus forbids DigiDollar outputs below $${(Number(trLimits.minOutputCents) / 100).toFixed(2)} — send at least that`);
+    }
     const ddUtxos = await ddUtxosWithKeys();
     const totalCents = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
     const ddUtxo = ddUtxos.filter((u) => u.ddCents >= cents).sort((a, b) => (a.ddCents < b.ddCents ? -1 : 1))[0];

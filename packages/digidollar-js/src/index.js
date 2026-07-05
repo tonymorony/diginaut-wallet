@@ -68,3 +68,13 @@ export { ddTokenOutputKey, collateralOutputKey, normalRedemptionLeafHex, normalR
 export { encodeWitnessAddress, decodeWitnessAddress, scriptPubKeyFromAddress } from './address.js';
 export { buildSignedMintTx, buildSignedTransferTx, buildTransferOutputs, buildSignedRedeemTx, buildRedeemOutputs, planSpend, buildSignedSpendTx, serializeTx, xOnlyPubKey, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS, MIN_DD_TX_FEE_SATS, STANDARD_FEE_RATE_SATS_PER_KVB } from './txbuild.js';
 export { generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, p2wpkhAddress, HD_NETWORKS } from './hd.js';
+
+// Consensus DigiDollar transaction limits (v9.26.4: consensus/digidollar.h
+// defaults; kernel/chainparams.cpp regtest overrides). The node enforces these
+// at mempool/consensus level (bad-dd-mint-amount) — the wallet checks them
+// BEFORE signing so users get an actionable error, not a raw reject.
+export const DD_TX_LIMITS = Object.freeze({
+  mainnet: Object.freeze({ minMintCents: 10_000n, maxMintCents: 10_000_000n, minOutputCents: 100n }),
+  testnet: Object.freeze({ minMintCents: 10_000n, maxMintCents: 10_000_000n, minOutputCents: 100n }),
+  regtest: Object.freeze({ minMintCents: 1n, maxMintCents: 100_000n, minOutputCents: 100n }),
+});
