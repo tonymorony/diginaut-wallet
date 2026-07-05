@@ -82,7 +82,9 @@ await waitFor(`${text('w-balance')} === '1,000'`, 'both coins confirmed');
 await nodeRpc('setmockoracleprice', [13_420]);
 
 // ---- Error 1: insufficient funds — distinct message with the exact numbers.
-await setVal('w-mint-amount', '10000'); // $10k needs ~3.7M DGB at $0.01342
+// $1,000 is the regtest consensus MAXIMUM (DD_TX_LIMITS.regtest), so it passes
+// the wallet's pre-sign limit check yet still needs ~753k DGB at $0.01342.
+await setVal('w-mint-amount', '1000');
 await click('w-mint-review');
 await waitFor(`${text('w-mint-err')}.includes('insufficient funds')`, 'insufficient error');
 const errInsufficient = await evaluate(text('w-mint-err'));
