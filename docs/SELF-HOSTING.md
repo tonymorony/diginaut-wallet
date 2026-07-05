@@ -106,7 +106,7 @@ RPC_USER=dd RPC_PASS=$(openssl rand -hex 16) ./deploy/node-setup.sh
 
 # 3. the stack, with Caddy terminating HTTPS (Let's Encrypt, automatic)
 cd deploy && cp .env.example .env
-# .env: DGB_NET=testnet, DGB_HRP=dgbt, DOMAIN=<your hostname>,
+# .env: DGB_NET=testnet, DGB_HRP=dgbt, DOMAINS=<hostname[, hostname2…]>,
 #       RPC creds from step 1, DGB_RPC_URL/DAEMON_URL port 14022
 docker compose -f docker-compose.yml -f docker-compose.tls.yml up --build -d
 ```

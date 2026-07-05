@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DigiDollar · Testnet UI</title>
+  <title>Diginaut · DigiDollar testnet wallet</title>
+  <link rel="icon" type="image/png" href="/helmet.png" />
   <style>
     /* Design tokens — Stakinator UI kit (Figma master file, Colors pages) */
     :root {
@@ -138,12 +139,13 @@
     #tier-slider::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(21,24,30,.25); cursor: grab; }
     #tier-slider:focus-visible { box-shadow: 0 0 0 3px var(--accent-5); }
     .tier-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
-    /* the price block docked inside the hero card (connected state) */
+    /* the price block docked inside the hero card (connected state):
+       compact price row only — the full chart lives on the guest screen */
     .hero #price-block { text-align: left; margin: 18px 0 4px; }
-    .hero #price-block .price-now { font-size: 16px; }
-    .hero #price-block h2 { margin-bottom: 0; }
-    .hero #price-block .chart-wrap { margin-top: 8px; }
-    .hero #price-block .chart-wrap svg { height: 72px; }
+    .hero #price-block .price-head { align-items: baseline; }
+    .hero #price-block .price-now { font-size: 16px; display: inline; margin-left: 8px; }
+    .hero #price-block h2 { margin-bottom: 0; display: inline; }
+    .hero #price-block .chart-wrap, .hero #price-block #price-hint { display: none; }
     .hero #w-faucet { margin-top: 12px; }
     .hero { text-align: center; padding: 30px 22px 24px; }
     .hero .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--gray-500); }
@@ -158,7 +160,7 @@
     .action:disabled { opacity: .45; }
     /* guest hero (no wallet / locked) */
     .guest { text-align: center; padding: 28px 22px 36px; }
-    .guest img.guest-art { width: min(300px, 80%); height: auto; }
+    .guest img.guest-art { width: min(240px, 70%); height: auto; filter: drop-shadow(0 22px 18px rgba(21,24,30,.14)); }
     .guest h1 { margin: 14px 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
     .guest p { margin: 0 auto; max-width: 320px; color: var(--muted); font-size: 13.5px; }
     .guest button { max-width: 260px; }
@@ -198,8 +200,8 @@
   <div class="testnet-banner">TESTNET ONLY — no real value. Keys live in this browser; there is no server-side backup.</div>
   <header>
     <div class="topbar">
-      <div class="logo" aria-label="DigiDollar">
-        <img src="/logo.png" alt="DigiDollar" style="height:30px;display:block" />
+      <div class="logo" aria-label="Diginaut">
+        <img src="/logo.png" alt="Diginaut" style="height:30px;display:block" />
         <span id="modeBadge" class="badge mock">loading…</span>
       </div>
       <div class="corner">
@@ -220,8 +222,8 @@
     <!-- guest hero: no wallet yet / locked -->
     <section class="card guest" id="hero-guest" style="display:none">
       <img src="/hero-art.png" alt="" aria-hidden="true" class="guest-art" />
-      <h1>DigiDollar wallet</h1>
-      <p>Decentralized USD stablecoin on DigiByte. Keys are generated in this browser and never leave it.</p>
+      <h1>Diginaut</h1>
+      <p>The wallet for DigiByte &amp; DigiDollar — the decentralized USD stablecoin. Keys are generated in this browser and never leave it.</p>
       <button id="hero-connect">Connect wallet</button>
     </section>
 
