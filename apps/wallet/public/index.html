@@ -16,7 +16,8 @@
       --text:var(--gray-950); --muted:var(--gray-600);
       --good:#12a150; --good-bg:#e8f7ee; --bad:var(--primary-700); --bad-bg:var(--primary-100);
       --warn:#9a6700; --warn-bg:#fff3d1;
-      --radius:16px; --radius-s:10px;
+      --accent:#0b92f9; --accent-2:#44abfa; --accent-3:#a0d4fd; --accent-4:#c2e4fd; --accent-5:#ddf0fe;
+      --radius:16px; --radius-s:8px;
     }
     * { box-sizing: border-box; }
     body {
@@ -43,36 +44,67 @@
     .dot.good { background: var(--good); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
     label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-700); margin: 14px 0 6px; }
     input, select, textarea {
-      width: 100%; padding: 11px 14px; border-radius: var(--radius-s); border: 1px solid var(--border);
+      width: 100%; padding: 12px 16px; border-radius: var(--radius-s); border: 1px solid var(--border);
       background: #fff; color: var(--text); font: inherit; font-variant-numeric: tabular-nums;
       transition: border-color .12s, box-shadow .12s;
     }
-    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gray-500); box-shadow: 0 0 0 3px rgba(130,146,170,.15); }
+    input:hover, select:hover, textarea:hover { border-color: var(--gray-400); }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-5); }
     textarea { resize: vertical; }
     .out { margin-top: 16px; background: var(--gray-100); border-radius: var(--radius-s); padding: 14px 16px; }
     .out .big { font-size: 24px; font-weight: 600; letter-spacing: -.01em; }
     .out .big small { font-size: 13px; color: var(--muted); font-weight: 400; }
     button {
-      margin-top: 14px; width: 100%; padding: 12px 16px; border: 0; border-radius: var(--radius-s); cursor: pointer;
-      background: var(--gray-950); color: #fff; font: 600 14px/1 Inter, -apple-system, sans-serif;
-      transition: background .12s;
+      margin-top: 14px; width: 100%; padding: 10px 16px; border: 0; border-radius: var(--radius-s); cursor: pointer;
+      background: var(--gray-950); color: #fff; font: 600 14px/1.4 Inter, -apple-system, sans-serif;
+      transition: background .12s, border-color .12s;
     }
     button:hover { background: var(--gray-800); } button:disabled { opacity: .45; cursor: default; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     button.secondary { background: var(--gray-100); color: var(--text); }
-    button.secondary:hover { background: var(--gray-200); }
+    button.secondary:hover { background: #f5f7fa; box-shadow: inset 0 0 0 1px var(--gray-200); }
     .warn-text { color: var(--warn); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
     .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
     .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px,1fr)); gap: 5px; margin-top: 10px; }
     .oracle { height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
-    footer { max-width: 920px; margin: 0 auto; padding: 0 20px 40px; color: var(--gray-500); font-size: 12px; }
     .testnet-banner {
       position: sticky; top: 0; z-index: 10; text-align: center; padding: 8px 12px;
       background: var(--warn-bg); color: var(--warn);
       font-size: 12px; font-weight: 600; letter-spacing: .02em;
     }
-    a { color: var(--gray-700); }
+    a { color: var(--accent); }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    .logo { display: flex; align-items: center; gap: 10px; }
+    .corner { display: flex; align-items: center; gap: 8px; }
+    .chip-btn { width: auto; margin: 0; padding: 9px 14px; font-size: 13px; }
+    #w-chip { display: inline-flex; align-items: center; gap: 10px; background: #fff; border-radius: 999px; padding: 5px 6px 5px 14px; box-shadow: 0 1px 2px rgba(21,24,30,.06); }
+    #w-chip .mono { font-size: 12px; color: var(--gray-700); }
+    #w-chip .chip-btn { border-radius: 999px; padding: 7px 12px; }
+    .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(21,24,30,.45); z-index: 50; }
+    .modal-backdrop.open { display: grid; place-items: center; }
+    .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; }
+    .modal-head h3 { margin: 0; font-size: 16px; font-weight: 600; }
+    /* kit Dropdown: white r8 trigger, floating white r8 list (shadow 0 1px 5px) */
+    .dd { position: relative; }
+    .dd > select { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; }
+    .dd-trigger { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; margin: 0;
+      padding: 12px 16px; border-radius: var(--radius-s); border: 1px solid var(--border); background: #fff; color: var(--text);
+      font: inherit; cursor: pointer; text-align: left; transition: background .12s, border-color .12s; }
+    .dd-trigger:hover { background: var(--gray-50); border-color: var(--gray-400); }
+    .dd.open .dd-trigger { background: var(--gray-100); border-color: var(--gray-400); }
+    .dd-caret { transition: transform .15s; color: var(--gray-700); flex: none; }
+    .dd.open .dd-caret { transform: rotate(180deg); }
+    .dd-list { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; right: 0; background: #fff;
+      border-radius: var(--radius-s); padding: 8px; border: 1px solid var(--gray-100);
+      box-shadow: 0 1px 5px rgba(38,38,38,.1), 0 10px 28px rgba(21,24,30,.10); display: none; max-height: 300px; overflow: auto; }
+    .dd.open .dd-list { display: grid; gap: 4px; }
+    .dd-option { border-radius: 8px; padding: 9px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .dd-option:hover { background: var(--gray-100); }
+    .dd-option.selected { background: #f6fbff; font-weight: 600; }
+    .dd-option.selected::after { content: '✓'; color: var(--accent); font-weight: 700; }
     /* wallet sub-sections read as separate blocks inside the card */
     #w-mint, #w-transfer, #w-send { border-top: 1px solid var(--gray-100); margin-top: 20px; padding-top: 8px; }
     /* confirmation screens sit on gray like the kit's modal inner blocks */
@@ -86,8 +118,17 @@
 <body>
   <div class="testnet-banner">TESTNET ONLY — no real value. Keys live in this browser; there is no server-side backup.</div>
   <header>
-    <h1>DigiDollar <span style="color:var(--muted)">· Testnet UI</span><span id="modeBadge" class="badge mock">loading…</span></h1>
-    <div class="sub">Decentralized USD stablecoin on DigiByte — mint calculator, oracle health & address generation.</div>
+    <div class="topbar">
+      <div class="logo" aria-label="DigiDollar">
+        <img src="/logo.png" alt="DigiDollar" style="height:32px;display:block" />
+        <span id="modeBadge" class="badge mock">loading…</span>
+      </div>
+      <div class="corner">
+        <span id="w-chip" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
+        <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
+      </div>
+    </div>
+    <div class="sub">Decentralized USD stablecoin on DigiByte — testnet playground.</div>
   </header>
 
   <main>
@@ -145,26 +186,45 @@
       </div>
     </section>
 
-    <!-- Wallet: keys never leave this browser (ADR-0001) -->
-    <section class="card" id="wallet-card">
-      <h2>Wallet</h2>
-      <div id="w-loading" class="hint">Loading wallet…</div>
+    <!-- Wallet chrome lives in the top-right corner; no placeholder card (keys never leave this browser, ADR-0001) -->
+    <div id="wallet-card" style="display:none">
+      <div id="w-loading">Loading wallet…</div>
+      <div id="w-disconnected" style="display:none"></div>
+    </div>
 
-      <!-- no wallet yet -->
+    <!-- Connect modal: create / restore / unlock (EVM-style corner flow) -->
+    <div id="w-connect-modal" class="modal-backdrop">
+      <div class="modal">
+      <div class="modal-head"><h3>Connect wallet</h3><button id="w-modal-close" class="secondary chip-btn">Close</button></div>
+
+      <!-- no wallet yet: step 1 choose, step 2 fill -->
       <div id="w-none" style="display:none">
-        <p class="hint" style="margin-top:0">No wallet in this browser yet. Keys are generated locally and never sent anywhere.</p>
-        <label for="w-create-pass">Password (encrypts the wallet in this browser)</label>
-        <input id="w-create-pass" type="password" autocomplete="new-password" />
-        <label for="w-create-pass2">Repeat password</label>
-        <input id="w-create-pass2" type="password" autocomplete="new-password" />
-        <button id="w-create">Create new wallet</button>
-        <button id="w-show-restore" class="secondary">Restore from seed phrase</button>
-        <div id="w-restore" style="display:none">
-          <label for="w-restore-seed">Seed phrase (12 or 24 words)</label>
-          <textarea id="w-restore-seed" rows="3" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
-          <button id="w-restore-go">Restore wallet</button>
+        <div id="w-choice">
+          <p class="hint" style="margin-top:0">Your keys are generated in this browser and never sent anywhere. Pick how to start:</p>
+          <button id="w-create-choice">Create new wallet</button>
+          <button id="w-show-restore" class="secondary">I already have a seed phrase</button>
+        </div>
+        <div id="w-form" style="display:none">
+          <div id="w-restore" style="display:none">
+            <label for="w-restore-seed">Seed phrase (12 or 24 words)</label>
+            <textarea id="w-restore-seed" rows="3" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+          </div>
+          <label for="w-create-pass">Password <span class="hint" style="display:inline">— encrypts the wallet on this device only</span></label>
+          <input id="w-create-pass" type="password" autocomplete="new-password" />
+          <label for="w-create-pass2">Repeat password</label>
+          <input id="w-create-pass2" type="password" autocomplete="new-password" />
+          <button id="w-create">Create wallet</button>
+          <button id="w-restore-go" style="display:none">Restore wallet</button>
+          <button id="w-form-back" class="secondary">Back</button>
         </div>
         <div class="err" id="w-none-err"></div>
+      </div>
+
+      <!-- one-time backup right after creating a NEW wallet -->
+      <div id="w-backup-view" style="display:none">
+        <p class="hint warn-text" style="margin-top:0">This seed phrase is the ONLY backup of your new wallet. Anyone who has it controls the funds — write it down somewhere safe.</p>
+        <div class="out mono" id="w-backup-words"></div>
+        <button id="w-backup-done">I saved it — continue</button>
       </div>
 
       <!-- wallet exists, locked -->
@@ -177,7 +237,12 @@
         <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase this wallet</a> and restore from your seed phrase.</p>
       </div>
 
-      <!-- unlocked -->
+      </div>
+    </div>
+
+    <!-- unlocked wallet contents (main card) -->
+    <section class="card" id="wallet-open-card" style="display:none">
+      <h2>Wallet</h2>
       <div id="w-open" style="display:none">
         <div id="w-money" style="display:none">
           <div class="row"><span class="k">Balance</span><span class="v"><span id="w-balance">—</span> DGB</span></div>
@@ -287,9 +352,6 @@
     </section>
   </main>
 
-  <footer>
-    Runs against a DigiByte Core v9.26+ testnet node, or in mock mode. Fund-moving RPCs (mint/redeem) are intentionally not exposed to the browser.
-  </footer>
 
   <script type="importmap">
   {
