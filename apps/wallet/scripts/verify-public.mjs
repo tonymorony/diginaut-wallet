@@ -55,8 +55,16 @@ const setVal = (id, v) => evaluate(`{ const el = document.getElementById('${id}'
 const click = (id) => evaluate(`document.getElementById('${id}').click()`);
 let step = 0;
 const check = (cond, what) => { step++; console.log(`${cond ? '✅' : '❌'} ${step}. ${what}`); if (!cond) process.exitCode = 1; };
-const ddOf = async (addr) => BigInt(
-  (await (await fetch(`${APP}/api/indexer/address/${addr}/dd-utxos`)).json()).totalCents ?? 0);
+const ddOf = async (addr) => {
+  for (let i = 0; ; i++) { // real internet: tolerate transient connect timeouts
+    try {
+      return BigInt((await (await fetch(`${APP}/api/indexer/address/${addr}/dd-utxos`)).json()).totalCents ?? 0);
+    } catch (e) {
+      if (i >= 4) throw e;
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+};
 
 // ---- Live deployment health.
 const cfg = await (await fetch(`${APP}/api/config`)).json();
@@ -110,6 +118,19 @@ await waitFor(`${text('w-positions')}.includes('$100.00')`, 'position appears af
 check((await evaluate(text('w-positions'))).includes('locked until'),
   `position live with its CLTV state: "${(await evaluate(text('w-positions'))).slice(0, 90)}…"`);
 await waitFor(`${text('w-dd-balance')} === '100.00'`, 'spendable DigiDollar shows $100.00', 300_000);
+
+// ---- Self-send: the mint consumed the only P2TR coin (change sits on the
+// watched P2WPKH twin — #38), but a DD transfer needs its fee coin on the
+// DD-holding P2TR address. The Send flow spends the v0 change to top it up.
+const selfAddr = await evaluate(text('w-address'));
+await setVal('w-send-to', selfAddr);
+await setVal('w-send-amount', '3');
+await click('w-send-review');
+await waitFor(`document.getElementById('w-send-confirm').style.display !== 'none'`, 'self-send confirmation');
+await click('w-send-go');
+await waitFor(`${text('w-send-out')}.startsWith('Sent')`, 'self-send broadcast (spends P2WPKH mint change)');
+check(true, 'mint change on the P2WPKH twin is spendable in production (#38)');
+await waitFor(`!${text('w-history')}.includes('pending')`, 'self-send confirmed by a real block', 600_000);
 
 // ---- Transfer $25 to wallet B (consensus min DD output is $1).
 await setVal('w-tr-to', addrB);
