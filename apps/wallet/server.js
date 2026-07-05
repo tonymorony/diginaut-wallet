@@ -17,7 +17,7 @@ const PUBLIC_DIR = join(__dirname, 'public');
 const LIB_DIR = dirname(fileURLToPath(import.meta.resolve('digidollar-js')));
 // Crypto deps of the lib, served under /vendor/ so the browser import map can
 // resolve the lib's bare specifiers (@noble/*, @scure/*) to real URLs.
-const VENDOR_PACKAGES = ['@noble/curves', '@noble/hashes', '@scure/base', '@scure/bip32', '@scure/bip39'];
+const VENDOR_PACKAGES = ['@noble/curves', '@noble/hashes', '@scure/base', '@scure/bip32', '@scure/bip39', 'qrcode-generator'];
 const VENDOR_ROOTS = Object.fromEntries(
   VENDOR_PACKAGES.map((pkg) => [pkg, dirname(fileURLToPath(import.meta.resolve(pkg)))]),
 );
@@ -100,6 +100,7 @@ const ALLOWED_METHODS = new Set([
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',

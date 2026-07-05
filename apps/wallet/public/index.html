@@ -139,13 +139,25 @@
     #tier-slider::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(21,24,30,.25); cursor: grab; }
     #tier-slider:focus-visible { box-shadow: 0 0 0 3px var(--accent-5); }
     .tier-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
-    /* the price block docked inside the hero card (connected state):
-       compact price row only — the full chart lives on the guest screen */
+    /* the price block docks inside the hero card while connected; guests
+       don't see the market chart at all (it reads as noise pre-wallet) */
     .hero #price-block { text-align: left; margin: 18px 0 4px; }
-    .hero #price-block .price-head { align-items: baseline; }
-    .hero #price-block .price-now { font-size: 16px; display: inline; margin-left: 8px; }
-    .hero #price-block h2 { margin-bottom: 0; display: inline; }
-    .hero #price-block .chart-wrap, .hero #price-block #price-hint { display: none; }
+    .hero #price-block .price-now { font-size: 16px; }
+    .hero #price-block h2 { margin-bottom: 0; }
+    .hero #price-block .chart-wrap { margin-top: 8px; }
+    .hero #price-block .chart-wrap svg { height: 72px; }
+    /* tx success view (send / mint modals) */
+    .tx-success { display: none; text-align: center; padding: 16px 0 4px; }
+    .modal-backdrop.success .tx-success { display: block; }
+    #send-modal.success .send-forms, #send-modal.success label[for="send-asset"], #send-modal.success .dd { display: none; }
+    #mint-modal.success #w-mint { display: none; }
+    .tx-success .tx-check { color: var(--good); }
+    .tx-success .tx-title { margin: 10px 0 2px; font-size: 18px; font-weight: 600; }
+    .tx-success .tx-link { display: inline-block; margin: 2px 0 4px; }
+    .tx-success a.tx-link:not([href]) { color: var(--muted); text-decoration: none; cursor: default; }
+    /* receive QR */
+    .qr { display: grid; place-items: center; margin: 4px 0 10px; }
+    .qr svg { width: 176px; height: 176px; background: #fff; border: 1px solid var(--gray-100); border-radius: 12px; padding: 10px; }
     .hero #w-faucet { margin-top: 12px; }
     .hero { text-align: center; padding: 30px 22px 24px; }
     .hero .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--gray-500); }
@@ -428,6 +440,14 @@
             <div class="err" id="w-tr-err"></div>
           </div>
         </div>
+        <!-- shown instead of the form once a tx is broadcast -->
+        <div class="tx-success">
+          <svg class="tx-check" width="44" height="44" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="tx-title"></div>
+          <a class="tx-link mono" target="_blank" rel="noopener"></a>
+          <p class="hint tx-note" style="margin-top:2px"></p>
+          <button data-close>Done</button>
+        </div>
       </div>
     </div>
 
@@ -435,6 +455,7 @@
     <div id="receive-modal" class="modal-backdrop">
       <div class="modal">
         <div class="modal-head"><h3>Receive</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="qr" id="w-qr" aria-label="Receive address QR code"></div>
         <div class="row" style="border:0"><span class="k">Receive address <span class="mono" id="w-path"></span></span><span></span></div>
         <div class="out mono" style="margin-top:0" id="w-address"></div>
         <div class="grid" style="margin-top:0">
@@ -476,6 +497,14 @@
           </div>
           <div class="hint" id="w-mint-out"></div>
           <div class="err" id="w-mint-err"></div>
+        </div>
+        <!-- shown instead of the form once the mint is broadcast -->
+        <div class="tx-success">
+          <svg class="tx-check" width="44" height="44" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="tx-title"></div>
+          <a class="tx-link mono" target="_blank" rel="noopener"></a>
+          <p class="hint tx-note" style="margin-top:2px"></p>
+          <button data-close>Done</button>
         </div>
       </div>
     </div>
@@ -532,7 +561,8 @@
       "@scure/base": "/vendor/@scure/base/index.js",
       "@scure/bip32": "/vendor/@scure/bip32/index.js",
       "@scure/bip39": "/vendor/@scure/bip39/index.js",
-      "@scure/bip39/wordlists/": "/vendor/@scure/bip39/wordlists/"
+      "@scure/bip39/wordlists/": "/vendor/@scure/bip39/wordlists/",
+      "qrcode-generator": "/vendor/qrcode-generator/qrcode.mjs"
     }
   }
   </script>

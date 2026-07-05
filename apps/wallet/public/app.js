@@ -10,6 +10,7 @@ import {
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
+import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
 
@@ -256,7 +257,25 @@ function dockPriceBlock(open) {
     slot.appendChild(block);
     renderSparkline(lastPriceSeries); // the new slot has a different width
   }
-  $('price-card').style.display = docked ? 'none' : 'block';
+  // guests never see the market chart; the standalone card only serves the
+  // connected-but-no-indexer edge case
+  $('price-card').style.display = open && !appConfig.indexer ? 'block' : 'none';
+}
+
+// swap a modal's form for the success view once the tx is broadcast
+function showTxSuccess(modalId, txid, title, note) {
+  const modal = $(modalId);
+  const box = modal.querySelector('.tx-success');
+  box.querySelector('.tx-title').textContent = title;
+  box.querySelector('.tx-note').textContent = note;
+  const link = box.querySelector('.tx-link');
+  link.textContent = txid.slice(0, 18) + '…' + txid.slice(-10);
+  if (appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)) {
+    link.href = appConfig.explorerTxUrl + txid;
+  } else {
+    link.removeAttribute('href'); // no explorer on this network (e.g. regtest)
+  }
+  modal.classList.add('success');
 }
 
 let freshMnemonicBackup = null; // set right after creating a NEW wallet, shown once
@@ -300,10 +319,10 @@ document.querySelectorAll('[data-close]').forEach((b) =>
 for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal']) {
   $(id).addEventListener('click', (e) => { if (e.target === $(id)) $(id).classList.remove('open'); });
 }
-$('act-send').addEventListener('click', () => openModal('send-modal'));
+$('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
 $('act-receive').addEventListener('click', () => openModal('receive-modal'));
-$('act-mint').addEventListener('click', () => { openModal('mint-modal'); updateMintEstimate(); });
-$('dd-mint-open').addEventListener('click', () => { openModal('mint-modal'); updateMintEstimate(); });
+$('act-mint').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
+$('dd-mint-open').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('net-btn').addEventListener('click', () => openModal('net-modal'));
 $('hero-connect').addEventListener('click', () => openConnectModal());
 // the asset dropdown decides which send form shows — via classes on the modal,
@@ -326,6 +345,12 @@ function renderAddress() {
   $('w-path').textContent = path;
   $('w-address').textContent = address;
   $('w-chip-addr').textContent = address.slice(0, 10) + '…' + address.slice(-4);
+  // QR for the receive modal. Bech32 is uppercased first: that enables the
+  // QR alphanumeric mode, giving a sparser, easier-to-scan code.
+  const qr = qrcode(0, 'M');
+  qr.addData(address.toUpperCase(), 'Alphanumeric');
+  qr.make();
+  $('w-qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
 }
 
 function openWallet(mnemonic) {
@@ -758,6 +783,7 @@ $('w-send-go').addEventListener('click', (e) =>
     $('w-send-to').value = '';
     $('w-send-amount').value = '';
     $('w-send-out').textContent = `Sent — tx ${txid.slice(0, 16)}…`;
+    showTxSuccess('send-modal', txid, 'Transaction sent', 'It appears in Activity as pending until the next block confirms it.');
     refreshMoney();
   }));
 
@@ -883,6 +909,7 @@ $('w-mint-go').addEventListener('click', (e) =>
     resetMint();
     $('w-mint-amount').value = '';
     $('w-mint-out').textContent = `Minted — tx ${txid.slice(0, 16)}… The position appears below once confirmed.`;
+    showTxSuccess('mint-modal', txid, 'Mint submitted', 'Your position appears under DigiDollar positions once the transaction confirms.');
     refreshMoney();
   }));
 
@@ -982,6 +1009,7 @@ $('w-tr-go').addEventListener('click', (e) =>
     $('w-tr-to').value = '';
     $('w-tr-amount').value = '';
     $('w-tr-out').textContent = `Transferred — tx ${txid.slice(0, 16)}…`;
+    showTxSuccess('send-modal', txid, 'DigiDollar sent', 'The transfer appears in Activity as pending until the next block confirms it.');
     refreshMoney();
   }));
 
@@ -1053,7 +1081,11 @@ $('w-rd-go').addEventListener('click', (e) =>
     });
     const txid = await rpc('sendrawtransaction', [hex]);
     resetRedeem();
-    $('w-rd-out').textContent = `Redeemed — tx ${txid.slice(0, 16)}… The collateral returns to your DGB balance once confirmed.`;
+    const short = txid.slice(0, 16) + '…';
+    const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)
+      ? `<a href="${appConfig.explorerTxUrl}${txid}" target="_blank" rel="noopener" class="mono">${short}</a>`
+      : `<span class="mono">${short}</span>`;
+    $('w-rd-out').innerHTML = `Redeemed — tx ${label} The collateral returns to your DGB balance once confirmed.`;
     refreshMoney();
   }));
 
