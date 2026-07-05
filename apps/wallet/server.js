@@ -4,7 +4,8 @@
 // so the UI is usable before you have a testnet node running.
 
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, extname, normalize } from 'node:path';
 
@@ -34,6 +35,8 @@ export function configFromEnv() {
     faucetUrl: process.env.FAUCET_URL || '',
     // Indexer façade base URL (apps/indexer); unset = no balance/history in the UI.
     indexerUrl: process.env.INDEXER_URL || '',
+    // Where the price sampler persists its series; unset = memory only.
+    priceHistory: { dataFile: process.env.PRICE_HISTORY_FILE || '' },
   };
 }
 
@@ -149,6 +152,58 @@ function mockResponse(method, params) {
   }
 }
 
+// ---- Price history for the chart. Mock mode: a synthetic 24h random walk
+// around the mock oracle price, regenerated per request (nothing to persist).
+function syntheticPriceSeries(nowSec = Math.floor(Date.now() / 1000)) {
+  const points = [];
+  const stepSec = 300; // 5-minute candles, 24h back
+  let price = 13_420;
+  for (let t = nowSec - 24 * 3600; t <= nowSec; t += stepSec) {
+    // gentle deterministic wave + hash-noise: plausible, stable within a step
+    const wave = Math.sin(t / 7200) * 180;
+    const noise = ((t * 2654435761) % 97) - 48;
+    points.push({ t, price_micro_usd: Math.round(price + wave + noise) });
+  }
+  return points;
+}
+
+// Real mode: poll the node's oracle price on an interval into an in-memory
+// series the chart endpoint serves. Persisted to a JSON file so history
+// survives restarts. Stops with the server.
+function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec = 24 * 3600 }, server) {
+  let series = [];
+  const cutoff = () => Math.floor(Date.now() / 1000) - windowSec;
+  if (dataFile) {
+    try {
+      const loaded = JSON.parse(readFileSync(dataFile, 'utf8'));
+      if (Array.isArray(loaded)) series = loaded.filter((p) => p && p.t > cutoff() && p.price_micro_usd > 0);
+    } catch {
+      // no file yet / corrupt: start fresh
+    }
+  }
+  async function sample() {
+    try {
+      const { price_micro_usd } = await callNode(rpc, 'getoracleprice', []);
+      if (price_micro_usd > 0) series.push({ t: Math.floor(Date.now() / 1000), price_micro_usd });
+    } catch {
+      return; // node down / oracle stale: skip the point, keep sampling
+    }
+    while (series.length && series[0].t <= cutoff()) series.shift();
+    if (dataFile) {
+      try {
+        await writeFile(dataFile, JSON.stringify(series));
+      } catch {
+        // read-only disk: chart still works from memory
+      }
+    }
+  }
+  sample();
+  const timer = setInterval(sample, intervalMs);
+  timer.unref?.();
+  server.on('close', () => clearInterval(timer));
+  return series;
+}
+
 async function callNode(rpc, method, params) {
   const auth = Buffer.from(`${rpc.user}:${rpc.pass}`).toString('base64');
   const res = await fetch(rpc.url, {
@@ -228,6 +283,7 @@ export function startServer(overrides = {}) {
   const config = { ...env, ...overrides, rpc: { ...env.rpc, ...(overrides.rpc || {}) } };
   const mockMode = !config.rpc.user || !config.rpc.pass;
 
+  let priceSeries = [];
   const server = createServer(async (req, res) => {
     try {
       if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
@@ -235,6 +291,9 @@ export function startServer(overrides = {}) {
       if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, config);
       // The stablecoin flows (mint/transfer/redeem) ship unconditionally as one
       // unit (ADR-0002, release gate #17) — no feature flag in the config.
+      if (req.method === 'GET' && req.url === '/api/price-history') {
+        return sendJson(res, 200, { series: mockMode ? syntheticPriceSeries() : priceSeries, mock: mockMode });
+      }
       if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl) });
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
@@ -242,6 +301,10 @@ export function startServer(overrides = {}) {
       sendJson(res, 500, { error: String(err.message || err) });
     }
   });
+
+  if (!mockMode) {
+    priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}) }, server);
+  }
 
   server.listen(config.port, () => {
     const { port } = server.address();
