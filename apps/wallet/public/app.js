@@ -196,12 +196,16 @@ function show(state) {
     if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
   } else {
     $('w-backup-view').style.display = 'none';
+    $('w-backup-words').textContent = ''; // never leave a seed in the DOM
   }
 }
 
 let freshMnemonicBackup = null; // set right after creating a NEW wallet, shown once
 
 function connectFormMode(mode) { // 'choice' | 'create' | 'restore'
+  // A failed create leaves a discarded mnemonic here; switching mode (e.g. to
+  // restore) must drop it or the backup view would show the wrong seed.
+  freshMnemonicBackup = null;
   $('w-choice').style.display = mode === 'choice' ? 'block' : 'none';
   $('w-form').style.display = mode === 'choice' ? 'none' : 'block';
   $('w-restore').style.display = mode === 'restore' ? 'block' : 'none';
