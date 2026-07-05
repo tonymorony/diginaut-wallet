@@ -267,3 +267,16 @@ test('reserializes the Core-mined spend byte-for-byte (fixture witnesses substit
   assert.equal(hex, fixture.hex);
   assert.equal(fixture.version, 2);
 });
+
+// ---- Consensus DD transaction limits (public-testnet finding) ----
+// Values transcribed from DigiByte v9.26.4 src/consensus/digidollar.h defaults
+// (min $100 mint, max $100k, min $1 output) and src/kernel/chainparams.cpp
+// regtest overrides (1 cent min, $1000 max). The live testnet26 node rejected
+// a $1 mint with bad-dd-mint-amount — the wallet must know these BEFORE signing.
+test('DD_TX_LIMITS mirror Core consensus params per network', async () => {
+  const { DD_TX_LIMITS } = await import('digidollar-js');
+  assert.deepEqual(DD_TX_LIMITS.mainnet, { minMintCents: 10_000n, maxMintCents: 10_000_000n, minOutputCents: 100n });
+  assert.deepEqual(DD_TX_LIMITS.testnet, { minMintCents: 10_000n, maxMintCents: 10_000_000n, minOutputCents: 100n });
+  assert.deepEqual(DD_TX_LIMITS.regtest, { minMintCents: 1n, maxMintCents: 100_000n, minOutputCents: 100n });
+  for (const net of Object.values(DD_TX_LIMITS)) assert.ok(Object.isFrozen(net));
+});
