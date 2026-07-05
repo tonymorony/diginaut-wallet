@@ -211,3 +211,140 @@ test('stale spec-era oracle RPC names are gone; real ones are allowed with real-
     assert.ok(Array.isArray(oracles.result) && oracles.result[0].total_oracle_slots > 0);
   });
 });
+
+test('mock mode serves a synthetic 24h price history for the chart', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(base + '/api/price-history');
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.mock, true);
+    assert.ok(Array.isArray(json.series) && json.series.length >= 100, 'a day of points');
+    const now = Math.floor(Date.now() / 1000);
+    const first = json.series[0];
+    const last = json.series[json.series.length - 1];
+    assert.ok(now - first.t >= 23 * 3600, 'spans ~24h back');
+    assert.ok(Math.abs(last.t - now) < 3600, 'ends near now');
+    for (let i = 1; i < json.series.length; i++) {
+      assert.ok(json.series[i].t > json.series[i - 1].t, 'timestamps ascend');
+    }
+    for (const p of json.series) {
+      assert.ok(p.price_micro_usd > 0, 'plausible positive price');
+    }
+  });
+});
+
+test('real mode samples getoracleprice on an interval and serves the series', async () => {
+  const { createServer } = await import('node:http');
+  let price = 13_000;
+  const node = createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    const { method, id } = JSON.parse(raw);
+    assert.equal(method, 'getoracleprice');
+    price += 10;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id, result: { price_micro_usd: price, is_stale: false } }));
+  });
+  await new Promise((r) => node.listen(0, r));
+  const server = startServer({
+    port: 0,
+    rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+    priceHistory: { intervalMs: 50 },
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await new Promise((r) => setTimeout(r, 300));
+    const json = await (await fetch(base + '/api/price-history')).json();
+    assert.equal(json.mock, false);
+    assert.ok(json.series.length >= 2, `sampled repeatedly, got ${json.series.length}`);
+    const prices = json.series.map((p) => p.price_micro_usd);
+    assert.ok(prices.every((v) => v > 13_000), 'prices came from the node');
+    assert.ok(prices[prices.length - 1] > prices[0], 'successive samples recorded');
+  } finally {
+    server.close();
+    node.close();
+  }
+});
+
+test('price history survives a server restart via the persist file', async () => {
+  const { createServer } = await import('node:http');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dataFile = join(tmpdir(), `price-history-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  const node = createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: JSON.parse(raw).id, result: { price_micro_usd: 13_420, is_stale: false } }));
+  });
+  await new Promise((r) => node.listen(0, r));
+  const rpc = { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' };
+
+  const first = startServer({ port: 0, rpc, priceHistory: { intervalMs: 50, dataFile } });
+  await once(first, 'listening');
+  const firstBase = `http://127.0.0.1:${first.address().port}`;
+  let sampled;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    sampled = (await (await fetch(firstBase + '/api/price-history')).json()).series;
+    if (sampled.length >= 3) break;
+  }
+  assert.ok(sampled.length >= 3, 'first server sampled some points');
+  await new Promise((r) => setTimeout(r, 120)); // let the persist write flush
+  first.close();
+  await once(first, 'close');
+
+  // second server, long interval: only its own single startup sample is new,
+  // so extra points right after start can only have been loaded from disk
+  const second = startServer({ port: 0, rpc, priceHistory: { intervalMs: 3_600_000, dataFile } });
+  await once(second, 'listening');
+  try {
+    const json = await (await fetch(`http://127.0.0.1:${second.address().port}/api/price-history`)).json();
+    assert.ok(json.series.length >= 3, `restored from disk: got ${json.series.length} points right after start`);
+  } finally {
+    second.close();
+    node.close();
+    (await import('node:fs')).unlinkSync(dataFile);
+  }
+});
+
+test('price history is a 24h window — older points are pruned', async () => {
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { writeFileSync, unlinkSync } = await import('node:fs');
+  const dataFile = join(tmpdir(), `price-history-prune-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  const now = Math.floor(Date.now() / 1000);
+  const stale = { t: now - 25 * 3600, price_micro_usd: 11_111 };
+  const fresh = { t: now - 3600, price_micro_usd: 13_400 };
+  writeFileSync(dataFile, JSON.stringify([stale, fresh]));
+
+  // unreachable node: no new samples; whatever is served came from the file
+  const server = startServer({
+    port: 0,
+    rpc: { url: 'http://127.0.0.1:1', user: 'u', pass: 'p' },
+    priceHistory: { intervalMs: 3_600_000, dataFile },
+  });
+  await once(server, 'listening');
+  try {
+    const json = await (await fetch(`http://127.0.0.1:${server.address().port}/api/price-history`)).json();
+    assert.deepEqual(json.series, [fresh], 'stale point pruned, fresh point kept');
+  } finally {
+    server.close();
+    unlinkSync(dataFile);
+  }
+});
+
+test('config exposes the block-explorer tx prefix so the UI can link txids', async () => {
+  const server = startServer({ port: 0, explorerTxUrl: 'https://testnet-explorer.example/tx/' });
+  await once(server, 'listening');
+  try {
+    const cfg = await (await fetch(`http://127.0.0.1:${server.address().port}/api/config`)).json();
+    assert.equal(cfg.explorerTxUrl, 'https://testnet-explorer.example/tx/');
+  } finally {
+    server.close();
+  }
+  await withServer(async (base) => {
+    assert.equal((await (await fetch(base + '/api/config')).json()).explorerTxUrl, '', 'unset by default');
+  });
+});

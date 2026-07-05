@@ -103,9 +103,12 @@ await evaluate(`document.querySelector('#w-positions [data-redeem]').click()`);
 await waitFor(`${text('w-rd-err')}.includes('no DGB for the fee')`, 'no-fee-coin error');
 check((await evaluate(text('w-rd-err'))).includes(addr0), 'no-fee-coin error names the address to top up');
 
+// the mint's change went to the P2WPKH twin and counts toward the balance
+// (#38), so it is not '1' — wait for the +1 top-up delta instead
+const balBeforeTopUp = await evaluate(text('w-balance'));
 await nodeRpc('sendtoaddress', [addr0, 1], 'stand');
 await nodeRpc('generatetoaddress', [1, miner], 'stand');
-await waitFor(`${text('w-balance')} === '1'`, 'fee coin confirmed');
+await waitFor(`${text('w-balance')} !== ${JSON.stringify(balBeforeTopUp)}`, 'fee coin confirmed');
 
 // ---- Confirmation before signing.
 await evaluate(`document.querySelector('#w-positions [data-redeem]').click()`);
@@ -118,6 +121,7 @@ check((await nodeRpc('getrawmempool')).length === 0, 'nothing signed or broadcas
 await shot('71-redeem-confirm.png');
 
 // ---- Redeem: position closes, collateral lands in the DGB balance.
+const balBeforeRedeem = parseFloat((await evaluate(text('w-balance'))).replace(/,/g, ''));
 await click('w-rd-go');
 await waitFor(`${text('w-rd-out')}.startsWith('Redeemed')`, 'broadcast acknowledged');
 const mempool = await nodeRpc('getrawmempool');
@@ -129,10 +133,11 @@ await nodeRpc('generatetoaddress', [1, miner], 'stand');
 await waitFor(`${text('w-positions')} === 'No open positions.'`, 'position closed');
 check(true, 'position disappears after the redemption confirms');
 await waitFor(`${text('w-dd-balance')} === '0.00'`, 'burned DigiDollar gone');
-// 7,526.08 collateral + (1 − 0.12) fee change = 7,526.96 — the change is
-// visible because the redeem routes it to the watched P2TR, not Core's P2WPKH
-await waitFor(`${text('w-balance')} === '7,526.96'`, 'collateral back in the DGB balance');
-check(true, `DGB balance = 7,526.96 — full collateral (7,526.08) + fee change returned to view`);
+// +7,526.08 collateral +(1 − 0.12) fee change on top of what was already in
+// view (incl. the P2WPKH mint change, #38) — the redeem outputs are visible
+// because they route to the watched P2TR, not Core's default P2WPKH
+await waitFor(`parseFloat(${text('w-balance')}.replace(/,/g, '')) >= ${(balBeforeRedeem + 7526.08 - 0.12).toFixed(2)}`, 'collateral back in the DGB balance');
+check(true, `DGB balance grew by the full collateral (7,526.08 DGB) minus the 0.12 fee`);
 await shot('72-redeem-done.png');
 
 console.log('\nDone.');

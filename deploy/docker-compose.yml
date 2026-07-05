@@ -62,6 +62,12 @@ services:
       FAUCET_URL: http://faucet:8788
       INDEXER_URL: http://indexer:8789
       # Mint/transfer/redeem ship together, always on (ADR-0002, release gate #17)
+      # txid links in Activity/success views; empty = plain text (no explorer)
+      EXPLORER_TX_URL: ${EXPLORER_TX_URL:-}
+      # the price chart's history survives container restarts
+      PRICE_HISTORY_FILE: /data/price-history.json
+    volumes:
+      - wallet-data:/data
     ports:
       - "${WALLET_PORT:-8791}:8791"
     depends_on: [indexer, faucet]
@@ -72,3 +78,4 @@ services:
 volumes:
   electrumx-data:
   faucet-data:
+  wallet-data:

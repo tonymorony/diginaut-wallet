@@ -1,0 +1,7 @@
+# All public hostnames for the wallet, comma-separated in $DOMAINS
+# (e.g. "dgb.example.com, diginaut.example.com"). Caddy provisions a
+# Let's Encrypt certificate for each; every name needs an A record
+# pointing at this host and ports 80/443 open.
+{$DOMAINS} {
+	reverse_proxy wallet:8791
+}

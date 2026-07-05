@@ -120,10 +120,12 @@ check((await evaluate(text('w-tr-err'))).includes(addrA),
   'no-fee-coin error names the exact address to top up');
 await shot('60-transfer-errors.png');
 
-// top up the fee coin and mine it
+// top up the fee coin and mine it. The balance is not '1': the mint's change
+// went to the P2WPKH twin and counts toward it (#38) — wait for the +1 delta.
+const balBeforeTopUp = await evaluate(text('w-balance'));
 await nodeRpc('sendtoaddress', [addrA, 1], 'stand');
 await nodeRpc('generatetoaddress', [1, miner], 'stand');
-await waitFor(`${text('w-balance')} === '1'`, 'fee coin confirmed');
+await waitFor(`${text('w-balance')} !== ${JSON.stringify(balBeforeTopUp)}`, 'fee coin confirmed');
 
 // ---- Transfer $7.50 A → B with confirmation before signing.
 await click('w-tr-review');
