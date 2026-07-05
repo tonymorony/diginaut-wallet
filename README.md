@@ -7,6 +7,11 @@ DigiDollar **without running their own node**, and without anyone else ever hold
 > **TESTNET ONLY.** DigiDollar awaits mainnet activation; this project targets testnet while the
 > stablecoin feature matures. Do not use with real funds.
 
+**Live testnet instance: <https://dgb.ludere.space>** — create a wallet, claim testnet DGB from
+the faucet, mint/transfer/redeem DigiDollar. Runs the full stack in this repo against a
+DigiByte v9.26.4 testnet26 node (real oracle feed, DigiDollar softfork active). Want your own?
+See [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
+
 ## How it works
 
 - **Keys live in your browser** (BIP39/BIP86), never on a server (ADR-0001).
