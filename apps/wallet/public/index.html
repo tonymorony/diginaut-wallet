@@ -465,11 +465,19 @@
       <div class="modal">
         <div class="modal-head"><h3>Receive</h3><button class="secondary chip-btn" data-close>Close</button></div>
         <div class="qr" id="w-qr" aria-label="Receive address QR code"></div>
-        <div class="row" style="border:0"><span class="k">Receive address <span class="mono" id="w-path"></span></span><span></span></div>
+        <div class="row" style="border:0"><span class="k">DGB address <span class="mono" id="w-path"></span></span><span></span></div>
         <div class="out mono" style="margin-top:0" id="w-address"></div>
         <div class="grid" style="margin-top:0">
           <button id="w-copy">Copy address</button>
           <button id="w-next" class="secondary">Next address</button>
+        </div>
+        <!-- Same taproot key, DigiDollar base58check form (DD…/TD…/RD…). Core and
+             mobile wallets can only send DigiDollar to THIS form, not to dgb1p…. -->
+        <div class="row" style="border:0;margin-top:12px"><span class="k">DigiDollar address</span><span></span></div>
+        <div class="hint" style="margin:0 0 6px">Share this to receive DigiDollar from Core or mobile wallets.</div>
+        <div class="out mono" style="margin-top:0" id="w-dd-address"></div>
+        <div class="grid" style="margin-top:0">
+          <button id="w-copy-dd" class="secondary">Copy DigiDollar address</button>
         </div>
       </div>
     </div>

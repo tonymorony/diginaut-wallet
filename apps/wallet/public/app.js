@@ -6,6 +6,7 @@ import {
   LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
+  decodeDDAddress, encodeDDAddress,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
@@ -410,10 +411,11 @@ function renderAddress() {
   // Never show an address for a guessed network: on a mainnet deployment with
   // an unreachable node the default would be testnet-encoded — confusing at
   // best. loadStatus retries until the node names its chain, then re-renders.
-  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet')];
+  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet'), $('w-copy-dd')];
   if (!chainState.netKnown) {
     $('w-path').textContent = '';
     $('w-address').textContent = 'waiting for the node to report a supported network…';
+    $('w-dd-address').textContent = '';
     $('w-chip-addr').textContent = '…';
     $('w-qr').innerHTML = '';
     for (const b of addressActions) b.disabled = true; // nothing here to copy/claim
@@ -423,6 +425,10 @@ function renderAddress() {
   const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
   $('w-path').textContent = path;
   $('w-address').textContent = address;
+  // Same taproot key in DigiDollar base58check form — the ONLY encoding Core /
+  // mobile wallets accept as a DigiDollar recipient (their senddigidollar checks
+  // the DD…/TD…/RD… prefix). decodeDDAddress(address) yields the shared key.
+  $('w-dd-address').textContent = encodeDDAddress(decodeDDAddress(address).outputKeyHex, chainState.netName);
   $('w-chip-addr').textContent = address.slice(0, 10) + '…' + address.slice(-4);
   // QR for the receive modal. Bech32 is uppercased first: that enables the
   // QR alphanumeric mode, giving a sparser, easier-to-scan code.
@@ -522,6 +528,8 @@ $('w-lock').addEventListener('click', lockWallet);
 $('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); refreshMoney(); });
 $('w-copy').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-address').textContent)));
+$('w-copy-dd').addEventListener('click', async (e) =>
+  busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-dd-address').textContent)));
 $('w-faucet').addEventListener('click', (e) =>
   busy(e.target, 'w-open-err', async () => {
     $('w-faucet-out').textContent = 'Requesting…';
@@ -1060,18 +1068,19 @@ function resetTransfer() {
 $('w-tr-review').addEventListener('click', (e) =>
   busy(e.target, 'w-tr-err', async () => {
     $('w-tr-out').textContent = '';
-    // recipient must be a taproot (witness v1) address on this network —
-    // a DigiDollar address IS the recipient's key-path P2TR
+    // Recipient may be given in EITHER encoding: the DigiDollar base58check form
+    // (DD…/TD…/RD…, the ONLY form Core/Android senddigidollar accepts) or the
+    // equivalent witness-v1 bech32m form (…1p…). Both encode the same 32-byte
+    // taproot output key → the same scriptPubKey. decodeDDAddress accepts both.
     const address = $('w-tr-to').value.trim();
     let decoded;
     try {
-      decoded = decodeWitnessAddress(address);
+      decoded = decodeDDAddress(address);
     } catch (err) {
-      throw new Error(`invalid address: ${err.message}`);
+      throw new Error(`invalid DigiDollar address: ${err.message}`);
     }
-    if (decoded.hrp !== wallet.network.hrp) throw new Error(`address is not for this network (expected ${wallet.network.hrp}…)`);
-    if (decoded.version !== 1 || decoded.programHex.length !== 64) {
-      throw new Error('not a DigiDollar-capable address — DigiDollar goes to taproot addresses (…1p…), this one is a different type');
+    if (decoded.network !== chainState.netName) {
+      throw new Error(`address is not for this network (expected a ${chainState.netName} DigiDollar address)`);
     }
     const cents = ddToCents($('w-tr-amount').value);
     if (cents <= 0n) throw new Error('amount must be positive');
@@ -1096,7 +1105,7 @@ $('w-tr-review').addEventListener('click', (e) =>
     if (!feeUtxo) {
       throw new Error(`no DGB for the fee on the address holding this DigiDollar — send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to ${ddUtxo.address}, then retry`);
     }
-    pendingTransfer = { ddUtxo, feeUtxo, cents, outputKeyHex: decoded.programHex, address };
+    pendingTransfer = { ddUtxo, feeUtxo, cents, outputKeyHex: decoded.outputKeyHex, address };
     $('w-tr-c-to').textContent = address;
     $('w-tr-c-dd').textContent = (Number(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     $('w-tr-c-change').textContent = (Number(ddUtxo.ddCents - cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });

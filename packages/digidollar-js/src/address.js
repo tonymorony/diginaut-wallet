@@ -1,6 +1,15 @@
 // Bech32 / Bech32m segwit addresses (BIP-173 / BIP-350).
 // DigiByte uses hrp "dgb" (mainnet), "dgbt" (testnet), "dgbrt" (regtest);
 // witness v0 → bech32, witness v1+ → bech32m.
+//
+// This module also encodes/decodes the DigiDollar base58check address form
+// ("DD…"/"TD…"/"RD…"), Core's CDigiDollarAddress (src/base58.cpp). A DD address
+// and a witness-v1 dgb1p… address are two encodings of the SAME 32-byte taproot
+// output key → the SAME scriptPubKey. Core/Android senddigidollar accept ONLY
+// the base58check form (ValidateDigiDollarAddressForCurrentNetwork checks the
+// 2-char prefix), so Diginaut must display it and accept both on send.
+
+import { sha256 } from '@noble/hashes/sha2.js';
 
 const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 const BECH32_CONST = 1;
@@ -78,4 +87,134 @@ export function decodeWitnessAddress(addr) {
   const program = Uint8Array.from(convertBits(data.slice(1, -6), 5, 8, false));
   if (program.length < 2 || program.length > 40) throw new RangeError('program length out of range');
   return { hrp, version, programHex: bytesToHex(program) };
+}
+
+// ── DigiDollar base58check address ("DD…"/"TD…"/"RD…") ──────────────────────
+// Core CDigiDollarAddress (src/base58.cpp): base58check of
+//   [2-byte version][32-byte x-only taproot output key]
+// with a 4-byte double-SHA256 checksum. The 2-byte version is chosen so the
+// base58 string always begins with the network's two-letter prefix.
+
+const B58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+// version bytes → { network, bech32 hrp }. Same networks as HD_NETWORKS.
+const DD_NETWORKS = Object.freeze({
+  mainnet: Object.freeze({ version: [0x52, 0x85], hrp: 'dgb' }), // "DD"
+  testnet: Object.freeze({ version: [0xb1, 0x29], hrp: 'dgbt' }), // "TD"
+  regtest: Object.freeze({ version: [0xa3, 0xa4], hrp: 'dgbrt' }), // "RD"
+});
+
+const sha256d = (bytes) => sha256(sha256(bytes));
+
+function base58Encode(bytes) {
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros++;
+  const digits = [0];
+  for (let i = zeros; i < bytes.length; i++) {
+    let carry = bytes[i];
+    for (let j = 0; j < digits.length; j++) {
+      carry += digits[j] << 8;
+      digits[j] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = (carry / 58) | 0;
+    }
+  }
+  let out = B58_ALPHABET[0].repeat(zeros);
+  for (let i = digits.length - 1; i >= 0; i--) out += B58_ALPHABET[digits[i]];
+  return out;
+}
+
+function base58Decode(str) {
+  const bytes = [0];
+  for (const ch of str) {
+    const val = B58_ALPHABET.indexOf(ch);
+    if (val === -1) throw new RangeError('invalid base58 character');
+    let carry = val;
+    for (let j = 0; j < bytes.length; j++) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>>= 8;
+    }
+  }
+  let zeros = 0;
+  for (const ch of str) { if (ch === B58_ALPHABET[0]) zeros++; else break; }
+  const out = new Uint8Array(zeros + bytes.length);
+  for (let i = 0; i < bytes.length; i++) out[zeros + i] = bytes[bytes.length - 1 - i];
+  return out;
+}
+
+function base58CheckEncode(payload) {
+  const checksum = sha256d(payload).slice(0, 4);
+  return base58Encode(Uint8Array.from([...payload, ...checksum]));
+}
+
+function base58CheckDecode(str) {
+  const full = base58Decode(str);
+  if (full.length < 4) throw new RangeError('base58check string too short');
+  const payload = full.slice(0, -4);
+  const checksum = full.slice(-4);
+  const expected = sha256d(payload).slice(0, 4);
+  for (let i = 0; i < 4; i++) if (checksum[i] !== expected[i]) throw new RangeError('bad base58check checksum');
+  return payload;
+}
+
+/**
+ * Encode a 32-byte taproot output key as a DigiDollar base58check address.
+ * @param {string} outputKeyHex 32-byte x-only key (same bytes as the dgb1p… program)
+ * @param {'mainnet'|'testnet'|'regtest'} network
+ * @returns {string} "DD…"/"TD…"/"RD…"
+ */
+export function encodeDDAddress(outputKeyHex, network) {
+  const net = DD_NETWORKS[network];
+  if (!net) throw new RangeError(`unknown network: ${network}`);
+  if (!/^[0-9a-fA-F]{64}$/.test(outputKeyHex)) throw new RangeError('output key must be 32-byte hex');
+  const payload = Uint8Array.from([...net.version, ...hexToBytes(outputKeyHex.toLowerCase())]);
+  return base58CheckEncode(payload);
+}
+
+/**
+ * Decode a DigiDollar destination in EITHER encoding — the base58check
+ * "DD…"/"TD…"/"RD…" form or the witness-v1 bech32m dgb1p…/dgbt1p…/dgbrt1p… form —
+ * to a common { outputKeyHex, network }. Both encode the identical scriptPubKey,
+ * so callers can build the transfer output from outputKeyHex regardless of form.
+ * Rejects any whitespace (Core DD-FA-FUNC-019: DecodeBase58 silently strips it).
+ * @returns {{ outputKeyHex: string, network: 'mainnet'|'testnet'|'regtest' }}
+ */
+export function decodeDDAddress(addr) {
+  if (typeof addr !== 'string') throw new RangeError('address must be a string');
+  if (/\s/.test(addr)) throw new RangeError('DigiDollar address must not contain whitespace');
+
+  // bech32m witness-v1 form (dgb1p… / dgbt1p… / dgbrt1p…)
+  const lower = addr.toLowerCase();
+  const bech = Object.entries(DD_NETWORKS).find(([, n]) => lower.startsWith(n.hrp + '1'));
+  if (bech) {
+    const [network, net] = bech;
+    const { hrp, version, programHex } = decodeWitnessAddress(addr);
+    if (hrp !== net.hrp) throw new RangeError('address network prefix mismatch');
+    if (version !== 1) throw new RangeError('DigiDollar address must be a taproot (witness v1) output');
+    if (programHex.length !== 64) throw new RangeError('DigiDollar taproot program must be 32 bytes');
+    return { outputKeyHex: programHex, network };
+  }
+
+  // base58check DD form
+  const payload = base58CheckDecode(addr);
+  if (payload.length !== 34) throw new RangeError('DigiDollar address payload must be 34 bytes');
+  const entry = Object.entries(DD_NETWORKS).find(
+    ([, n]) => n.version[0] === payload[0] && n.version[1] === payload[1],
+  );
+  if (!entry) throw new RangeError('unrecognized DigiDollar version bytes');
+  return { outputKeyHex: bytesToHex(payload.slice(2)), network: entry[0] };
+}
+
+/** Re-encode any DigiDollar destination to its base58check DD form (for display/interop). */
+export function toDDAddress(addr) {
+  const { outputKeyHex, network } = decodeDDAddress(addr);
+  return encodeDDAddress(outputKeyHex, network);
 }

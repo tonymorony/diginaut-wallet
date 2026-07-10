@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeWitnessAddress, decodeWitnessAddress, scriptPubKeyFromAddress } from 'digidollar-js';
+import {
+  encodeWitnessAddress,
+  decodeWitnessAddress,
+  scriptPubKeyFromAddress,
+  encodeDDAddress,
+  decodeDDAddress,
+  toDDAddress,
+} from 'digidollar-js';
 
 // BIP-350 reference vector: the BIP-341 example P2TR output key under hrp "bc".
 const BIP350_KEY = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
@@ -39,4 +46,70 @@ test('decodes the stand wallet v0 address produced by the node', () => {
   assert.equal(hrp, 'dgbrt');
   assert.equal(version, 0);
   assert.equal(programHex.length, 40); // 20-byte keyhash
+});
+
+// ── DigiDollar base58check address ("DD…"/"TD…"/"RD…") ──────────────────────
+
+// Any 32-byte x-only taproot output key. (BIP-350 sample key.)
+const DD_KEY = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+
+test('encodeDDAddress emits Core prefixes DD/TD/RD and round-trips', () => {
+  const cases = [
+    ['mainnet', 'DD'],
+    ['testnet', 'TD'],
+    ['regtest', 'RD'],
+  ];
+  for (const [network, prefix] of cases) {
+    const dd = encodeDDAddress(DD_KEY, network);
+    assert.equal(dd.slice(0, 2), prefix, `${network} prefix`);
+    assert.deepEqual(decodeDDAddress(dd), { outputKeyHex: DD_KEY, network });
+  }
+});
+
+test('base58check core is byte-exact vs Core (legacy DigiByte P2PKH vector)', () => {
+  // From Core test/util/data/txcreatesignv1.json: this legacy base58check address
+  // decodes to scriptPubKey 76a914<hash>88ac. It shares DD's exact base58check
+  // algorithm (base58 alphabet + double-SHA256 checksum), so a correct decode of
+  // its 20-byte hash proves our checksum/alphabet match Core byte-for-byte.
+  // It is NOT a 34-byte DD address, so decodeDDAddress must reject it.
+  assert.throws(() => decodeDDAddress('DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc'), /34 bytes/);
+});
+
+test('DD base58check and dgb1p… bech32m are two encodings of ONE scriptPubKey', () => {
+  // Same key → same taproot output OP_1 <32B> from either encoding.
+  const bech = encodeWitnessAddress('dgb', 1, DD_KEY);
+  const dd = encodeDDAddress(DD_KEY, 'mainnet');
+  assert.equal(decodeDDAddress(dd).outputKeyHex, decodeDDAddress(bech).outputKeyHex);
+  assert.equal(scriptPubKeyFromAddress(bech), `5120${DD_KEY}`);
+  assert.equal(toDDAddress(bech), dd); // bech32m → DD form for display/interop
+});
+
+test('decodeDDAddress accepts the bech32m form on every network', () => {
+  for (const [network, hrp] of [['mainnet', 'dgb'], ['testnet', 'dgbt'], ['regtest', 'dgbrt']]) {
+    const bech = encodeWitnessAddress(hrp, 1, DD_KEY);
+    assert.deepEqual(decodeDDAddress(bech), { outputKeyHex: DD_KEY, network });
+  }
+});
+
+test('decodeDDAddress rejects a witness-v0 (non-taproot) bech32 address', () => {
+  const v0 = encodeWitnessAddress('dgb', 0, '8589652f45ebd5ed557f633120688d42fb866b25');
+  assert.throws(() => decodeDDAddress(v0), /witness v1|taproot/);
+});
+
+test('decodeDDAddress rejects a bad base58check checksum', () => {
+  const dd = encodeDDAddress(DD_KEY, 'mainnet');
+  const mangled = dd.slice(0, -1) + (dd.slice(-1) === 'a' ? 'b' : 'a');
+  assert.throws(() => decodeDDAddress(mangled), /checksum/);
+});
+
+test('decodeDDAddress rejects whitespace anywhere (Core DD-FA-FUNC-019)', () => {
+  const dd = encodeDDAddress(DD_KEY, 'mainnet');
+  assert.throws(() => decodeDDAddress(' ' + dd), /whitespace/);
+  assert.throws(() => decodeDDAddress(dd + '\n'), /whitespace/);
+  assert.throws(() => decodeDDAddress(dd.slice(0, 4) + ' ' + dd.slice(4)), /whitespace/);
+});
+
+test('encodeDDAddress rejects a non-32-byte key and unknown network', () => {
+  assert.throws(() => encodeDDAddress('abcd', 'mainnet'), /32-byte hex/);
+  assert.throws(() => encodeDDAddress(DD_KEY, 'signet'), /unknown network/);
 });

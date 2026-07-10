@@ -99,6 +99,10 @@ const addr0 = await evaluate(text('w-address'));
 const path0 = await evaluate(text('w-path'));
 check(/^dgbt1p[a-z0-9]{50,}$/.test(addr0), `create → client-side receive address shown: ${addr0} (${path0})`);
 check(path0 === "m/86'/1'/0'/0/0", 'path is BIP86 testnet account 0 index 0');
+// #72: the receive screen also shows the DigiDollar base58check form (TD… on
+// testnet) — the ONLY encoding Core/mobile wallets accept as a DD recipient.
+const ddAddr0 = await evaluate(text('w-dd-address'));
+check(/^TD[1-9A-HJ-NP-Za-km-z]{40,}$/.test(ddAddr0), `create → DigiDollar (TD…) address shown for interop: ${ddAddr0}`);
 await shot('02-created-unlocked.png');
 
 // -- 3. seed backup view (optional, reveals 12 words)
