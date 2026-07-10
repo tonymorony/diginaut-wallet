@@ -127,7 +127,28 @@ check(/not for this network/.test(errMainnet), `PROBE: mainnet base58 on testnet
 const errTestnet = await sendReviewError('sqdPA2TDtoAbqMnqS1sgsoyzjzJYa7eDck'); // testnet P2PKH
 check(!/invalid address|not for this network/.test(errTestnet),
   `legacy testnet base58 recipient ACCEPTED (past validation → "${errTestnet}")`);
+// -- 2c. #71 BIP21 send: pasting a digibyte: URI unpacks address + amount + label.
+// setVal dispatches 'input', which fires absorbSendUri; it rewrites the field to
+// the bare address, prefills the amount, and surfaces label/message as context.
+await setVal('w-send-amount', ''); // clear so the URI amount is the one that lands
+await setVal('w-send-to', 'digibyte:sqdPA2TDtoAbqMnqS1sgsoyzjzJYa7eDck?amount=2.5&label=Coffee%20fund');
+const uriAddr = await evaluate(`document.getElementById('w-send-to').value`);
+const uriAmt = await evaluate(`document.getElementById('w-send-amount').value`);
+const uriCtx = await evaluate(text('w-send-uri-ctx'));
+check(uriAddr === 'sqdPA2TDtoAbqMnqS1sgsoyzjzJYa7eDck', `PROBE: pasted BIP21 URI → bare address extracted: ${uriAddr}`);
+check(uriAmt === '2.5', `PROBE: BIP21 amount prefilled the amount field: ${uriAmt}`);
+check(/Coffee fund/.test(uriCtx) && await evaluate(visible('w-send-uri-ctx')), `PROBE: BIP21 label surfaced as context: "${uriCtx}"`);
 await evaluate(`document.getElementById('send-modal').classList.remove('open')`); // close, back to wallet
+
+// -- 2d. #71 BIP21 receive: requesting an amount switches the QR to a URI and
+// reveals the "Copy payment request" button; clearing it reverts to bare address.
+await click('act-receive');
+await waitFor(`document.getElementById('receive-modal').classList.contains('open')`, 'receive modal open');
+await setVal('w-req-amount', '12.5');
+check(await evaluate(visible('w-copy-uri')), 'requesting an amount reveals the "Copy payment request" (URI) button');
+await setVal('w-req-amount', '');
+check(!(await evaluate(visible('w-copy-uri'))), 'clearing the amount reverts to bare-address QR (URI button hidden)');
+await evaluate(`document.getElementById('receive-modal').classList.remove('open')`);
 
 // -- 3. seed backup view (optional, reveals 12 words)
 await click('w-backup');

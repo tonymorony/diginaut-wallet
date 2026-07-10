@@ -413,6 +413,8 @@
             <input id="w-send-to" class="mono" placeholder="dgb…1…" autocomplete="off" autocapitalize="off" spellcheck="false" />
             <label for="w-send-amount">Amount (DGB)</label>
             <input id="w-send-amount" inputmode="decimal" autocomplete="off" />
+            <!-- read-only context surfaced from a pasted BIP21 URI (#71) -->
+            <div class="hint" id="w-send-uri-ctx" style="display:none"></div>
             <button id="w-send-review">Review send</button>
             <!-- confirmation screen: nothing is signed until "Confirm & send" -->
             <div id="w-send-confirm" style="display:none">
@@ -470,6 +472,14 @@
         <div class="grid" style="margin-top:0">
           <button id="w-copy">Copy address</button>
           <button id="w-next" class="secondary">Next address</button>
+        </div>
+        <!-- Optional BIP21 request amount (#71): when set, the QR and the button
+             below switch to a digibyte:…?amount= URI that mobile wallets scan and
+             prefill. The bare-address copy above stays available. -->
+        <label for="w-req-amount" style="margin-top:12px">Request a specific amount (DGB, optional)</label>
+        <input id="w-req-amount" inputmode="decimal" autocomplete="off" placeholder="e.g. 12.5" />
+        <div class="grid" style="margin-top:0">
+          <button id="w-copy-uri" class="secondary" style="display:none">Copy payment request</button>
         </div>
         <!-- Same taproot key, DigiDollar base58check form (DD…/TD…/RD…). Core and
              mobile wallets can only send DigiDollar to THIS form, not to dgb1p…. -->
