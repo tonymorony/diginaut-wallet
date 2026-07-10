@@ -34,6 +34,15 @@ export function tierById(tierId) {
 const ceilDiv = (n, d) => (n + d - 1n) / d;
 
 /**
+ * Collateral ratio in percent after the DCA network-health multiplier —
+ * Core dca.cpp ApplyDCA: ceil(baseRatio × multiplierBps / 10000).
+ * Exported so UI quote surfaces display the same ratio the mint pays.
+ */
+export function effectiveRatioPercent(ratioPercent, dcaMultiplierBps = 10_000n) {
+  return Number(ceilDiv(BigInt(ratioPercent) * dcaMultiplierBps, DCA_BPS_SCALE));
+}
+
+/**
  * DGB satoshis that must be locked to mint the given DigiDollar amount.
  * Exact Core arithmetic: ceiling division, MAX_MONEY caps, +1% safety margin (floored).
  *
@@ -50,8 +59,7 @@ export function requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd, d
   if (ddCents <= 0n) throw new RangeError(`DigiDollar amount must be positive, got ${ddCents}`);
   if (oraclePriceMicroUsd <= 0n) throw new RangeError(`oracle price must be positive, got ${oraclePriceMicroUsd}`);
 
-  // Core dca.cpp ApplyDCA: effectiveRatio = ceil(baseRatio * bps / 10000)
-  const effectiveRatio = ceilDiv(BigInt(tier.ratioPercent) * dcaMultiplierBps, DCA_BPS_SCALE);
+  const effectiveRatio = BigInt(effectiveRatioPercent(tier.ratioPercent, dcaMultiplierBps));
 
   // Core txbuilder.cpp: base = ceil(ddCents * COIN * ratio * 100 / priceMicroUsd)
   const base = ceilDiv(ddCents * COIN * effectiveRatio * 100n, oraclePriceMicroUsd);

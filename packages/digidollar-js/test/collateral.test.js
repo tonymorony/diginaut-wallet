@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LOCK_TIERS, requiredCollateralSats } from 'digidollar-js';
+import { LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent } from 'digidollar-js';
 
 // Expected values mirror DigiByte Core v9.26.4 arithmetic
 // (src/digidollar/txbuilder.cpp CalculateRequiredCollateral):
@@ -66,4 +66,23 @@ test('degraded system health raises collateral via DCA basis points', () => {
     dcaMultiplierBps: 12_500n,
   });
   assert.equal(sats, 7_010_776_545_167n); // vs 5_602_218_700_475n at healthy 10000 bps
+});
+
+test('every Core DCA health tier scales the quote (#62 honest quotes)', () => {
+  // Core dca.cpp HEALTH_TIERS: 10000 healthy / 12500 warning / 15000 critical /
+  // 20000 emergency. 6-month tier (350%) at $0.00631/DGB, $100 mint.
+  const quote = (dcaMultiplierBps) => requiredCollateralSats({
+    ddCents: 10_000n, tierId: '6months', oraclePriceMicroUsd: 6_310n, dcaMultiplierBps,
+  });
+  // the exported display helper is the same ApplyDCA ceiling Core uses
+  assert.equal(effectiveRatioPercent(350, 12_500n), 438); // ceil(350 × 1.25)
+  assert.equal(effectiveRatioPercent(350), 350); // healthy default
+  assert.equal(quote(10_000n), 5_602_218_700_475n); // healthy — the old implicit default
+  assert.equal(quote(15_000n), 8_403_328_050_713n); // critical: ceil(350×1.5) = 525%
+  assert.equal(quote(20_000n), 11_204_437_400_951n); // emergency: 700%
+  // Emergency doubles the most expensive tier too (1 hour, 1000% → 2000%)
+  assert.equal(
+    requiredCollateralSats({ ddCents: 10_000n, tierId: '1hour', oraclePriceMicroUsd: 6_310n, dcaMultiplierBps: 20_000n }),
+    32_012_678_288_431n,
+  );
 });
