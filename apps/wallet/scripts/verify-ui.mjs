@@ -79,7 +79,9 @@ function check(cond, what) {
 await cdp('Page.navigate', { url: APP }, sessionId);
 await waitFor(visible('w-none'), 'no-wallet state');
 check(true, 'fresh profile boots into "no wallet" state');
-check((await evaluate(`document.body.textContent`)).includes('TESTNET ONLY'), 'TESTNET ONLY banner visible');
+// the banner is runtime-rendered from the node's chain (#61); mock chain = 'test'
+await waitFor(`${text('net-banner')}.includes('TESTNET ONLY') && !document.getElementById('net-banner').hidden`, 'runtime TESTNET banner');
+check(true, 'TESTNET ONLY banner rendered from the node chain (mock=test)');
 await shot('01-no-wallet.png');
 
 // -- probe: mismatched passwords rejected

@@ -98,10 +98,12 @@ test('serves crypto deps under /vendor/ for the browser import map', async () =>
   });
 });
 
-test('wallet UI carries the permanent TESTNET ONLY banner', async () => {
+test('wallet HTML hardcodes no network banner — chrome is set at runtime from the node chain (#61)', async () => {
   await withServer(async (base) => {
     const html = await (await fetch(base + '/')).text();
-    assert.match(html, /TESTNET ONLY/);
+    assert.doesNotMatch(html, /TESTNET ONLY/);
+    assert.doesNotMatch(html, /<title>[^<]*testnet/i);
+    assert.match(html, /id="net-banner"/);
   });
 });
 

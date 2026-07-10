@@ -312,7 +312,7 @@ export function startServer(overrides = {}) {
 
   server.listen(config.port, () => {
     const { port } = server.address();
-    console.log(`\n  DigiDollar Wallet (testnet)`);
+    console.log(`\n  Diginaut · DigiDollar wallet`);
     console.log(`  → http://localhost:${port}`);
     console.log(`  mode: ${mockMode ? 'MOCK (set DGB_RPC_USER/DGB_RPC_PASS for a real node)' : `REAL node @ ${config.rpc.url}`}\n`);
   });

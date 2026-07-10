@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Diginaut · DigiDollar testnet wallet</title>
+  <title>Diginaut · DigiDollar wallet</title>
   <link rel="icon" type="image/png" href="/helmet.png" />
   <style>
     /* Design tokens — Stakinator UI kit (Figma master file, Colors pages) */
@@ -68,11 +68,12 @@
     .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px,1fr)); gap: 5px; margin-top: 10px; }
     .oracle { height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
-    .testnet-banner {
+    .net-banner {
       position: sticky; top: 0; z-index: 10; text-align: center; padding: 8px 12px;
       background: var(--warn-bg); color: var(--warn);
       font-size: 12px; font-weight: 600; letter-spacing: .02em;
     }
+    .net-banner[hidden] { display: none; }
     a { color: var(--accent); }
     .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
     .logo { display: flex; align-items: center; gap: 8px; }
@@ -209,7 +210,8 @@
   </style>
 </head>
 <body>
-  <div class="testnet-banner">TESTNET ONLY — no real value. Keys live in this browser; there is no server-side backup.</div>
+  <!-- populated at runtime from the node's chain (netchrome.js, #61) -->
+  <div class="net-banner" id="net-banner" hidden></div>
   <header>
     <div class="topbar">
       <div class="logo" aria-label="Diginaut">
@@ -247,6 +249,13 @@
       <p class="hint" style="margin-top:10px">Syncing your wallet…</p>
     </section>
     <div id="w-open" style="display:none">
+    <!-- connected-but-no-indexer deployments (#61): balances/history/sending
+         need the indexer seam; receiving is client-side and still works -->
+    <section class="card" id="w-no-indexer" style="display:none">
+      <h2>Balance unavailable</h2>
+      <p class="hint" style="margin:0 0 4px">This deployment has no indexer service, so balances, history and sending are unavailable here. Receiving still works — funds arrive on-chain and show up in any block explorer.</p>
+      <button id="w-no-indexer-receive" class="secondary">Show receive address</button>
+    </section>
     <div id="w-money" class="money-grid" style="display:none">
       <div class="money-col" id="money-col-a">
       <section class="card hero">

@@ -10,6 +10,7 @@ import {
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
+import { networkChrome } from '/netchrome.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -139,9 +140,16 @@ async function loadStatus() {
     const net = { main: 'mainnet', test: 'testnet', regtest: 'regtest' }[info.chain];
     if (net) {
       chainState.netName = net; // consensus DD limits are per-network
+      chainState.netKnown = true; // safe to render addresses now
       wallet.network = HD_NETWORKS[net];
       if (wallet.seed) renderAddress();
     }
+    // banner + tab title follow the node's chain — same build on every network
+    const { title, banner } = networkChrome(info.chain);
+    document.title = title;
+    const bannerEl = $('net-banner');
+    bannerEl.textContent = banner ?? '';
+    bannerEl.hidden = banner === null;
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
   }
@@ -212,7 +220,9 @@ $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1
 
 // ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
 let appConfig = { mock: true, faucet: false, indexer: false };
-const chainState = { ddActive: null, netName: 'testnet' }; // refined from the node's chain
+// netName is a provisional default until the node names its chain (netKnown);
+// addresses are never rendered from the guess — see renderAddress.
+const chainState = { ddActive: null, netName: 'testnet', netKnown: false };
 const wallet = {
   mnemonic: null, // set only while unlocked
   seed: null,
@@ -231,6 +241,10 @@ function show(state) {
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
+  // no indexer on this deployment: the money grid never loads, so say why (#61).
+  // Gated on a LOADED config — a failed /api/config fetch must not produce a
+  // confident false "no indexer here" claim on an indexer-equipped deployment.
+  $('w-no-indexer').style.display = open && appConfig.loaded && !appConfig.indexer ? 'block' : 'none';
   if (open) {
     if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
   } else {
@@ -242,8 +256,9 @@ function show(state) {
   }
   dockPriceBlock(open);
   // loading veil covers the gap between unlock and the first indexer answer
+  // (only once the chain is known — before that "syncing" would be a lie)
   $('loading-veil').style.display =
-    open && appConfig.indexer && $('w-money').style.display === 'none' ? 'block' : 'none';
+    open && appConfig.indexer && chainState.netKnown && $('w-money').style.display === 'none' ? 'block' : 'none';
 }
 
 // The price block lives inside the hero card while connected (chart right
@@ -321,6 +336,7 @@ for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal']) {
 }
 $('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
 $('act-receive').addEventListener('click', () => openModal('receive-modal'));
+$('w-no-indexer-receive').addEventListener('click', () => openModal('receive-modal'));
 $('act-mint').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('dd-mint-open').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('net-btn').addEventListener('click', () => openModal('net-modal'));
@@ -341,6 +357,19 @@ $('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-co
 $('w-disconnect').addEventListener('click', () => lockWallet());
 
 function renderAddress() {
+  // Never show an address for a guessed network: on a mainnet deployment with
+  // an unreachable node the default would be testnet-encoded — confusing at
+  // best. loadStatus retries until the node names its chain, then re-renders.
+  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet')];
+  if (!chainState.netKnown) {
+    $('w-path').textContent = '';
+    $('w-address').textContent = 'waiting for the node to report a supported network…';
+    $('w-chip-addr').textContent = '…';
+    $('w-qr').innerHTML = '';
+    for (const b of addressActions) b.disabled = true; // nothing here to copy/claim
+    return;
+  }
+  for (const b of addressActions) b.disabled = false;
   const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
   $('w-path').textContent = path;
   $('w-address').textContent = address;
@@ -514,7 +543,10 @@ function renderPositions(perAddr) {
 }
 
 async function refreshMoney() {
-  if (!wallet.seed || !appConfig.indexer) return;
+  // netKnown gate: querying the indexer with addresses derived for a GUESSED
+  // network would render a confident zero balance — wait for the real chain
+  // (the 8s poll picks up automatically once loadStatus succeeds).
+  if (!wallet.seed || !appConfig.indexer || !chainState.netKnown) return;
   try {
     // Each derivation is watched at TWO addresses: its P2TR (receive address,
     // carries DD positions/tokens) and its P2WPKH twin — mint change lands
@@ -1117,7 +1149,7 @@ async function boot() {
   setInterval(loadPriceChart, 60_000);
   try {
     const cfg = await (await fetch('/api/config')).json();
-    appConfig = cfg;
+    appConfig = { ...cfg, loaded: true };
     const badge = $('modeBadge');
     if (cfg.mock) {
       badge.className = 'badge mock';
@@ -1129,7 +1161,12 @@ async function boot() {
     if (cfg.faucet) $('w-faucet').style.display = 'block';
   } catch { /* ignore */ }
   bootWallet();
-  loadStatus();
+  // retry until the node names its chain: a transient boot failure must not
+  // strand the UI network-unknown (no addresses, no testnet banner) forever
+  (async function statusLoop() {
+    await loadStatus();
+    if (!chainState.netKnown) setTimeout(statusLoop, 5000);
+  })();
   loadOracle();
 }
 
