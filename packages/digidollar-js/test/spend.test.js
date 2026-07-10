@@ -51,6 +51,20 @@ test('planSpend picks a single large UTXO and computes the 1-in-2-out fee', () =
   assert.equal(plan.changeSats, 5_000_000n - 4_000_000n - 15_400n);
 });
 
+test('planSpend prices a legacy P2PKH recipient output smaller than P2TR (#68)', () => {
+  // Recipient P2PKH script (25 B) → output wu (9+25)·4 = 136, vs 172 for P2TR.
+  // 42 + 230 + 136 (recipient) + 172 (P2TR change) = 580 wu → ceil(580/4)=145 vB
+  // → 145·100000/1000 = 14_500 sats (< the 15_400 an all-P2TR tx would pay).
+  const recipientScriptHex = `76a914${'11'.repeat(20)}88ac`;
+  const plan = planSpend({
+    utxos: [utxo(5_000_000n, 2)],
+    amountSats: 4_000_000n,
+    recipientScriptHex,
+  });
+  assert.equal(plan.feeSats, 14_500n);
+  assert.equal(plan.changeSats, 5_000_000n - 4_000_000n - 14_500n);
+});
+
 test('planSpend accumulates UTXOs largest-first and re-prices the fee per input', () => {
   // 2 inputs: 42 + 2·230 + 2·172 = 846 wu → vsize ceil(846/4)=212 vB → 21_200 sats.
   // Core rounds weight→vsize BEFORE pricing (GetVirtualTransactionSize); the

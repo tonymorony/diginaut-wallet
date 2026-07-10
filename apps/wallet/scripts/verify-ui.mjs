@@ -105,6 +105,30 @@ const ddAddr0 = await evaluate(text('w-dd-address'));
 check(/^TD[1-9A-HJ-NP-Za-km-z]{40,}$/.test(ddAddr0), `create → DigiDollar (TD…) address shown for interop: ${ddAddr0}`);
 await shot('02-created-unlocked.png');
 
+// -- 2b. #68 DGB send accepts legacy base58 recipients, with network gating.
+// Mock node chain = 'test' → netName 'testnet'. We probe the address-validation
+// branch of w-send-review; the mock wallet has no funds, so an ACCEPTED address
+// falls through to a funds/indexer error — anything that is NOT an address error
+// proves the base58 recipient was decoded and network-checked.
+async function sendReviewError(addr, amount = '1') {
+  await setVal('w-send-to', addr);
+  await setVal('w-send-amount', amount);
+  await evaluate(`document.getElementById('w-send-err').textContent = ''`);
+  await click('w-send-review');
+  await waitFor(`${text('w-send-err')}.length > 0`, `send error for ${addr.slice(0, 8)}…`);
+  return evaluate(text('w-send-err'));
+}
+await click('act-send');
+await waitFor(`document.getElementById('send-modal').classList.contains('open')`, 'send modal open');
+const errGarbage = await sendReviewError('not-an-address');
+check(/invalid address/.test(errGarbage), `PROBE: garbage recipient → "${errGarbage}"`);
+const errMainnet = await sendReviewError('DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc'); // real mainnet P2PKH
+check(/not for this network/.test(errMainnet), `PROBE: mainnet base58 on testnet → "${errMainnet}"`);
+const errTestnet = await sendReviewError('sqdPA2TDtoAbqMnqS1sgsoyzjzJYa7eDck'); // testnet P2PKH
+check(!/invalid address|not for this network/.test(errTestnet),
+  `legacy testnet base58 recipient ACCEPTED (past validation → "${errTestnet}")`);
+await evaluate(`document.getElementById('send-modal').classList.remove('open')`); // close, back to wallet
+
 // -- 3. seed backup view (optional, reveals 12 words)
 await click('w-backup');
 const seed = (await evaluate(text('w-seed-words'))).trim();

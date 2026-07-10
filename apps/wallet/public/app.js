@@ -5,8 +5,8 @@
 import {
   LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
-  planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
-  decodeDDAddress, encodeDDAddress,
+  planSpend, buildSignedSpendTx, scriptPubKeyFromAddress,
+  decodeDDAddress, encodeDDAddress, decodeAddress,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
@@ -842,12 +842,22 @@ $('w-send-review').addEventListener('click', (e) =>
   busy(e.target, 'w-send-err', async () => {
     $('w-send-out').textContent = '';
     const address = $('w-send-to').value.trim();
-    const { hrp } = decodeWitnessAddress(address); // throws on malformed input
-    if (hrp !== wallet.network.hrp) throw new Error(`address is not for this network (expected ${wallet.network.hrp}…)`);
+    // DGB sends accept every address type: segwit bech32/bech32m AND legacy
+    // base58check P2PKH (D…)/P2SH (S…/3…). decodeAddress normalizes all of them.
+    let decoded;
+    try {
+      decoded = decodeAddress(address);
+    } catch (err) {
+      throw new Error(`invalid address: ${err.message}`);
+    }
+    if (!decoded.networks.includes(chainState.netName)) {
+      throw new Error(`address is not for this network (need a ${chainState.netName} address)`);
+    }
+    const recipientScriptHex = decoded.scriptPubKeyHex;
     const amountSats = dgbToSats($('w-send-amount').value);
     if (amountSats <= 0n) throw new Error('amount must be positive');
-    const plan = planSpend({ utxos: await spendableUtxos(), amountSats });
-    pendingSend = { plan, recipientScriptHex: scriptPubKeyFromAddress(address), amountSats, address };
+    const plan = planSpend({ utxos: await spendableUtxos(), amountSats, recipientScriptHex });
+    pendingSend = { plan, recipientScriptHex, amountSats, address };
     $('w-send-c-to').textContent = address;
     $('w-send-c-amount').textContent = satsToDgb(amountSats);
     $('w-send-c-fee').textContent = satsToDgb(plan.feeSats);

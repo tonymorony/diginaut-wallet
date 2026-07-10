@@ -345,6 +345,10 @@ const P2TR_INPUT_WU = 230n; // outpoint+len+sequence (41 vB ·4) + witness [64B 
 const P2WPKH_INPUT_WU = 272n;
 const P2TR_OUTPUT_WU = 172n; // 8 value + 1 len + 34 script, ·4
 const inputWeight = (u) => (u.type === 'p2wpkh' ? P2WPKH_INPUT_WU : P2TR_INPUT_WU);
+// Weight of a tx output from its scriptPubKey: (8 value + 1 script-len + script)·4.
+// Script-len fits one byte for every standard output (≤34 B). Legacy P2PKH (25 B)
+// and P2SH (23 B) outputs are smaller than the 34-byte P2TR/P2WSH witness program.
+const outputWeight = (scriptHex) => (9n + BigInt(scriptHex.length / 2)) * 4n;
 
 /**
  * Coin selection + fee plan for a standard 2-output (recipient + change) spend.
@@ -352,16 +356,19 @@ const inputWeight = (u) => (u.type === 'p2wpkh' ? P2WPKH_INPUT_WU : P2TR_INPUT_W
  * default; `type: 'p2wpkh'` marks a witness-v0 coin (mint change). Returns
  * { inputs, feeSats, changeSats } where `inputs` are the UTXO objects verbatim.
  */
-export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_RATE_SATS_PER_KVB }) {
+export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_RATE_SATS_PER_KVB, recipientScriptHex }) {
   const sorted = [...utxos].sort((a, b) => (a.valueSats < b.valueSats ? 1 : -1));
   const inputs = [];
   let total = 0n;
   let inputsWu = 0n;
+  // Recipient output weight from its actual script (legacy P2PKH/P2SH is smaller
+  // than P2TR); change is always the wallet's key-path P2TR receive address.
+  const recipientOutputWu = recipientScriptHex ? outputWeight(recipientScriptHex) : P2TR_OUTPUT_WU;
   for (const u of sorted) {
     inputs.push(u);
     total += u.valueSats;
     inputsWu += inputWeight(u);
-    const weight = TX_OVERHEAD_WU + inputsWu + P2TR_OUTPUT_WU * 2n;
+    const weight = TX_OVERHEAD_WU + inputsWu + recipientOutputWu + P2TR_OUTPUT_WU;
     // Core rounds weight→vsize FIRST (GetVirtualTransactionSize = ceil(weight/4)),
     // then prices per vbyte — rounding at the end under-pays by up to 75 sats/kvB.
     const vsize = (weight + 3n) / 4n;
