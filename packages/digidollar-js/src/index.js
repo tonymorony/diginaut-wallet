@@ -73,7 +73,7 @@ export function requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd, d
 
 export { buildDDVersion, parseDDVersion, parseMintMetadata, buildMintMetadata, parseTransferMetadata, buildTransferMetadata, parseRedeemMetadata, buildRedeemMetadata } from './envelope.js';
 export { ddTokenOutputKey, collateralOutputKey, normalRedemptionLeafHex, normalRedemptionLeafHash, collateralControlBlockHex, COLLATERAL_NUMS_KEY } from './taproot.js';
-export { encodeWitnessAddress, decodeWitnessAddress, scriptPubKeyFromAddress, encodeDDAddress, decodeDDAddress, toDDAddress } from './address.js';
+export { encodeWitnessAddress, decodeWitnessAddress, scriptPubKeyFromAddress, encodeDDAddress, decodeDDAddress, toDDAddress, decodeAddress, decodeLegacyAddress } from './address.js';
 export { buildSignedMintTx, buildSignedTransferTx, buildTransferOutputs, buildSignedRedeemTx, buildRedeemOutputs, planSpend, buildSignedSpendTx, serializeTx, xOnlyPubKey, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS, MIN_DD_TX_FEE_SATS, STANDARD_FEE_RATE_SATS_PER_KVB } from './txbuild.js';
 export { generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, p2wpkhAddress, HD_NETWORKS } from './hd.js';
 

@@ -64,12 +64,19 @@ export function encodeWitnessAddress(hrp, version, programHex) {
   return hrp + '1' + [...data, ...checksum].map((d) => CHARSET[d]).join('');
 }
 
-/** scriptPubKey (hex) paying to a segwit address: OP_n <program>. Throws on bad address. */
-export function scriptPubKeyFromAddress(addr) {
-  const { version, programHex } = decodeWitnessAddress(addr);
+/** scriptPubKey (hex) for a segwit output: OP_n <program>. */
+function witnessScriptHex(version, programHex) {
   const opN = version === 0 ? 0x00 : 0x50 + version;
   const program = hexToBytes(programHex);
   return bytesToHex(Uint8Array.from([opN, program.length, ...program]));
+}
+
+/**
+ * scriptPubKey (hex) paying to ANY DigiByte address — segwit (bech32/bech32m)
+ * or legacy base58check P2PKH/P2SH. Throws on a malformed address.
+ */
+export function scriptPubKeyFromAddress(addr) {
+  return decodeAddress(addr).scriptPubKeyHex;
 }
 
 /** Decode a segwit address → { hrp, version, programHex }. Throws on bad checksum. */
@@ -217,4 +224,83 @@ export function decodeDDAddress(addr) {
 export function toDDAddress(addr) {
   const { outputKeyHex, network } = decodeDDAddress(addr);
   return encodeDDAddress(outputKeyHex, network);
+}
+
+// ── Legacy base58check payment addresses (P2PKH / P2SH) ─────────────────────
+// Version bytes verified against Core kernel/chainparams.cpp base58Prefixes:
+//   mainnet  PUBKEY_ADDRESS=30 (D…), SCRIPT_ADDRESS=63 (S…),
+//            SCRIPT_ADDRESS_OLD=5 (legacy 3…, still valid)   [L230-232]
+//   testnet  PUBKEY_ADDRESS=126, SCRIPT_ADDRESS=140          [L569-570]
+//   regtest  PUBKEY_ADDRESS=126, SCRIPT_ADDRESS=140          [L1220-1221]
+// Note: testnet and regtest share the SAME base58 version bytes — a legacy
+// address cannot distinguish them (unlike bech32 dgbt/dgbrt or DD TD/RD).
+const LEGACY_VERSIONS = Object.freeze({
+  30: { type: 'p2pkh', networks: ['mainnet'] },
+  63: { type: 'p2sh', networks: ['mainnet'] },
+  5: { type: 'p2sh', networks: ['mainnet'] },
+  126: { type: 'p2pkh', networks: ['testnet', 'regtest'] },
+  140: { type: 'p2sh', networks: ['testnet', 'regtest'] },
+});
+
+const legacyScriptHex = (type, hash160Hex) => {
+  const h = hexToBytes(hash160Hex);
+  if (h.length !== 20) throw new RangeError('hash160 must be 20 bytes');
+  return type === 'p2pkh'
+    ? bytesToHex(Uint8Array.from([0x76, 0xa9, 0x14, ...h, 0x88, 0xac])) // OP_DUP OP_HASH160 <h> OP_EQUALVERIFY OP_CHECKSIG
+    : bytesToHex(Uint8Array.from([0xa9, 0x14, ...h, 0x87])); // OP_HASH160 <h> OP_EQUAL
+};
+
+/**
+ * Decode a legacy DigiByte base58check address → { type, networks, hash160Hex }.
+ * `type` is 'p2pkh' | 'p2sh'; `networks` lists every network the version byte is
+ * valid on. Rejects whitespace (base58 decode silently strips it) and bad checksums.
+ */
+export function decodeLegacyAddress(addr) {
+  if (typeof addr !== 'string') throw new RangeError('address must be a string');
+  if (/\s/.test(addr)) throw new RangeError('address must not contain whitespace');
+  const payload = base58CheckDecode(addr);
+  if (payload.length !== 21) throw new RangeError('legacy address payload must be 21 bytes (1 version + 20 hash)');
+  const info = LEGACY_VERSIONS[payload[0]];
+  if (!info) throw new RangeError('unrecognized address version byte');
+  return { type: info.type, networks: info.networks, hash160Hex: bytesToHex(payload.slice(1)) };
+}
+
+// hrp → network for DigiByte witness addresses.
+const WITNESS_HRP = Object.freeze({ dgb: 'mainnet', dgbt: 'testnet', dgbrt: 'regtest' });
+
+const witnessType = (version, programHex) => {
+  const bytes = programHex.length / 2;
+  if (version === 0 && bytes === 20) return 'p2wpkh';
+  if (version === 0 && bytes === 32) return 'p2wsh';
+  if (version === 1 && bytes === 32) return 'p2tr';
+  return `witness_v${version}`;
+};
+
+/**
+ * Decode ANY DigiByte payment address — segwit bech32/bech32m OR legacy
+ * base58check P2PKH/P2SH — to a normalized descriptor for validation + building:
+ *   { kind:'witness'|'legacy', type, networks:string[], scriptPubKeyHex }
+ * `networks` is the set of DigiByte networks the address is valid on (empty for a
+ * well-formed segwit address under a non-DigiByte hrp, e.g. bc). Throws a single
+ * friendly error when the string is neither a valid segwit nor base58 address.
+ */
+export function decodeAddress(addr) {
+  if (typeof addr !== 'string') throw new RangeError('address must be a string');
+  if (/\s/.test(addr)) throw new RangeError('address must not contain whitespace');
+  // Segwit first (bech32 / bech32m).
+  try {
+    const { hrp, version, programHex } = decodeWitnessAddress(addr);
+    return {
+      kind: 'witness',
+      type: witnessType(version, programHex),
+      networks: WITNESS_HRP[hrp] ? [WITNESS_HRP[hrp]] : [],
+      scriptPubKeyHex: witnessScriptHex(version, programHex),
+    };
+  } catch { /* not segwit — try legacy */ }
+  // Legacy base58check P2PKH / P2SH.
+  try {
+    const { type, networks, hash160Hex } = decodeLegacyAddress(addr);
+    return { kind: 'legacy', type, networks, scriptPubKeyHex: legacyScriptHex(type, hash160Hex) };
+  } catch { /* neither */ }
+  throw new RangeError('not a valid DigiByte address (bech32, bech32m, or base58)');
 }

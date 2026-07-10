@@ -7,6 +7,8 @@ import {
   encodeDDAddress,
   decodeDDAddress,
   toDDAddress,
+  decodeAddress,
+  decodeLegacyAddress,
 } from 'digidollar-js';
 
 // BIP-350 reference vector: the BIP-341 example P2TR output key under hrp "bc".
@@ -112,4 +114,66 @@ test('decodeDDAddress rejects whitespace anywhere (Core DD-FA-FUNC-019)', () => 
 test('encodeDDAddress rejects a non-32-byte key and unknown network', () => {
   assert.throws(() => encodeDDAddress('abcd', 'mainnet'), /32-byte hex/);
   assert.throws(() => encodeDDAddress(DD_KEY, 'signet'), /unknown network/);
+});
+
+// ── Legacy base58check P2PKH / P2SH (#68) ───────────────────────────────────
+// Golden vectors. Mainnet pair are REAL Core addresses (P2PKH also appears in
+// Core test/util/data/txcreatesignv1.json); hashes cross-checked with an
+// independent base58check decoder. testnet/legacy-3 vectors built from the same
+// hashes under the Core version bytes (chainparams.cpp).
+const H_PKH = '5834479edbbe0539b31ffd3a8f8ebadc2165ed01'; // 20-byte hash160
+const H_SH = '1c6fbaf46d64221e80cbae182c33ddf81b9294ac';
+
+test('decodeLegacyAddress + scriptPubKeyFromAddress: mainnet P2PKH (D…)', () => {
+  const addr = 'DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc';
+  assert.deepEqual(decodeLegacyAddress(addr), { type: 'p2pkh', networks: ['mainnet'], hash160Hex: H_PKH });
+  // OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG — byte-exact vs Core fixture
+  assert.equal(scriptPubKeyFromAddress(addr), `76a914${H_PKH}88ac`);
+});
+
+test('decodeLegacyAddress + scriptPubKeyFromAddress: mainnet P2SH (S…)', () => {
+  const addr = 'SPtMoNQWMfJ9C6U19oDzHaY67ADQJF5rXu';
+  assert.deepEqual(decodeLegacyAddress(addr), { type: 'p2sh', networks: ['mainnet'], hash160Hex: H_SH });
+  // OP_HASH160 <20> OP_EQUAL
+  assert.equal(scriptPubKeyFromAddress(addr), `a914${H_SH}87`);
+});
+
+test('legacy "3…" P2SH (version 5) still decodes to mainnet P2SH', () => {
+  const addr = '34HNh57oBCRKkxNyjTuWAJkTbuGh6jg2Ms';
+  assert.deepEqual(decodeLegacyAddress(addr), { type: 'p2sh', networks: ['mainnet'], hash160Hex: H_SH });
+  assert.equal(scriptPubKeyFromAddress(addr), `a914${H_SH}87`);
+});
+
+test('testnet & regtest share legacy version bytes (one address, both networks)', () => {
+  assert.deepEqual(decodeLegacyAddress('sqdPA2TDtoAbqMnqS1sgsoyzjzJYa7eDck'),
+    { type: 'p2pkh', networks: ['testnet', 'regtest'], hash160Hex: H_PKH });
+  assert.deepEqual(decodeLegacyAddress('yNuocjMh2YycAUCg36sXdEVfa1432H4hmw'),
+    { type: 'p2sh', networks: ['testnet', 'regtest'], hash160Hex: H_SH });
+});
+
+test('decodeAddress normalizes every address type to a script + network set', () => {
+  // segwit still works and carries its DigiByte network + type
+  const p2tr = encodeWitnessAddress('dgb', 1, DD_KEY);
+  assert.deepEqual(decodeAddress(p2tr), {
+    kind: 'witness', type: 'p2tr', networks: ['mainnet'], scriptPubKeyHex: `5120${DD_KEY}`,
+  });
+  const p2wpkh = encodeWitnessAddress('dgbt', 0, H_PKH);
+  const dW = decodeAddress(p2wpkh);
+  assert.equal(dW.type, 'p2wpkh');
+  assert.deepEqual(dW.networks, ['testnet']);
+  // legacy routes through the same entry point
+  assert.deepEqual(decodeAddress('DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc'), {
+    kind: 'legacy', type: 'p2pkh', networks: ['mainnet'], scriptPubKeyHex: `76a914${H_PKH}88ac`,
+  });
+});
+
+test('bad-checksum base58 gives a friendly error, not "malformed bech32"', () => {
+  const bad = 'DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZd'; // last char flipped
+  assert.throws(() => decodeAddress(bad), (e) => !/malformed bech32/.test(e.message) && /not a valid DigiByte address/.test(e.message));
+  assert.throws(() => decodeAddress('totally-not-an-address'), /not a valid DigiByte address/);
+});
+
+test('decodeAddress / decodeLegacyAddress reject whitespace', () => {
+  assert.throws(() => decodeAddress(' DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc'), /whitespace/);
+  assert.throws(() => decodeLegacyAddress('DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc\n'), /whitespace/);
 });
