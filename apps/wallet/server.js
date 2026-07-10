@@ -93,6 +93,12 @@ const ALLOWED_METHODS = new Set([
   // Broadcast of CLIENT-SIGNED transactions (issue #6). The node only relays;
   // it cannot spend anything the browser didn't already sign.
   'sendrawtransaction',
+  // Honest quotes (#62): both read-only. The DCA multiplier scales required
+  // collateral with network health — quoting without it under-quotes on a
+  // degraded system. Protection status carries the volatility-freeze flags the
+  // mint flow checks BEFORE asking the user to sign.
+  'getdcamultiplier',
+  'getprotectionstatus',
   // mintdigidollar / redeemdigidollar / senddigidollar intentionally NOT
   // exposed — fund-moving flows arrive client-signed via M2/M3 (ADR-0001).
 ]);
@@ -143,6 +149,33 @@ function mockResponse(method, params) {
         total_oracle_slots: 35,
         consensus_threshold: 7,
       }));
+    case 'getdcamultiplier': {
+      // Mirrors Core dca.cpp HEALTH_TIERS exactly, including the real RPC's
+      // optional system_health param (lets tests exercise degraded tiers).
+      const health = Number.isFinite(Number(params?.[0])) && params?.[0] !== undefined
+        ? Math.min(30_000, Math.max(0, Number(params[0])))
+        // healthy by default; MOCK_SYSTEM_HEALTH lets drivers demo degraded tiers
+        : Number(process.env.MOCK_SYSTEM_HEALTH) || 200;
+      const tier = health >= 150 ? { multiplier: 1.0, tier_status: 'healthy' }
+        : health >= 120 ? { multiplier: 1.25, tier_status: 'warning' }
+        : health >= 110 ? { multiplier: 1.5, tier_status: 'critical' }
+        : { multiplier: 2.0, tier_status: 'emergency' };
+      return {
+        ...tier,
+        system_health: health,
+        description: tier.multiplier === 1.0
+          ? 'No additional collateral required (healthy system)'
+          : `${tier.multiplier.toFixed(1)}x base collateral required (${tier.tier_status} system)`,
+      };
+    }
+    case 'getprotectionstatus':
+      return {
+        oracle: { available: true, status: 'available', minting_restricted: false, minting_restricted_reason: '' },
+        dca: { active: false, current_multiplier: 1.0, tier: 'healthy', system_health: 200, trend: 'stable' },
+        err: { active: false, threshold: 100, current_ratio: 200, err_ratio_bps: 10_000, required_burn_per_10000: 10_000, status: 'normal', evaluation_status: 'priced' },
+        volatility: { protection_active: false, current_volatility: 2.1, protection_threshold: 20, minting_restricted: false },
+        overall: { status: 'secure', active_protections: [], warnings: [] },
+      };
     case 'sendrawtransaction': {
       // Fake txid: sha256 would be overkill for a mock — a stable-looking hash
       // derived from the hex keeps the UI flow exercisable offline.

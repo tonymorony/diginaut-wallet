@@ -350,3 +350,67 @@ test('config exposes the block-explorer tx prefix so the UI can link txids', asy
     assert.equal((await (await fetch(base + '/api/config')).json()).explorerTxUrl, '', 'unset by default');
   });
 });
+
+// ---- Honest quotes (#62): DCA multiplier + protection status, read-only ----
+
+test('proxies getdcamultiplier — mock mirrors the real RPC shape (#62)', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getdcamultiplier' }),
+    });
+    assert.equal(res.status, 200);
+    const { result } = await res.json();
+    assert.equal(typeof result.multiplier, 'number');
+    assert.equal(typeof result.system_health, 'number');
+    assert.match(result.tier_status, /^(healthy|warning|critical|emergency)$/);
+    assert.equal(typeof result.description, 'string');
+  });
+});
+
+test('mock getdcamultiplier honors the optional health param with Core tier math', async () => {
+  await withServer(async (base) => {
+    const at = async (health) => {
+      const res = await fetch(base + '/api/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: 'getdcamultiplier', params: [health] }),
+      });
+      return (await res.json()).result;
+    };
+    // Core dca.cpp HEALTH_TIERS bands
+    assert.deepEqual([(await at(150)).multiplier, (await at(150)).tier_status], [1.0, 'healthy']);
+    assert.deepEqual([(await at(130)).multiplier, (await at(130)).tier_status], [1.25, 'warning']);
+    assert.deepEqual([(await at(115)).multiplier, (await at(115)).tier_status], [1.5, 'critical']);
+    assert.deepEqual([(await at(90)).multiplier, (await at(90)).tier_status], [2.0, 'emergency']);
+  });
+});
+
+test('proxies getprotectionstatus — mock has the freeze flags the mint gate reads (#62)', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getprotectionstatus' }),
+    });
+    assert.equal(res.status, 200);
+    const { result } = await res.json();
+    assert.equal(typeof result.volatility.minting_restricted, 'boolean');
+    assert.equal(typeof result.oracle.minting_restricted, 'boolean');
+    assert.equal(typeof result.dca.current_multiplier, 'number');
+  });
+});
+
+test('the #62 whitelist extension added no fund-moving RPC', async () => {
+  await withServer(async (base) => {
+    for (const method of ['mintdigidollar', 'senddigidollar', 'sendmanydigidollar', 'redeemdigidollar', 'walletpassphrase']) {
+      const res = await fetch(base + '/api/rpc', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method }),
+      });
+      assert.equal(res.status, 403, `${method} must stay blocked`);
+    }
+  });
+});

@@ -11,6 +11,8 @@ import {
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 import { networkChrome } from '/netchrome.js';
+import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
+import { friendlyDDError } from '/dderrors.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -29,6 +31,48 @@ async function rpc(method, params = []) {
 const fmtDGB = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
 const fmtUSD = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// sendrawtransaction with Core's consensus reject strings translated (#62) —
+// "minting-frozen-volatility" is not an error a human can act on.
+async function broadcastTx(hex) {
+  try {
+    return await rpc('sendrawtransaction', [hex]);
+  } catch (err) {
+    throw new Error(friendlyDDError(err.message) ?? err.message);
+  }
+}
+
+// ---- DCA network-health multiplier (#62) ----
+// Core scales required collateral by system health (dca.cpp): quoting without
+// it under-quotes on a degraded system and the node rejects every mint.
+let lastDcaBps = null; // basis points (10000 = healthy 1.0×); null until fetched
+let lastDcaInfo = null; // raw getdcamultiplier result — tier_status feeds quote notes
+
+// Effective collateral ratio in percent — Core's ceil(base × bps / 10000).
+const effectiveRatioPercent = (ratioPercent, bps) =>
+  Number((BigInt(ratioPercent) * bps + 9_999n) / 10_000n);
+
+// note like "1.5× collateral — network health: critical", or null when healthy
+const dcaNote = () => (lastDcaInfo ? describeDca(lastDcaInfo) : null);
+
+async function loadDca() {
+  try {
+    const dca = await rpc('getdcamultiplier');
+    lastDcaBps = dcaBpsFromMultiplier(dca.multiplier);
+    lastDcaInfo = dca;
+  } catch {
+    // Pre-activation the RPC throws, and a down node can't answer: previews
+    // fall back to healthy 1.0×; the review step re-fetches and fails honestly.
+    lastDcaBps = null;
+    lastDcaInfo = null;
+  }
+  recalc();
+  updateMintEstimate();
+  refreshTierReadout();
+}
+
+// rebound by initMintTiers so a late DCA answer updates the tier pill too
+let refreshTierReadout = () => {};
+
 // ---- Mint calculator (pure client-side, exact Core arithmetic via digidollar-js) ----
 function tierFor() {
   return LOCK_TIERS.find((t) => t.id === $('c-tier').value) || LOCK_TIERS[0];
@@ -37,13 +81,18 @@ function recalc() {
   const amount = Math.max(0, Number($('c-amount').value) || 0);
   const price = Math.max(0, Number($('c-price').value) || 0);
   const tier = tierFor();
-  $('r-ratio').textContent = tier.ratioPercent + '%';
-  $('r-usd').textContent = fmtUSD((amount * tier.ratioPercent) / 100);
+  // the quote is honest about network health: ratio and USD reflect the DCA
+  // multiplier the node reports, not the healthy-system base (#62)
+  const bps = lastDcaBps ?? 10_000n;
+  const effRatio = effectiveRatioPercent(tier.ratioPercent, bps);
+  $('r-ratio').textContent = effRatio + '%' + (dcaNote() ? ` (${tier.ratioPercent}% base, ${dcaNote()})` : '');
+  $('r-usd').textContent = fmtUSD((amount * effRatio) / 100);
   try {
     const sats = requiredCollateralSats({
       ddCents: BigInt(Math.round(amount * 100)),
       tierId: tier.id,
       oraclePriceMicroUsd: BigInt(Math.round(price * 1_000_000)),
+      dcaMultiplierBps: bps,
     });
     $('r-dgb').textContent = fmtDGB(Number(sats) / 1e8);
   } catch {
@@ -623,8 +672,10 @@ function updateMintEstimate() {
     const cents = ddToCents($('w-mint-amount').value || '0');
     if (cents <= 0n || lastPriceMicroUsd == null) { el.textContent = ''; return; }
     const tier = LOCK_TIERS.find((t) => t.id === $('w-mint-tier').value) || LOCK_TIERS[0];
-    const sats = requiredCollateralSats({ ddCents: cents, tierId: tier.id, oraclePriceMicroUsd: lastPriceMicroUsd });
-    el.textContent = `≈ ${fmtSats(sats)} DGB collateral (${tier.ratioPercent}% · ${tier.label} lock)`;
+    const bps = lastDcaBps ?? 10_000n;
+    const sats = requiredCollateralSats({ ddCents: cents, tierId: tier.id, oraclePriceMicroUsd: lastPriceMicroUsd, dcaMultiplierBps: bps });
+    const ratio = effectiveRatioPercent(tier.ratioPercent, bps);
+    el.textContent = `≈ ${fmtSats(sats)} DGB collateral (${ratio}% · ${tier.label} lock)` + (dcaNote() ? ` · ${dcaNote()}` : '');
   } catch {
     el.textContent = ''; // partial input while typing
   }
@@ -810,7 +861,7 @@ $('w-send-go').addEventListener('click', (e) =>
       changeScriptHex: scriptPubKeyFromAddress(changeAddress),
       feeSats: plan.feeSats,
     });
-    const txid = await rpc('sendrawtransaction', [hex]);
+    const txid = await broadcastTx(hex);
     resetSend();
     $('w-send-to').value = '';
     $('w-send-amount').value = '';
@@ -845,7 +896,8 @@ function initMintTiers() {
     const tier = LOCK_TIERS[i];
     slider.value = String(i);
     $('tier-name').textContent = tier.label;
-    $('tier-ratio').textContent = tier.ratioPercent + '% collateral';
+    // the pill quotes the EFFECTIVE ratio — the estimate line explains the DCA
+    $('tier-ratio').textContent = effectiveRatioPercent(tier.ratioPercent, lastDcaBps ?? 10_000n) + '% collateral';
     const p = (i / (LOCK_TIERS.length - 1)) * 100;
     slider.style.background = `linear-gradient(90deg, var(--accent) ${p}%, var(--gray-200) ${p}%)`;
   };
@@ -854,6 +906,7 @@ function initMintTiers() {
     $('w-mint-tier').dispatchEvent(new Event('change', { bubbles: true }));
   });
   $('w-mint-tier').addEventListener('change', syncFromSelect);
+  refreshTierReadout = syncFromSelect;
   syncFromSelect();
 }
 
@@ -895,9 +948,31 @@ $('w-mint-review').addEventListener('click', (e) =>
       throw new Error('the oracle price is stale — the network has not published a fresh quote; try again in a few minutes');
     }
     const priceMicroUsd = BigInt(price.price_micro_usd);
-    const collateralSats = requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd: priceMicroUsd });
+    // consensus sanity bounds (#62): the node rejects mints built against a
+    // price outside $0.01–$10 per DGB (bad-oracle-price) — say so BEFORE signing
+    if (priceMicroUsd < 10_000n || priceMicroUsd > 10_000_000n) {
+      throw new Error(`the oracle price ($${(Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })}/DGB) is outside the consensus bounds $0.01–$10 — the network would reject this mint`);
+    }
+    // 3. volatility gate (#62): consensus freezes mints on sharp price moves.
+    // Best-effort — if the status RPC is unavailable the broadcast error
+    // mapping still catches the reject, but warning BEFORE signing is kinder.
+    const prot = await rpc('getprotectionstatus').catch(() => null);
+    if (prot?.volatility?.minting_restricted) {
+      throw new Error('minting is temporarily frozen by consensus: the DGB price moved 20% or more within an hour. Your funds are untouched — try again once the market calms.');
+    }
+    if (prot?.oracle?.minting_restricted) {
+      throw new Error('minting is restricted: the node reports no usable oracle price' + (prot.oracle.minting_restricted_reason ? ` (${prot.oracle.minting_restricted_reason})` : '') + ' — try again in a few minutes');
+    }
+    // 4. honest quote (#62): the node's DCA multiplier scales the required
+    // collateral with network health — without it a degraded-system quote
+    // would be too low and the mint rejected after signing.
+    const dca = await rpc('getdcamultiplier');
+    const dcaMultiplierBps = dcaBpsFromMultiplier(dca.multiplier);
+    lastDcaBps = dcaMultiplierBps; // keep the live preview in step with the review
+    lastDcaInfo = dca;
+    const collateralSats = requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd: priceMicroUsd, dcaMultiplierBps });
     const needSats = collateralSats + MINT_FEE_SATS;
-    // 3. funding gate — the mint spends ONE UTXO, so it must cover everything.
+    // 5. funding gate — the mint spends ONE UTXO, so it must cover everything.
     // Only P2TR coins qualify: buildSignedMintTx signs key-path taproot (a
     // p2wpkh coin — earlier mint change — is consolidated via Send first).
     const utxos = await spendableUtxos();
@@ -911,9 +986,14 @@ $('w-mint-review').addEventListener('click', (e) =>
     }
     const { blocks: tipHeight } = await rpc('getblockchaininfo');
     const unlockHeight = tipHeight + 1 + MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS + tier.lockBlocks;
-    pendingMint = { utxo, ddCents, tierId, priceMicroUsd };
+    pendingMint = { utxo, ddCents, tierId, priceMicroUsd, dcaMultiplierBps };
     $('w-mint-c-dd').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     $('w-mint-c-coll').textContent = fmtSats(collateralSats);
+    // the ratio row makes a degraded-health quote visibly different (#62)
+    const effRatio = effectiveRatioPercent(tier.ratioPercent, dcaMultiplierBps);
+    $('w-mint-c-ratio').textContent = dcaNote()
+      ? `${effRatio}% (${tier.ratioPercent}% base, ${dcaNote()})`
+      : `${effRatio}%`;
     $('w-mint-c-price').textContent = '$' + (Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 5 }) + ' / DGB';
     $('w-mint-c-fee').textContent = fmtSats(MINT_FEE_SATS);
     $('w-mint-c-unlock').textContent = `≈ ${blocksToDate(unlockHeight - tipHeight)} (block ${unlockHeight.toLocaleString('en-US')})`;
@@ -925,7 +1005,7 @@ $('w-mint-cancel').addEventListener('click', resetMint);
 
 $('w-mint-go').addEventListener('click', (e) =>
   busy(e.target, 'w-mint-err', async () => {
-    const { utxo, ddCents, tierId, priceMicroUsd } = pendingMint;
+    const { utxo, ddCents, tierId, priceMicroUsd, dcaMultiplierBps } = pendingMint;
     if (!wallet.seed) throw new Error('wallet is locked');
     const { blocks: tipHeight } = await rpc('getblockchaininfo'); // fresh height at sign time
     const { hex } = buildSignedMintTx({
@@ -934,10 +1014,11 @@ $('w-mint-go').addEventListener('click', (e) =>
       ddCents,
       tierId,
       oraclePriceMicroUsd: priceMicroUsd,
+      dcaMultiplierBps, // sign exactly what was reviewed — the builder recomputes collateral
       tipHeight,
       feeSats: MINT_FEE_SATS,
     });
-    const txid = await rpc('sendrawtransaction', [hex]);
+    const txid = await broadcastTx(hex);
     resetMint();
     $('w-mint-amount').value = '';
     $('w-mint-out').textContent = `Minted — tx ${txid.slice(0, 16)}… The position appears below once confirmed.`;
@@ -1036,7 +1117,7 @@ $('w-tr-go').addEventListener('click', (e) =>
       // fee change back to the WATCHED address (default P2WPKH would vanish from view)
       dgbChangeScriptHex: scriptPubKeyFromAddress(ddUtxo.address),
     });
-    const txid = await rpc('sendrawtransaction', [hex]);
+    const txid = await broadcastTx(hex);
     resetTransfer();
     $('w-tr-to').value = '';
     $('w-tr-amount').value = '';
@@ -1111,7 +1192,7 @@ $('w-rd-go').addEventListener('click', (e) =>
       feeSats: REDEEM_FEE_SATS,
       dgbChangeScriptHex: scriptPubKeyFromAddress(p.address), // keep change visible
     });
-    const txid = await rpc('sendrawtransaction', [hex]);
+    const txid = await broadcastTx(hex);
     resetRedeem();
     const short = txid.slice(0, 16) + '…';
     const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)
@@ -1168,6 +1249,7 @@ async function boot() {
     if (!chainState.netKnown) setTimeout(statusLoop, 5000);
   })();
   loadOracle();
+  loadDca();
 }
 
 boot();
