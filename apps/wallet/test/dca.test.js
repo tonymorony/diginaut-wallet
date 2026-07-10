@@ -19,7 +19,9 @@ test('survives float noise without drifting a basis point', () => {
 });
 
 test('rejects garbage multipliers instead of quoting from them', () => {
-  for (const bad of [0, -1, NaN, Infinity, undefined, null, 'high']) {
+  // < 1 and > 10 included: Core's tiers span 1.0–2.0, so anything outside is
+  // a broken node — better to fail loudly than under/over-quote from it
+  for (const bad of [0, -1, 0.5, 10.5, 1e9, NaN, Infinity, undefined, null, 'high']) {
     assert.throws(() => dcaBpsFromMultiplier(bad), RangeError, String(bad));
   }
 });

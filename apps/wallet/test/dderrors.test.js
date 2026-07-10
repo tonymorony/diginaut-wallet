@@ -14,8 +14,10 @@ test('volatility mint freeze (≥20%/1h) explains the freeze and that funds are 
   assert.match(msg, /minting-frozen-volatility/); // raw token preserved
 });
 
-test('the freeze-candidate variant maps to the same explanation', () => {
-  assert.match(friendlyDDError('minting-frozen-volatility-candidate'), /frozen/i);
+test('the freeze-candidate variant maps to the same explanation, full token preserved', () => {
+  const msg = friendlyDDError('minting-frozen-volatility-candidate');
+  assert.match(msg, /frozen/i);
+  assert.match(msg, /minting-frozen-volatility-candidate/); // not truncated to the prefix
 });
 
 test('full freeze (≥50%/7d) says ALL DigiDollar operations are paused', () => {

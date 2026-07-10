@@ -32,7 +32,10 @@ const FAMILY_MESSAGES = [
 export function friendlyDDError(message) {
   const raw = String(message ?? '');
   for (const [token, text] of TOKEN_MESSAGES) {
-    if (raw.includes(token)) return `${text} (node: ${token})`;
+    // report the FULL token the node sent (e.g. …-volatility-candidate), not
+    // just the prefix we matched on — support needs the exact reject string
+    const m = raw.match(new RegExp(`${token}[a-z0-9-]*`));
+    if (m) return `${text} (node: ${m[0]})`;
   }
   for (const [prefix, text] of FAMILY_MESSAGES) {
     const m = raw.match(new RegExp(`${prefix}[a-z0-9-]*`));
