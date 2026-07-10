@@ -36,10 +36,15 @@ function nodeResult(method) {
       throw new Error(`stub node: no handler for ${method}`);
   }
 }
+let nodeUp = false; // starts DOWN: the driver proves the unknown-chain guard + recovery first
 const node = createServer(async (req, res) => {
   let raw = '';
   for await (const c of req) raw += c;
   const { method, id } = JSON.parse(raw);
+  if (!nodeUp) {
+    res.writeHead(502, { 'content-type': 'text/plain' });
+    return res.end('node down');
+  }
   try {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id, result: nodeResult(method) }));
@@ -108,34 +113,44 @@ function check(cond, what) {
   if (!cond) process.exitCode = 1;
 }
 
-// -- 1. boot on mainnet: neutral chrome, live badge, chain shown
+// -- 1. boot with the node DOWN: nothing may claim a network
 await cdp('Page.navigate', { url: APP }, sessionId);
 await waitFor(visible('w-none'), 'no-wallet state');
-await waitFor(`${text('s-chain')} === 'main'`, 'chain=main from the node');
-check(true, 'boots against a mainnet node (chain: main)');
-check((await evaluate(`document.title`)) === 'Diginaut · DigiDollar wallet', 'tab title is network-neutral on mainnet');
-await waitFor(`document.getElementById('net-banner').hidden === true`, 'banner hidden');
-check(!(await evaluate(`document.body.textContent`)).includes('TESTNET'), 'no user-visible TESTNET wording anywhere');
-check((await evaluate(text('modeBadge'))) === 'LIVE NODE', 'LIVE NODE badge (real mode)');
+check((await evaluate(`document.title`)) === 'Diginaut · DigiDollar wallet', 'tab title is network-neutral while the chain is unknown');
+check(await evaluate(`document.getElementById('net-banner').hidden`), 'no network banner while the chain is unknown');
 
-// -- 2. DD deployment honestly reported pre-activation
-await waitFor(`${text('s-dd')}.length > 0`, 'dd status rendered');
-check((await evaluate(text('s-dd'))).includes('started'), 'DigiDollar shows BIP9 "started" (not active yet)');
-
-// -- 3. create wallet → mainnet derivation
+// -- 2. create a wallet while the chain is unknown → placeholder, never a guessed address
 await setVal('w-create-pass', 'correct horse battery');
 await setVal('w-create-pass2', 'correct horse battery');
 await click('w-create');
 await waitFor(visible('w-open'), 'unlocked after create');
+const placeholder = await evaluate(text('w-address'));
+check(!/1[a-z0-9]{20,}/.test(placeholder), `no address rendered for a guessed network: "${placeholder}"`);
+check(await evaluate(`document.getElementById('w-copy').disabled`), 'copy is disabled — nothing address-like to copy');
+
+// -- 3. node comes up (mainnet): the status retry loop recovers without a reload
+nodeUp = true;
+await waitFor(`${text('s-chain')} === 'main'`, 'chain=main from the node (retry loop)', 20000);
+check(true, 'status retry loop picks the node up without a page reload');
+await waitFor(`${text('w-address')}.startsWith('dgb1p')`, 'mainnet address rendered after recovery');
 const addr = await evaluate(text('w-address'));
 const path = await evaluate(text('w-path'));
 check(/^dgb1p[a-z0-9]{50,}$/.test(addr), `mainnet receive address: ${addr.slice(0, 20)}…`);
 check(path === "m/86'/20'/0'/0/0", `SLIP-44 coin type 20 derivation path (${path})`);
+check(!(await evaluate(`document.getElementById('w-copy').disabled`)), 'copy re-enabled once the network is known');
+check((await evaluate(`document.title`)) === 'Diginaut · DigiDollar wallet', 'tab title stays network-neutral on mainnet');
+check(await evaluate(`document.getElementById('net-banner').hidden`), 'no banner on mainnet (beta copy is #63)');
+check(!(await evaluate(`document.body.textContent`)).includes('TESTNET'), 'no user-visible TESTNET wording anywhere');
+check((await evaluate(text('modeBadge'))) === 'LIVE NODE', 'LIVE NODE badge (real mode)');
 
-// -- 4. no faucet configured → no faucet affordance
+// -- 4. DD deployment honestly reported pre-activation
+await waitFor(`${text('s-dd')}.includes('started')`, 'dd status rendered');
+check(true, 'DigiDollar shows BIP9 "started" (not active yet)');
+
+// -- 5. no faucet configured → no faucet affordance
 check(await evaluate(`document.getElementById('w-faucet').style.display === 'none'`), 'faucet button absent (none configured)');
 
-// -- 5. no indexer configured → the state explains itself, receive still works
+// -- 6. no indexer configured → the state explains itself, receive still works
 await waitFor(visible('w-no-indexer'), 'no-indexer panel');
 check((await evaluate(text('w-no-indexer'))).includes('indexer'), 'no-indexer panel explains why balances are unavailable');
 check(await evaluate(`document.getElementById('loading-veil').style.display === 'none'`), 'no eternal loading veil without an indexer');

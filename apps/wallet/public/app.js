@@ -241,8 +241,10 @@ function show(state) {
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
-  // no indexer on this deployment: the money grid never loads, so say why (#61)
-  $('w-no-indexer').style.display = open && !appConfig.indexer ? 'block' : 'none';
+  // no indexer on this deployment: the money grid never loads, so say why (#61).
+  // Gated on a LOADED config — a failed /api/config fetch must not produce a
+  // confident false "no indexer here" claim on an indexer-equipped deployment.
+  $('w-no-indexer').style.display = open && appConfig.loaded && !appConfig.indexer ? 'block' : 'none';
   if (open) {
     if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
   } else {
@@ -254,8 +256,9 @@ function show(state) {
   }
   dockPriceBlock(open);
   // loading veil covers the gap between unlock and the first indexer answer
+  // (only once the chain is known — before that "syncing" would be a lie)
   $('loading-veil').style.display =
-    open && appConfig.indexer && $('w-money').style.display === 'none' ? 'block' : 'none';
+    open && appConfig.indexer && chainState.netKnown && $('w-money').style.display === 'none' ? 'block' : 'none';
 }
 
 // The price block lives inside the hero card while connected (chart right
@@ -356,14 +359,17 @@ $('w-disconnect').addEventListener('click', () => lockWallet());
 function renderAddress() {
   // Never show an address for a guessed network: on a mainnet deployment with
   // an unreachable node the default would be testnet-encoded — confusing at
-  // best. Wait until the node has named its chain (loadStatus re-renders).
+  // best. loadStatus retries until the node names its chain, then re-renders.
+  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet')];
   if (!chainState.netKnown) {
     $('w-path').textContent = '';
-    $('w-address').textContent = 'network unknown — reconnecting to the node…';
+    $('w-address').textContent = 'waiting for the node to report a supported network…';
     $('w-chip-addr').textContent = '…';
     $('w-qr').innerHTML = '';
+    for (const b of addressActions) b.disabled = true; // nothing here to copy/claim
     return;
   }
+  for (const b of addressActions) b.disabled = false;
   const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
   $('w-path').textContent = path;
   $('w-address').textContent = address;
@@ -537,7 +543,10 @@ function renderPositions(perAddr) {
 }
 
 async function refreshMoney() {
-  if (!wallet.seed || !appConfig.indexer) return;
+  // netKnown gate: querying the indexer with addresses derived for a GUESSED
+  // network would render a confident zero balance — wait for the real chain
+  // (the 8s poll picks up automatically once loadStatus succeeds).
+  if (!wallet.seed || !appConfig.indexer || !chainState.netKnown) return;
   try {
     // Each derivation is watched at TWO addresses: its P2TR (receive address,
     // carries DD positions/tokens) and its P2WPKH twin — mint change lands
@@ -1140,7 +1149,7 @@ async function boot() {
   setInterval(loadPriceChart, 60_000);
   try {
     const cfg = await (await fetch('/api/config')).json();
-    appConfig = cfg;
+    appConfig = { ...cfg, loaded: true };
     const badge = $('modeBadge');
     if (cfg.mock) {
       badge.className = 'badge mock';
@@ -1152,7 +1161,12 @@ async function boot() {
     if (cfg.faucet) $('w-faucet').style.display = 'block';
   } catch { /* ignore */ }
   bootWallet();
-  loadStatus();
+  // retry until the node names its chain: a transient boot failure must not
+  // strand the UI network-unknown (no addresses, no testnet banner) forever
+  (async function statusLoop() {
+    await loadStatus();
+    if (!chainState.netKnown) setTimeout(statusLoop, 5000);
+  })();
   loadOracle();
 }
 
