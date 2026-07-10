@@ -10,6 +10,7 @@ import {
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
+import { networkChrome } from '/netchrome.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -139,9 +140,16 @@ async function loadStatus() {
     const net = { main: 'mainnet', test: 'testnet', regtest: 'regtest' }[info.chain];
     if (net) {
       chainState.netName = net; // consensus DD limits are per-network
+      chainState.netKnown = true; // safe to render addresses now
       wallet.network = HD_NETWORKS[net];
       if (wallet.seed) renderAddress();
     }
+    // banner + tab title follow the node's chain — same build on every network
+    const { title, banner } = networkChrome(info.chain);
+    document.title = title;
+    const bannerEl = $('net-banner');
+    bannerEl.textContent = banner ?? '';
+    bannerEl.hidden = banner === null;
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
   }
@@ -212,7 +220,9 @@ $('c-price').addEventListener('input', () => { $('c-price').dataset.touched = '1
 
 // ---- Wallet (non-custodial: mnemonic + keys never leave this page) ----
 let appConfig = { mock: true, faucet: false, indexer: false };
-const chainState = { ddActive: null, netName: 'testnet' }; // refined from the node's chain
+// netName is a provisional default until the node names its chain (netKnown);
+// addresses are never rendered from the guess — see renderAddress.
+const chainState = { ddActive: null, netName: 'testnet', netKnown: false };
 const wallet = {
   mnemonic: null, // set only while unlocked
   seed: null,
@@ -231,6 +241,8 @@ function show(state) {
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
+  // no indexer on this deployment: the money grid never loads, so say why (#61)
+  $('w-no-indexer').style.display = open && !appConfig.indexer ? 'block' : 'none';
   if (open) {
     if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
   } else {
@@ -321,6 +333,7 @@ for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal']) {
 }
 $('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
 $('act-receive').addEventListener('click', () => openModal('receive-modal'));
+$('w-no-indexer-receive').addEventListener('click', () => openModal('receive-modal'));
 $('act-mint').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('dd-mint-open').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('net-btn').addEventListener('click', () => openModal('net-modal'));
@@ -341,6 +354,16 @@ $('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-co
 $('w-disconnect').addEventListener('click', () => lockWallet());
 
 function renderAddress() {
+  // Never show an address for a guessed network: on a mainnet deployment with
+  // an unreachable node the default would be testnet-encoded — confusing at
+  // best. Wait until the node has named its chain (loadStatus re-renders).
+  if (!chainState.netKnown) {
+    $('w-path').textContent = '';
+    $('w-address').textContent = 'network unknown — reconnecting to the node…';
+    $('w-chip-addr').textContent = '…';
+    $('w-qr').innerHTML = '';
+    return;
+  }
   const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
   $('w-path').textContent = path;
   $('w-address').textContent = address;
