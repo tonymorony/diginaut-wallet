@@ -3,7 +3,7 @@
 // which mirrors DigiByte Core v9.26.4 exactly — the same code the differential
 // harness (M2) will verify against Core.
 import {
-  LOCK_TIERS, requiredCollateralSats,
+  LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, decodeWitnessAddress, scriptPubKeyFromAddress,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
@@ -12,7 +12,7 @@ import {
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
 import { networkChrome } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
-import { friendlyDDError } from '/dderrors.js';
+import { friendlyDDError, MINT_FREEZE_EXPLANATION } from '/dderrors.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -47,12 +47,13 @@ async function broadcastTx(hex) {
 let lastDcaBps = null; // basis points (10000 = healthy 1.0×); null until fetched
 let lastDcaInfo = null; // raw getdcamultiplier result — tier_status feeds quote notes
 
-// Effective collateral ratio in percent — Core's ceil(base × bps / 10000).
-const effectiveRatioPercent = (ratioPercent, bps) =>
-  Number((BigInt(ratioPercent) * bps + 9_999n) / 10_000n);
-
-// note like "1.5× collateral — network health: critical", or null when healthy
-const dcaNote = () => (lastDcaInfo ? describeDca(lastDcaInfo) : null);
+// note like "1.5× collateral — network health: critical", or null when healthy.
+// If DD is live but the node wouldn't say its health, say the quote is an
+// assumption rather than silently pretending to know.
+const dcaNote = () => {
+  if (lastDcaInfo) return describeDca(lastDcaInfo);
+  return chainState.ddActive ? 'assumes a healthy network — health multiplier unavailable' : null;
+};
 
 async function loadDca() {
   try {
@@ -958,7 +959,9 @@ $('w-mint-review').addEventListener('click', (e) =>
     // mapping still catches the reject, but warning BEFORE signing is kinder.
     const prot = await rpc('getprotectionstatus').catch(() => null);
     if (prot?.volatility?.minting_restricted) {
-      throw new Error('minting is temporarily frozen by consensus: the DGB price moved 20% or more within an hour. Your funds are untouched — try again once the market calms.');
+      // covers the ≥50%/7d all-operations freeze too: Core sets mintingFrozen
+      // whenever allOperationsFrozen is set (consensus/volatility.cpp)
+      throw new Error(MINT_FREEZE_EXPLANATION + ' Your funds are untouched — try again once the market calms.');
     }
     if (prot?.oracle?.minting_restricted) {
       throw new Error('minting is restricted: the node reports no usable oracle price' + (prot.oracle.minting_restricted_reason ? ` (${prot.oracle.minting_restricted_reason})` : '') + ' — try again in a few minutes');
@@ -1250,6 +1253,9 @@ async function boot() {
   })();
   loadOracle();
   loadDca();
+  // network health moves with the market — keep the non-binding previews
+  // honest mid-session (the review step always re-fetches anyway)
+  setInterval(loadDca, 60_000);
 }
 
 boot();

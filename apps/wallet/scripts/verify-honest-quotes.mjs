@@ -15,7 +15,7 @@ import { requiredCollateralSats } from 'digidollar-js';
 
 const CDP_PORT = Number(process.env.CDP_PORT) || 9224;
 const APP = process.env.APP_URL || 'http://127.0.0.1:8791';
-const OUT = './';
+const OUT = new URL('.', import.meta.url).pathname; // screenshots land next to the driver, not in cwd
 const MINT_FEE_SATS = 12_000_000n; // app.js MINT_FEE_SATS
 const PRICE_MICRO = 13_420n; // mock getoracleprice
 const DCA_BPS = 12_500n; // MOCK_SYSTEM_HEALTH=130 → warning tier, 1.25×

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LOCK_TIERS, requiredCollateralSats } from 'digidollar-js';
+import { LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent } from 'digidollar-js';
 
 // Expected values mirror DigiByte Core v9.26.4 arithmetic
 // (src/digidollar/txbuilder.cpp CalculateRequiredCollateral):
@@ -74,6 +74,9 @@ test('every Core DCA health tier scales the quote (#62 honest quotes)', () => {
   const quote = (dcaMultiplierBps) => requiredCollateralSats({
     ddCents: 10_000n, tierId: '6months', oraclePriceMicroUsd: 6_310n, dcaMultiplierBps,
   });
+  // the exported display helper is the same ApplyDCA ceiling Core uses
+  assert.equal(effectiveRatioPercent(350, 12_500n), 438); // ceil(350 × 1.25)
+  assert.equal(effectiveRatioPercent(350), 350); // healthy default
   assert.equal(quote(10_000n), 5_602_218_700_475n); // healthy — the old implicit default
   assert.equal(quote(15_000n), 8_403_328_050_713n); // critical: ceil(350×1.5) = 525%
   assert.equal(quote(20_000n), 11_204_437_400_951n); // emergency: 700%
