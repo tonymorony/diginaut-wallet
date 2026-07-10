@@ -6,7 +6,7 @@ import {
   LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   planSpend, buildSignedSpendTx, scriptPubKeyFromAddress,
-  decodeDDAddress, encodeDDAddress, decodeAddress,
+  decodeDDAddress, encodeDDAddress, decodeAddress, encodeBip21, parseBip21, satsToDgbString,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
@@ -430,12 +430,30 @@ function renderAddress() {
   // the DD…/TD…/RD… prefix). decodeDDAddress(address) yields the shared key.
   $('w-dd-address').textContent = encodeDDAddress(decodeDDAddress(address).outputKeyHex, chainState.netName);
   $('w-chip-addr').textContent = address.slice(0, 10) + '…' + address.slice(-4);
-  // QR for the receive modal. Bech32 is uppercased first: that enables the
-  // QR alphanumeric mode, giving a sparser, easier-to-scan code.
+  updateReceiveQr();
+}
+
+// Receive QR + payment-request copy (#71). Bare address by default; when the
+// user requests a specific amount, both switch to a BIP21 `digibyte:` URI so a
+// mobile scan prefills address + amount. A bech32 address alone is uppercased to
+// hit the QR alphanumeric mode (sparser, easier to scan); a URI has a query
+// string with chars outside that charset, so it must be encoded in byte mode.
+function updateReceiveQr() {
+  if (!chainState.netKnown) return;
+  const address = $('w-address').textContent;
+  let requestSats = 0n;
+  try {
+    const raw = $('w-req-amount').value.trim();
+    if (raw) requestSats = dgbToSats(raw);
+  } catch { requestSats = 0n; } // partial/invalid input → fall back to bare address
+  const useUri = requestSats > 0n;
+
   const qr = qrcode(0, 'M');
-  qr.addData(address.toUpperCase(), 'Alphanumeric');
+  if (useUri) qr.addData(encodeBip21({ address, amountSats: requestSats }), 'Byte');
+  else qr.addData(address.toUpperCase(), 'Alphanumeric');
   qr.make();
   $('w-qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  $('w-copy-uri').style.display = useUri ? '' : 'none';
 }
 
 function openWallet(mnemonic) {
@@ -530,6 +548,11 @@ $('w-copy').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-address').textContent)));
 $('w-copy-dd').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-dd-address').textContent)));
+// BIP21 request amount (#71): live-redraw the QR, and copy the full payment URI.
+$('w-req-amount').addEventListener('input', updateReceiveQr);
+$('w-copy-uri').addEventListener('click', async (e) =>
+  busy(e.target, 'w-open-err', () =>
+    navigator.clipboard.writeText(encodeBip21({ address: $('w-address').textContent, amountSats: dgbToSats($('w-req-amount').value) }))));
 $('w-faucet').addEventListener('click', (e) =>
   busy(e.target, 'w-open-err', async () => {
     $('w-faucet-out').textContent = 'Requesting…';
@@ -838,9 +861,32 @@ function resetSend() {
   $('w-send-review').disabled = false;
 }
 
+// A pasted/scanned BIP21 `digibyte:` URI in the recipient field is unpacked into
+// its parts (#71): the bare address replaces the field value, an embedded amount
+// prefills the amount field (unless the user already typed one), and label/message
+// show as read-only context. Bare addresses are untouched. Called from the input
+// listener (live paste) and defensively from review (drivers set .value directly,
+// which fires no input event). Idempotent: re-running on a bare address is a no-op.
+function absorbSendUri() {
+  const parsed = parseBip21($('w-send-to').value);
+  if (!parsed) return;
+  if (parsed.address !== $('w-send-to').value.trim()) $('w-send-to').value = parsed.address;
+  if (parsed.amountSats != null && parsed.amountSats > 0n && !$('w-send-amount').value.trim()) {
+    // satsToDgbString (not the locale-formatted satsToDgb): no thousands commas,
+    // so the value stays parseable by dgbToSats at review for amounts ≥ 1000 DGB.
+    $('w-send-amount').value = satsToDgbString(parsed.amountSats);
+  }
+  const ctx = [parsed.label && `Label: ${parsed.label}`, parsed.message && `Message: ${parsed.message}`]
+    .filter(Boolean).join(' · ');
+  $('w-send-uri-ctx').textContent = ctx;
+  $('w-send-uri-ctx').style.display = ctx ? 'block' : 'none';
+}
+$('w-send-to').addEventListener('input', absorbSendUri);
+
 $('w-send-review').addEventListener('click', (e) =>
   busy(e.target, 'w-send-err', async () => {
     $('w-send-out').textContent = '';
+    absorbSendUri(); // handle a URI set programmatically (no input event fired)
     const address = $('w-send-to').value.trim();
     // DGB sends accept every address type: segwit bech32/bech32m AND legacy
     // base58check P2PKH (D…)/P2SH (S…/3…). decodeAddress normalizes all of them.
@@ -884,6 +930,7 @@ $('w-send-go').addEventListener('click', (e) =>
     resetSend();
     $('w-send-to').value = '';
     $('w-send-amount').value = '';
+    $('w-send-uri-ctx').style.display = 'none';
     $('w-send-out').textContent = `Sent — tx ${txid.slice(0, 16)}…`;
     showTxSuccess('send-modal', txid, 'Transaction sent', 'It appears in Activity as pending until the next block confirms it.');
     refreshMoney();
