@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { planSpend, buildSignedSpendTx, serializeTx, scriptPubKeyFromAddress, xOnlyPubKey, ddTokenOutputKey } from 'digidollar-js';
+import { planSpend, planMaxSpend, buildSignedSpendTx, serializeTx, scriptPubKeyFromAddress, xOnlyPubKey, ddTokenOutputKey } from 'digidollar-js';
 
 // Minimal independent segwit-tx parser (test-only, so assertions about the
 // produced hex do not lean on the library's own serializer).
@@ -49,6 +49,63 @@ test('planSpend picks a single large UTXO and computes the 1-in-2-out fee', () =
   assert.equal(plan.inputs[0].valueSats, 5_000_000n);
   assert.equal(plan.feeSats, 15_400n);
   assert.equal(plan.changeSats, 5_000_000n - 4_000_000n - 15_400n);
+});
+
+// ---- planMaxSpend (#70): drain the wallet, one output, no change ----
+// Same BIP-141 weights, but a single recipient output (no change), so the fee
+// is smaller than the equivalent planSpend and amount = Σ(inputs) − fee.
+
+test('planMaxSpend drains one P2TR input into a single P2TR output, no change', () => {
+  // 42 + 230 + 172 (recipient only) = 444 wu → ceil(444/4)=111 vB → 11_100 sats
+  const plan = planMaxSpend({ utxos: [utxo(5_000_000n)] });
+  assert.equal(plan.inputs.length, 1);
+  assert.equal(plan.feeSats, 11_100n);
+  assert.equal(plan.amountSats, 5_000_000n - 11_100n);
+});
+
+test('planMaxSpend spends every provided input largest-first sum', () => {
+  // 2 P2TR inputs, 1 output: 42 + 2·230 + 172 = 674 wu → ceil(674/4)=169 vB → 16_900
+  const plan = planMaxSpend({ utxos: [utxo(3_000_000n, 1), utxo(5_000_000n, 2)] });
+  assert.equal(plan.inputs.length, 2);
+  assert.equal(plan.feeSats, 16_900n);
+  assert.equal(plan.amountSats, 8_000_000n - 16_900n);
+});
+
+test('planMaxSpend prices a legacy P2PKH recipient output smaller than P2TR', () => {
+  // 42 + 230 + 136 (P2PKH out) = 408 wu → ceil(408/4)=102 vB → 10_200 sats
+  const plan = planMaxSpend({ utxos: [utxo(5_000_000n)], recipientScriptHex: `76a914${'11'.repeat(20)}88ac` });
+  assert.equal(plan.feeSats, 10_200n);
+  assert.equal(plan.amountSats, 5_000_000n - 10_200n);
+});
+
+test('planMaxSpend + buildSignedSpendTx produce a zero-change one-output tx', () => {
+  const keyA = '11'.repeat(32);
+  const recipientScriptHex = '5120' + ddTokenOutputKey(xOnlyPubKey('33'.repeat(32)));
+  const plan = planMaxSpend({
+    utxos: [{ txidHex: 'aa'.repeat(32), vout: 0, valueSats: 5_000_000n, privKeyHex: keyA }],
+    recipientScriptHex,
+  });
+  const { hex, changeSats } = buildSignedSpendTx({
+    utxos: plan.inputs,
+    recipientScriptHex,
+    amountSats: plan.amountSats,
+    changeScriptHex: '5120' + ddTokenOutputKey(xOnlyPubKey(keyA)),
+    feeSats: plan.feeSats,
+  });
+  assert.equal(changeSats, 0n); // the whole point of a max send
+  const tx = parseTx(hex);
+  assert.equal(tx.vout.length, 1);
+  assert.equal(tx.vout[0].valueSats, plan.amountSats);
+  // fee actually paid = inputs − outputs, must equal the planned fee exactly
+  assert.equal(5_000_000n - tx.vout[0].valueSats, plan.feeSats);
+});
+
+test('planMaxSpend throws when the balance cannot cover the fee', () => {
+  assert.throws(() => planMaxSpend({ utxos: [utxo(5_000n)] }), /does not cover the network fee/);
+});
+
+test('planMaxSpend throws on an empty coin set', () => {
+  assert.throws(() => planMaxSpend({ utxos: [] }), /no spendable coins/);
 });
 
 test('planSpend prices a legacy P2PKH recipient output smaller than P2TR (#68)', () => {

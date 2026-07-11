@@ -5,7 +5,7 @@
 import {
   LOCK_TIERS, requiredCollateralSats, effectiveRatioPercent,
   generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
-  planSpend, buildSignedSpendTx, scriptPubKeyFromAddress,
+  planSpend, planMaxSpend, buildSignedSpendTx, scriptPubKeyFromAddress,
   decodeDDAddress, encodeDDAddress, decodeAddress, encodeBip21, parseBip21, satsToDgbString,
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
@@ -247,6 +247,7 @@ async function loadOracle() {
     $('o-hint').innerHTML = `<span class="err">oracle: ${e.message}</span>`;
   }
   renderNetDot();
+  syncSendPriceGate(); // USD send entry follows oracle freshness (#70)
   try {
     const list = await rpc('getoracles');
     if (Array.isArray(list) && list.length) {
@@ -847,7 +848,7 @@ async function spendableUtxos() {
   ].map(async ({ address, type, privKeyHex }) => {
     const { utxos } = await fetchIndexer(`/address/${address}/utxos`);
     return utxos.map((u) => ({
-      txidHex: u.txid, vout: u.vout, valueSats: BigInt(u.valueSats), privKeyHex, ...(type && { type }),
+      txidHex: u.txid, vout: u.vout, valueSats: BigInt(u.valueSats), height: Number(u.height), privKeyHex, ...(type && { type }),
     }));
   })));
   return perAddr.flat();
@@ -883,6 +884,99 @@ function absorbSendUri() {
 }
 $('w-send-to').addEventListener('input', absorbSendUri);
 
+// ---- Fiat entry + send-max on the DGB send (#70) ----
+// The amount can be typed in DGB or USD; USD is converted through the SAME
+// oracle price the header shows (lastPriceMicroUsd), integer-only so the signed
+// tx matches the review-time quote exactly. Send-max drains the confirmed,
+// non-DD balance via planMaxSpend (one output, zero change).
+let sendCcy = 'DGB';      // 'DGB' | 'USD' — active entry currency
+let sendMaxArmed = false; // true once "Max" is clicked, until the amount is edited
+
+// USD is only offered when the oracle price is present AND fresh (not stale) —
+// same gate the mint flow uses. Stale/missing price → DGB-only entry.
+const priceUsable = () => lastPriceMicroUsd != null && lastPriceMicroUsd > 0n && netHealth.oracle === true;
+
+/** "12.50" USD → sats, floored, via the live micro-USD/DGB oracle price. */
+function usdToSats(text) {
+  const m = String(text).trim().match(/^(\d+)(?:\.(\d{1,6}))?$/);
+  if (!m) throw new Error('enter the USD amount as a plain number, e.g. 12.50');
+  if (!priceUsable()) throw new Error('no fresh oracle price for USD conversion');
+  const microUsd = BigInt(m[1]) * 1_000_000n + BigInt((m[2] ?? '').padEnd(6, '0') || '0');
+  return (microUsd * 100_000_000n) / lastPriceMicroUsd; // 1 DGB = 1e8 sats
+}
+
+/** The amount the user asked for, in sats, honouring the active currency. */
+function sendAmountSats() {
+  return sendCcy === 'USD' ? usdToSats($('w-send-amount').value) : dgbToSats($('w-send-amount').value);
+}
+
+const satsToUsd = (sats) => lastPriceUsd != null ? Number(sats) * lastPriceUsd / 1e8 : null;
+
+/** Live "≈ …" line under the input, showing the amount in the other currency. */
+function updateSendEq() {
+  const el = $('w-send-amount-eq');
+  const raw = $('w-send-amount').value.trim();
+  let out = '';
+  if (raw) {
+    try {
+      if (sendCcy === 'USD') out = '≈ ' + satsToDgbString(usdToSats(raw)) + ' DGB';
+      else { const usd = satsToUsd(dgbToSats(raw)); if (usd != null) out = '≈ ' + fmtUSD(usd); }
+    } catch { out = ''; }
+  }
+  el.textContent = out;
+  el.style.display = out ? 'block' : 'none';
+}
+
+function setSendCcy(ccy) {
+  sendCcy = ccy;
+  $('w-send-amount-label').textContent = `Amount (${ccy})`;
+  $('w-send-ccy').textContent = '⇄ ' + (ccy === 'DGB' ? 'USD' : 'DGB');
+  $('w-send-ccy').title = ccy === 'DGB' ? 'Enter the amount in USD instead' : 'Enter the amount in DGB instead';
+  $('w-send-amount').placeholder = ccy === 'USD' ? '0.00' : '';
+  updateSendEq();
+}
+
+// Keep the currency control in sync with oracle freshness. Called on every
+// status poll: if the price goes stale while USD is active, fall back to DGB.
+function syncSendPriceGate() {
+  const ok = priceUsable();
+  $('w-send-ccy').disabled = !ok;
+  if (!ok) {
+    $('w-send-ccy').title = 'USD entry needs a fresh oracle price';
+    if (sendCcy === 'USD') setSendCcy('DGB');
+  } else if (sendCcy === 'DGB') {
+    $('w-send-ccy').title = 'Enter the amount in USD instead';
+  }
+}
+
+$('w-send-ccy').addEventListener('click', () => {
+  if ($('w-send-ccy').disabled) return;
+  setSendCcy(sendCcy === 'DGB' ? 'USD' : 'DGB');
+});
+
+// Manual edits override an armed max.
+$('w-send-amount').addEventListener('input', () => { sendMaxArmed = false; updateSendEq(); });
+
+// Max: fill the field with the entire spendable balance (confirmed, non-DD),
+// and arm the max path so review recomputes it exactly against fresh UTXOs.
+$('w-send-max').addEventListener('click', (e) =>
+  busy(e.target, 'w-send-err', async () => {
+    if (!wallet.seed) throw new Error('wallet is locked');
+    if (!appConfig.indexer || !chainState.netKnown) throw new Error('balance is unavailable right now');
+    absorbSendUri();
+    // Price the output against the recipient's script when we have one (legacy
+    // outputs are smaller); else assume P2TR — review recomputes exactly anyway.
+    let recipientScriptHex;
+    const addr = $('w-send-to').value.trim();
+    if (addr) { try { recipientScriptHex = decodeAddress(addr).scriptPubKeyHex; } catch { /* refine at review */ } }
+    const spendable = (await spendableUtxos()).filter((u) => u.height > 0 && u.valueSats > 0n);
+    const plan = planMaxSpend({ utxos: spendable, recipientScriptHex });
+    sendMaxArmed = true;
+    if (sendCcy === 'USD' && priceUsable()) $('w-send-amount').value = satsToUsd(plan.amountSats).toFixed(2);
+    else { if (sendCcy === 'USD') setSendCcy('DGB'); $('w-send-amount').value = satsToDgbString(plan.amountSats); }
+    updateSendEq();
+  }));
+
 $('w-send-review').addEventListener('click', (e) =>
   busy(e.target, 'w-send-err', async () => {
     $('w-send-out').textContent = '';
@@ -900,12 +994,25 @@ $('w-send-review').addEventListener('click', (e) =>
       throw new Error(`address is not for this network (need a ${chainState.netName} address)`);
     }
     const recipientScriptHex = decoded.scriptPubKeyHex;
-    const amountSats = dgbToSats($('w-send-amount').value);
-    if (amountSats <= 0n) throw new Error('amount must be positive');
-    const plan = planSpend({ utxos: await spendableUtxos(), amountSats, recipientScriptHex });
+    let amountSats, plan;
+    if (sendMaxArmed) {
+      // Max: recompute against fresh confirmed, non-DD coins with the real
+      // recipient script — one output, zero change (planMaxSpend). This is the
+      // quote the tx is built from, so no re-quote happens between here and sign.
+      const spendable = (await spendableUtxos()).filter((u) => u.height > 0 && u.valueSats > 0n);
+      const m = planMaxSpend({ utxos: spendable, recipientScriptHex });
+      ({ amountSats } = m);
+      plan = { inputs: m.inputs, feeSats: m.feeSats };
+    } else {
+      amountSats = sendAmountSats(); // DGB or USD, converted at review time
+      if (amountSats <= 0n) throw new Error('amount must be positive');
+      plan = planSpend({ utxos: await spendableUtxos(), amountSats, recipientScriptHex });
+    }
     pendingSend = { plan, recipientScriptHex, amountSats, address };
     $('w-send-c-to').textContent = address;
     $('w-send-c-amount').textContent = satsToDgb(amountSats);
+    const usd = satsToUsd(amountSats);
+    $('w-send-c-amount-usd').textContent = usd != null ? `  ≈ ${fmtUSD(usd)}` : '';
     $('w-send-c-fee').textContent = satsToDgb(plan.feeSats);
     $('w-send-confirm').style.display = 'block';
     $('w-send-review').disabled = true;
@@ -928,8 +1035,10 @@ $('w-send-go').addEventListener('click', (e) =>
     });
     const txid = await broadcastTx(hex);
     resetSend();
+    sendMaxArmed = false;
     $('w-send-to').value = '';
     $('w-send-amount').value = '';
+    $('w-send-amount-eq').style.display = 'none';
     $('w-send-uri-ctx').style.display = 'none';
     $('w-send-out').textContent = `Sent — tx ${txid.slice(0, 16)}…`;
     showTxSuccess('send-modal', txid, 'Transaction sent', 'It appears in Activity as pending until the next block confirms it.');
