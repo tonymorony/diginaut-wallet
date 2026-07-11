@@ -65,6 +65,11 @@
     .warn-text { color: var(--warn); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
     .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+    /* amount entry header: label on the left, currency toggle + Max on the right (#70) */
+    .amt-head { display: flex; align-items: flex-end; justify-content: space-between; }
+    .amt-head label { margin-bottom: 0; }
+    .amt-tools { display: flex; gap: 6px; }
+    .amt-btn { width: auto; margin: 0 0 2px; padding: 4px 11px; font-size: 12px; border-radius: 999px; }
     .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px,1fr)); gap: 5px; margin-top: 10px; }
     .oracle { height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
@@ -411,15 +416,24 @@
           <div id="w-send">
             <label for="w-send-to">Recipient address</label>
             <input id="w-send-to" class="mono" placeholder="dgb…1…" autocomplete="off" autocapitalize="off" spellcheck="false" />
-            <label for="w-send-amount">Amount (DGB)</label>
+            <!-- amount header: label + currency toggle (#70) + send-max -->
+            <div class="amt-head">
+              <label for="w-send-amount" id="w-send-amount-label">Amount (DGB)</label>
+              <div class="amt-tools">
+                <button type="button" id="w-send-ccy" class="amt-btn secondary" title="Enter the amount in USD instead">⇄ USD</button>
+                <button type="button" id="w-send-max" class="amt-btn secondary" title="Send the entire spendable balance">Max</button>
+              </div>
+            </div>
             <input id="w-send-amount" inputmode="decimal" autocomplete="off" />
+            <!-- live conversion of the entered amount into the other currency (#70) -->
+            <div class="hint" id="w-send-amount-eq" style="display:none"></div>
             <!-- read-only context surfaced from a pasted BIP21 URI (#71) -->
             <div class="hint" id="w-send-uri-ctx" style="display:none"></div>
             <button id="w-send-review">Review send</button>
             <!-- confirmation screen: nothing is signed until "Confirm & send" -->
             <div id="w-send-confirm" style="display:none">
               <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-send-c-to" style="word-break:break-all"></span></div>
-              <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB</span></div>
+              <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB<span id="w-send-c-amount-usd" style="color:var(--muted);font-weight:400"></span></span></div>
               <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-send-c-fee"></span> DGB</span></div>
               <div class="grid">
                 <button id="w-send-go">Confirm &amp; send</button>

@@ -380,6 +380,33 @@ export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_
 }
 
 /**
+ * Fee plan for a MAX ("send everything") spend: every provided UTXO becomes an
+ * input and the whole balance minus the fee goes to a single recipient output —
+ * no change. Callers MUST pre-filter to genuinely spendable coins (confirmed,
+ * non-DD-token). Returns { inputs, feeSats, amountSats } with
+ * amountSats = Σ(inputs) − feeSats, so buildSignedSpendTx produces zero change.
+ *
+ * The fee is priced for a one-output tx (no change output weight), which is why
+ * this can't go through planSpend — that always budgets a change output and
+ * would report "insufficient funds" for a wallet-draining amount.
+ * Throws if the inputs can't even cover the fee.
+ */
+export function planMaxSpend({ utxos, feeRateSatsPerKvB = STANDARD_FEE_RATE_SATS_PER_KVB, recipientScriptHex }) {
+  if (!utxos.length) throw new RangeError('no spendable coins');
+  const inputs = [...utxos];
+  const total = inputs.reduce((s, u) => s + u.valueSats, 0n);
+  const inputsWu = inputs.reduce((s, u) => s + inputWeight(u), 0n);
+  // Single recipient output, no change (see planSpend for the weight model).
+  const recipientOutputWu = recipientScriptHex ? outputWeight(recipientScriptHex) : P2TR_OUTPUT_WU;
+  const weight = TX_OVERHEAD_WU + inputsWu + recipientOutputWu;
+  const vsize = (weight + 3n) / 4n; // ceil(weight/4), Core's GetVirtualTransactionSize
+  const feeSats = (vsize * feeRateSatsPerKvB + 999n) / 1000n; // ceil, per-vbyte
+  const amountSats = total - feeSats;
+  if (amountSats <= 0n) throw new RangeError('balance does not cover the network fee');
+  return { inputs, feeSats, amountSats };
+}
+
+/**
  * Build and sign a standard (non-DD) DGB spend, client-side. Every UTXO carries
  * its own private key (wallet UTXOs span derivation indices) and is a key-path-
  * only P2TR unless marked `type: 'p2wpkh'` — the shape consensus forces on mint
