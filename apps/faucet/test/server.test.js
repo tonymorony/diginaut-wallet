@@ -114,6 +114,37 @@ test('cooldown survives a faucet restart (file-backed ledger)', async () => {
   }, { dataDir });
 });
 
+test('claim: an uppercase variant of a claimed address cannot bypass the cooldown (#55)', async () => {
+  await withFaucet(async (base) => {
+    // distinct IPs so the second block is purely address-based, not the IP cooldown
+    assert.equal((await claim(base, ADDR, { 'x-forwarded-for': '10.9.9.1' })).status, 200);
+    assert.equal((await claim(base, ADDR.toUpperCase(), { 'x-forwarded-for': '10.9.9.2' })).status, 429);
+  });
+});
+
+test('claim: concurrent requests for the same address cannot both dispense (#55 TOCTOU)', async () => {
+  // sendtoaddress is delayed so the first claim is still mid-flight (holding the
+  // in-flight lock) when the second arrives.
+  const calls = [];
+  const slowRpc = async (method, params = []) => {
+    calls.push({ method, params });
+    switch (method) {
+      case 'getoracleprice': return { price_micro_usd: ORACLE_PRICE_MICRO_USD, is_stale: false };
+      case 'getblockchaininfo': return { chain: 'regtest' };
+      case 'sendtoaddress': await new Promise((r) => setTimeout(r, 40)); return 'f'.repeat(64);
+      default: throw new Error('unexpected rpc: ' + method);
+    }
+  };
+  await withFaucet(async (base) => {
+    const [a, b] = await Promise.all([
+      claim(base, ADDR, { 'x-forwarded-for': '10.9.9.3' }),
+      claim(base, ADDR, { 'x-forwarded-for': '10.9.9.3' }),
+    ]);
+    assert.deepEqual([a.status, b.status].sort(), [200, 429], 'exactly one claim dispenses');
+    assert.equal(calls.filter((c) => c.method === 'sendtoaddress').length, 1, 'only one sendtoaddress fired');
+  }, { rpc: slowRpc });
+});
+
 test('status: operator sees hot-wallet balance and the current dispense amount', async () => {
   await withFaucet(async (base) => {
     const res = await fetch(base + '/api/status');

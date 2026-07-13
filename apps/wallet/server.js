@@ -6,6 +6,7 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, extname, normalize } from 'node:path';
 
@@ -21,6 +22,40 @@ const VENDOR_PACKAGES = ['@noble/curves', '@noble/hashes', '@scure/base', '@scur
 const VENDOR_ROOTS = Object.fromEntries(
   VENDOR_PACKAGES.map((pkg) => [pkg, dirname(fileURLToPath(import.meta.resolve(pkg)))]),
 );
+
+// ---- Security headers (#55) ----
+// A key-holding wallet locks its origin down. The CSP allows scripts only from
+// same origin plus a hash for index.html's inline importmap (browsers block an
+// inline <script type="importmap"> under a bare script-src 'self'). Crucially it
+// carries NO 'unsafe-inline' for scripts and no 'unsafe-hashes', so an injected
+// inline event handler (e.g. onerror= from a malicious node/indexer/oracle JSON)
+// cannot execute even if an innerHTML sink is ever missed — defence in depth
+// behind the per-sink escaping in app.js. Derived from the real index.html so it
+// can never silently drift out of sync (a changed importmap fails loudly here).
+function importmapCspHash() {
+  const html = readFileSync(join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const m = html.match(/<script type="importmap">([\s\S]*?)<\/script>/);
+  if (!m) throw new Error('index.html: inline importmap not found — cannot build a script-src CSP');
+  return `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`;
+}
+const CSP = [
+  "default-src 'self'",
+  `script-src 'self' ${importmapCspHash()}`,
+  "style-src 'self' 'unsafe-inline'", // index.html <style> + inline style="" on generated nodes
+  "img-src 'self' data:",
+  "media-src 'self'",                 // the loading.mp4 clip
+  "connect-src 'self'",               // /api/* is same-origin
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",           // the wallet is never legitimately framed (clickjacking)
+  "form-action 'none'",
+].join('; ');
+const SECURITY_HEADERS = {
+  'content-security-policy': CSP,
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'no-referrer',   // never leak the wallet URL/path to an explorer or upstream
+};
 
 export function configFromEnv() {
   return {
@@ -322,6 +357,7 @@ export function startServer(overrides = {}) {
 
   let priceSeries = [];
   const server = createServer(async (req, res) => {
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     try {
       if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
       if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, config);

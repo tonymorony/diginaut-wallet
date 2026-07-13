@@ -18,6 +18,14 @@ import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
 
+// Escape untrusted strings before they reach an innerHTML sink. The node,
+// indexer, and oracle responses are semi-trusted JSON, and txids/addresses can
+// be peer-supplied — a malicious value must never break out into markup or an
+// inline event handler (#55). Covers both text and double-quoted attribute
+// contexts. Prefer textContent where possible; use this for template strings.
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 async function rpc(method, params = []) {
   const res = await fetch('/api/rpc', {
     method: 'POST',
@@ -171,7 +179,7 @@ function enhanceSelect(id) {
 // ---- Status ----
 function statusLine(active, textActive, textInactive) {
   const cls = active ? 'good' : 'warn';
-  return `<span class="dot ${cls}"></span>${active ? textActive : textInactive}`;
+  return `<span class="dot ${cls}"></span>${esc(active ? textActive : textInactive)}`;
 }
 
 // header dot = aggregate of softfork state + oracle freshness
@@ -244,7 +252,7 @@ async function loadOracle() {
     }
   } catch (e) {
     netHealth.oracle = false;
-    $('o-hint').innerHTML = `<span class="err">oracle: ${e.message}</span>`;
+    $('o-hint').innerHTML = `<span class="err">oracle: ${esc(e.message)}</span>`;
   }
   renderNetDot();
   syncSendPriceGate(); // USD send entry follows oracle freshness (#70)
@@ -253,14 +261,14 @@ async function loadOracle() {
     if (Array.isArray(list) && list.length) {
       const { active_oracle_count: active, total_oracle_slots: slots, consensus_threshold: need } = list[0];
       const ok = active >= need;
-      $('o-consensus').innerHTML = `<span class="dot ${ok ? 'good' : 'bad'}"></span>${active}/${slots} · need ${need}`;
+      $('o-consensus').innerHTML = `<span class="dot ${ok ? 'good' : 'bad'}"></span>${esc(active)}/${esc(slots)} · need ${esc(need)}`;
       $('o-active').textContent = `${active} of ${slots}`;
       $('o-grid').innerHTML = list
         .map((o, i) => {
           const on = o.is_active !== false;
           const bg = on ? 'var(--good-bg)' : 'var(--bad-bg)';
           const col = on ? 'var(--good)' : 'var(--bad)';
-          return `<div class="oracle" style="background:${bg};color:${col}" title="${o.name ?? ''} ${o.pubkey ?? ''}">${o.oracle_id ?? i}</div>`;
+          return `<div class="oracle" style="background:${bg};color:${col}" title="${esc(`${o.name ?? ''} ${o.pubkey ?? ''}`)}">${esc(o.oracle_id ?? i)}</div>`;
         })
         .join('');
     }
@@ -618,8 +626,8 @@ function renderPositions(perAddr) {
     // offering a redeem that consensus (CLTV) would reject.
     const state = blocksLeft > 0
       ? `<span class="warn-text">locked until ≈ ${new Date(Date.now() + blocksLeft * SECONDS_PER_BLOCK * 1000).toLocaleDateString('en-CA')} (block ${p.unlockHeight.toLocaleString('en-US')})</span>`
-      : `<button class="secondary" data-redeem="${p.txid}" style="width:auto;padding:1px 10px;margin:0">Redeem</button>`;
-    return `<div>${fmtUSD(Number(p.ddCents) / 100)} · ${p.tierLabel} · ` +
+      : `<button class="secondary" data-redeem="${esc(p.txid)}" style="width:auto;padding:1px 10px;margin:0">Redeem</button>`;
+    return `<div>${fmtUSD(Number(p.ddCents) / 100)} · ${esc(p.tierLabel)} · ` +
       `locked ${fmtSats(BigInt(p.collateralSats))} DGB · ${state}</div>`;
   }).join('');
 }
@@ -671,7 +679,7 @@ async function refreshMoney() {
       const short = h.txid.slice(0, 12) + '…';
       const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(h.txid)
         ? `<a href="${appConfig.explorerTxUrl}${h.txid}" target="_blank" rel="noopener">${short}</a>`
-        : short;
+        : esc(short);
       return `<div class="mono">${label} ${status}${amt}</div>`;
     }).join('') || 'No transactions yet.';
     const ddCents = perAddr.reduce((s, r) => s + r.ddCents, 0n);
@@ -1375,7 +1383,7 @@ $('w-rd-go').addEventListener('click', (e) =>
     const short = txid.slice(0, 16) + '…';
     const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)
       ? `<a href="${appConfig.explorerTxUrl}${txid}" target="_blank" rel="noopener" class="mono">${short}</a>`
-      : `<span class="mono">${short}</span>`;
+      : `<span class="mono">${esc(short)}</span>`;
     $('w-rd-out').innerHTML = `Redeemed — tx ${label} The collateral returns to your DGB balance once confirmed.`;
     refreshMoney();
   }));
