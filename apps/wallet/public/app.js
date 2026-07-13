@@ -608,6 +608,17 @@ function watchedDerivations() {
 // they render as their own list ($ amount, tier, collateral, expiry date).
 const SECONDS_PER_BLOCK = 15;
 let openPositions = new Map(); // txid → { position, address } — feeds the redeem flow
+
+// Activity list state (#69): the merged per-address history plus a client-side
+// cache of each tx's enrichment, so the 8s balance poll never re-fetches an
+// already-resolved (immutable) confirmed tx.
+let allHistory = [];             // merged {txid, height}, newest-first
+let historyLimit = 8;            // "Show more" bumps this by 8
+const txDetailCache = new Map(); // txid → /api/tx enrichment
+let myAddrSet = new Set();       // lowercased wallet addresses (P2TR + P2WPKH twin)
+// history amounts/fees want sat-level precision — fmtDGB caps at 2 decimals and
+// would swallow a fee to "0". Trim to significant digits instead.
+const fmtDgb8 = (sats) => (Number(sats) / 1e8).toLocaleString('en-US', { maximumFractionDigits: 8 });
 function renderPositions(perAddr) {
   const seen = new Set();
   const positions = perAddr.flatMap((r) => r.positions.positions.map((p) => ({ ...p, address: r.positions.address })))
@@ -663,25 +674,17 @@ async function refreshMoney() {
     $('w-pending-row').style.display = pending > 0 ? 'flex' : 'none';
     if (pending > 0) $('w-pending').textContent = fmtDGB(pending / 1e8);
 
-    const receivedByTx = {};
-    for (const u of utxos) receivedByTx[u.txid] = (receivedByTx[u.txid] ?? 0) + Number(u.valueSats);
+    // Activity (#69): merge per-address history, then enrich the visible page
+    // (direction, signed amount, fee, date, confirmations) via /api/tx/:txid.
+    // Classification is wallet-side — only here is the full watched-address set
+    // known, so a self-send between our own addresses nets correctly.
+    myAddrSet = new Set(addrs.map(({ address }) => address.toLowerCase()));
     const seen = new Set();
-    const entries = perAddr.flatMap((r) => r.history)
+    allHistory = perAddr.flatMap((r) => r.history)
       .filter((h) => (seen.has(h.txid) ? false : seen.add(h.txid)))
-      .sort((a, b) => (a.height === 0 ? Infinity : a.height) < (b.height === 0 ? Infinity : b.height) ? 1 : -1)
-      .slice(0, 8);
-    $('w-history').innerHTML = entries.map((h) => {
-      const status = h.height === 0
-        ? '<span class="warn-text">pending</span>'
-        : `<span style="color:var(--good)">confirmed</span>`;
-      const amt = receivedByTx[h.txid] ? ` · +${fmtSats(receivedByTx[h.txid])} DGB` : '';
-      // txids link out to the configured block explorer (EXPLORER_TX_URL)
-      const short = h.txid.slice(0, 12) + '…';
-      const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(h.txid)
-        ? `<a href="${appConfig.explorerTxUrl}${h.txid}" target="_blank" rel="noopener">${short}</a>`
-        : esc(short);
-      return `<div class="mono">${label} ${status}${amt}</div>`;
-    }).join('') || 'No transactions yet.';
+      .sort((a, b) => (a.height === 0 ? Infinity : a.height) < (b.height === 0 ? Infinity : b.height) ? 1 : -1);
+    renderHistory();
+    enrichVisible();
     const ddCents = perAddr.reduce((s, r) => s + r.ddCents, 0n);
     $('w-dd-balance').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
@@ -695,6 +698,110 @@ async function refreshMoney() {
     $('loading-veil').style.display = 'none';
     $('w-open-err').textContent = 'indexer: ' + e.message;
   }
+}
+
+// ---- Activity rendering (#69) ----
+const DD_LABEL = { mint: 'Minted DigiDollar', redeem: 'Redeemed DigiDollar', transfer: 'DigiDollar transfer' };
+const truncAddr = (a) => (a ? a.slice(0, 10) + '…' + a.slice(-4) : '');
+function relTime(unixSec) {
+  if (!unixSec) return null;
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - unixSec));
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24); if (d < 30) return `${d}d ago`;
+  return new Date(unixSec * 1000).toLocaleDateString('en-CA');
+}
+
+function txExplorerLink(txid) {
+  const short = txid.slice(0, 12) + '…';
+  return appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)
+    ? `<a href="${appConfig.explorerTxUrl}${txid}" target="_blank" rel="noopener">${short}</a>`
+    : `<span class="mono">${esc(short)}</span>`;
+}
+
+/** One Activity row. Thin (txid + pending/confirmed) until enrichment arrives. */
+function historyRow(h) {
+  const link = txExplorerLink(h.txid);
+  const detail = txDetailCache.get(h.txid);
+  if (!detail) {
+    const conf = h.height === 0
+      ? '<span class="tx-conf pending">pending</span>'
+      : '<span class="tx-conf partial">confirmed</span>';
+    return `<div class="tx"><div class="tx-icon out">·</div>` +
+      `<div class="tx-main"><div class="tx-title">Transaction</div><div class="tx-sub">${link}</div></div>` +
+      `<div class="tx-right">${conf}</div></div>`;
+  }
+  // Signed DGB effect on the wallet = Σ(my outputs) − Σ(my inputs).
+  // The indexer is treated as untrusted (#55): parse only well-formed integers,
+  // never interpolate raw fields into the DOM.
+  const sat = (x) => (typeof x === 'string' && /^\d+$/.test(x) ? BigInt(x) : 0n);
+  const isMine = (a) => typeof a === 'string' && myAddrSet.has(a.toLowerCase());
+  const vin = Array.isArray(detail.vin) ? detail.vin : [];
+  const vout = Array.isArray(detail.vout) ? detail.vout : [];
+  let inMine = 0n, outMine = 0n;
+  for (const v of vin) if (isMine(v.address)) inMine += sat(v.valueSats);
+  for (const o of vout) if (isMine(o.address)) outMine += sat(o.valueSats);
+  const net = outMine - inMine;
+  const sent = inMine > 0n; // we funded at least one input
+  const coinbase = vin.length > 0 && vin.every((v) => v.address == null && v.valueSats == null);
+  const extOut = vout.find((o) => o.address && !isMine(o.address) && o.valueSats !== '0');
+  const extIn = vin.find((v) => v.address && !isMine(v.address));
+
+  let title, iconCls, icon, cp = '';
+  if (detail.type !== 'dgb') {
+    title = DD_LABEL[detail.type] || 'DigiDollar';
+    iconCls = 'dd'; icon = '◆';
+    cp = sent && extOut ? `to ${truncAddr(extOut.address)}` : (extIn ? `from ${truncAddr(extIn.address)}` : '');
+  } else if (sent) {
+    title = extOut ? 'Sent' : 'Sent to self';
+    iconCls = 'out'; icon = '↑';
+    cp = extOut ? `to ${truncAddr(extOut.address)}` : '';
+  } else {
+    title = coinbase ? 'Mined' : 'Received';
+    iconCls = 'in'; icon = '↓';
+    cp = !coinbase && extIn ? `from ${truncAddr(extIn.address)}` : '';
+  }
+
+  const amtCls = net > 0n ? 'in' : 'out';
+  const sign = net > 0n ? '+' : net < 0n ? '−' : '';
+  const amtStr = `${sign}${fmtDgb8(net < 0n ? -net : net)} DGB`;
+  const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
+  const conf = (c <= 0 || h.height === 0)
+    ? '<span class="tx-conf pending">pending</span>'
+    : c >= 6 ? '<span class="tx-conf final">✓ final</span>'
+      : `<span class="tx-conf partial">${c} conf</span>`;
+  const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
+  const time = Number(detail.time) || 0;
+  const sub = [cp, relTime(time), feeStr].filter(Boolean).join(' · ');
+
+  return `<div class="tx">` +
+    `<div class="tx-icon ${iconCls}">${icon}</div>` +
+    `<div class="tx-main"><div class="tx-title">${esc(title)}</div>` +
+    `<div class="tx-sub">${esc(sub)}${sub ? ' · ' : ''}${link}</div></div>` +
+    `<div class="tx-right"><div class="tx-amt ${amtCls}">${amtStr}</div>${conf}</div></div>`;
+}
+
+function renderHistory() {
+  const shown = allHistory.slice(0, historyLimit);
+  const rows = shown.map(historyRow).join('');
+  const more = allHistory.length > historyLimit
+    ? '<button id="w-history-more" class="secondary">Show more</button>' : '';
+  $('w-history').innerHTML = rows + more || 'No transactions yet.';
+  const mb = $('w-history-more');
+  if (mb) mb.addEventListener('click', () => { historyLimit += 8; renderHistory(); enrichVisible(); });
+}
+
+/** Fetch enrichment for the visible page; re-render as details arrive. Confirmed
+ *  txs are cached (immutable); pending ones are re-fetched to track confirmations. */
+async function enrichVisible() {
+  const targets = allHistory.slice(0, historyLimit)
+    .filter((h) => /^[0-9a-f]{64}$/.test(h.txid) && (!txDetailCache.has(h.txid) || h.height === 0));
+  if (!targets.length) return;
+  await Promise.all(targets.map(async (h) => {
+    try { txDetailCache.set(h.txid, await fetchIndexer(`/tx/${h.txid}`)); } catch { /* keep the thin row */ }
+  }));
+  renderHistory();
 }
 
 // fiat equivalents (hero + asset row) from the latest oracle price

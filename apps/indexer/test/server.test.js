@@ -224,6 +224,75 @@ test('dd-utxos: a transfer RECIPIENT sees the positional amount for their output
   }, DD_UTXO_HANDLERS);
 });
 
+// ---- Per-tx enrichment (#69) ----
+// Resolve one tx into a real history entry: DD type, resolved in/out addresses,
+// fee (Σin − Σout, needing each input's prevout), timestamp, confirmations.
+const PREV1 = TRANSFER.vin[0].txid; // funds vout[1]
+const PREV2 = TRANSFER.vin[1].txid; // funds vout[1] (the DD fee coin)
+const stubPrevout = (value, address) => ({ txid: 'ff'.repeat(32), version: 2, vout: [{ n: 0, value: 0, scriptPubKey: {} }, { n: 1, value, scriptPubKey: { address, hex: '00' } }] });
+
+const TX_HANDLERS = {
+  'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+  'blockchain.headers.subscribe': () => ({ height: 1825, hex: '00' }),
+  'blockchain.transaction.get': (params) => {
+    if (params[0] === TRANSFER.txid) return { ...TRANSFER, confirmations: 12, blocktime: 1_720_000_000 };
+    if (params[0] === PREV1) return stubPrevout(14.36, 'dgbrt1qfunder00000000000000000000000000funder0');
+    if (params[0] === PREV2) return stubPrevout(0.01, 'dgbrt1qfeecoin0000000000000000000000000feecn0');
+    throw new Error('unexpected tx: ' + params[0]);
+  },
+};
+
+test('tx: a DD transfer resolves to type, signed in/out addresses, fee, timestamp, confirmations', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/tx/${TRANSFER.txid}`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {
+      txid: TRANSFER.txid,
+      confirmations: 12,
+      time: 1_720_000_000,
+      type: 'transfer',
+      feeSats: '9244', // (14.36 + 0.01) − 14.36990756 DGB, in sats
+      vin: [
+        { address: 'dgbrt1qfunder00000000000000000000000000funder0', valueSats: '1436000000' },
+        { address: 'dgbrt1qfeecoin0000000000000000000000000feecn0', valueSats: '1000000' },
+      ],
+      vout: [
+        { n: 0, address: TRANSFER.vout[0].scriptPubKey.address, valueSats: '0', ddCents: '3000' },
+        { n: 1, address: TRANSFER.vout[1].scriptPubKey.address, valueSats: '0', ddCents: '7000' },
+        { n: 2, address: TRANSFER.vout[2].scriptPubKey.address, valueSats: '1436990756', ddCents: null },
+        { n: 3, address: null, valueSats: '0', ddCents: null }, // OP_RETURN — no address, not DD-valued
+      ],
+    });
+  }, TX_HANDLERS);
+});
+
+test('tx: a coinbase input makes the fee uncomputable (feeSats null), tx still resolves', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/tx/${'11'.repeat(32)}`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.type, 'dgb');
+    assert.equal(body.feeSats, null);
+    assert.deepEqual(body.vin, [{ address: null, valueSats: null }]);
+    assert.deepEqual(body.vout, [{ n: 0, address: 'dgbrt1qminer0000000000000000000000000000miner0', valueSats: '625000000', ddCents: null }]);
+  }, {
+    'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+    'blockchain.transaction.get': (params) => ({
+      txid: params[0], version: 2, confirmations: 100, blocktime: 1_720_000_500,
+      vin: [{ coinbase: '02abcd', sequence: 0 }],
+      vout: [{ n: 0, value: 6.25, scriptPubKey: { address: 'dgbrt1qminer0000000000000000000000000000miner0', hex: '0014' } }],
+    }),
+  });
+});
+
+test('tx: malformed txid in the path is rejected (404), Electrum never queried', async () => {
+  await withIndexer(async (base, seen) => {
+    assert.equal((await fetch(`${base}/api/tx/nothex`)).status, 404);
+    assert.equal((await fetch(`${base}/api/tx/${'zz'.repeat(32)}`)).status, 404);
+    assert.equal(seen.filter((m) => m.method.startsWith('blockchain.')).length, 0);
+  }, TX_HANDLERS);
+});
+
 test('health reports the electrum tip height', async () => {
   await withIndexer(async (base) => {
     const res = await fetch(`${base}/api/health`);

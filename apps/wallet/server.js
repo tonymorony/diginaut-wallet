@@ -82,7 +82,7 @@ export function configFromEnv() {
 async function handleIndexer(req, res, { indexerUrl }) {
   if (!indexerUrl) return sendJson(res, 503, { error: 'no indexer configured' });
   const rel = req.url.slice('/api/indexer'.length);
-  if (!/^\/address\/[a-z0-9]+\/(utxos|history|positions|dd-utxos)$/.test(rel)) {
+  if (!/^\/(address\/[a-z0-9]+\/(utxos|history|positions|dd-utxos)|tx\/[0-9a-f]{64})$/.test(rel)) {
     return sendJson(res, 404, { error: 'unknown indexer path' });
   }
   try {
