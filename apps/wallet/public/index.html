@@ -94,6 +94,14 @@
       box-shadow: 0 1px 2px rgba(21,24,30,.06); }
     #net-btn:hover { background: var(--gray-50); box-shadow: inset 0 0 0 1px var(--gray-200); }
     #net-btn .dot { margin: 0; }
+    /* site footer: demo/educational disclaimer + full-text link (#79) */
+    footer.site { max-width: 520px; margin: 0 auto; padding: 0 20px 40px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    footer.site .disclaimer-line { margin: 0; }
+    footer.site button.linklike { display: inline; width: auto; margin: 0; padding: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; }
+    footer.site button.linklike:hover { background: none; color: var(--accent-2); }
+    .modal .disclaimer-body p { margin: 0 0 12px; color: var(--gray-700); }
+    .modal .disclaimer-body p:last-child { margin-bottom: 0; }
+    .modal .disclaimer-body strong { color: var(--text); }
     .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(21,24,30,.45); z-index: 50; }
     .modal-backdrop.open { display: grid; place-items: center; }
     .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
@@ -579,6 +587,20 @@
       </div>
     </div>
 
+    <!-- Disclaimer modal: demo/educational, no warranty, user bears all risk (#79) -->
+    <div id="disclaimer-modal" class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
+        <div class="modal-head"><h3 id="disclaimer-title">Disclaimer</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="disclaimer-body" style="margin-top:14px">
+          <p>Diginaut is provided <strong>for demonstration and educational purposes only</strong>. It is not a commercial product or a custodial service.</p>
+          <p>The software is provided <strong>“as is”, with no warranty of any kind</strong>, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.</p>
+          <p><strong>You bear all risk.</strong> This includes, without limitation, loss of funds arising from bugs, mistakes, misconfiguration, key loss, or network failures. The authors accept no liability for any loss or damage.</p>
+          <p>Your keys are generated in your browser and never leave it. <strong>If you lose your keys or recovery phrase, no one — including the authors — can recover your funds.</strong></p>
+          <p>Nothing here is financial, legal, or tax advice. See the <a href="https://github.com/tonymorony/diginaut-wallet/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a> for the full terms.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Legacy mint calculator: hidden, kept alive — the c-* inputs stay the
          oracle-seeded source for the mint estimate and drivers still set them -->
     <div id="calc-legacy" style="display:none" aria-hidden="true">
@@ -593,6 +615,10 @@
       <div class="row"><span class="k">DGB to lock</span><span class="big"><span id="r-dgb">—</span> <small>DGB</small></span></div>
     </div>
   </main>
+
+  <footer class="site">
+    <p class="disclaimer-line">Diginaut is a demonstration &amp; educational wallet — no warranty, you bear all risk. <button type="button" id="footer-disclaimer" class="linklike">Read the full disclaimer</button></p>
+  </footer>
 
 
   <script type="importmap">
