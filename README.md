@@ -71,3 +71,13 @@ ceiling division — see its tests).
 Issue tracker: [PRD (#1)](../../issues/1), work sliced into #2–#17. Currently at **M0**
 (restructure) of the [roadmap](ROADMAP.md): M0 → M1 nodeless onboarding → M2 differential
 harness → M3 stablecoin release.
+
+## License
+
+[MIT](LICENSE) © Anton Lysakov. All packages in this monorepo are MIT-licensed; the
+publishable `digidollar-js` library carries its own copy of the license. Third-party
+dependencies (`@noble/*`, `@scure/*`, `qrcode-generator`) are MIT.
+
+This software is provided for demonstration and educational purposes, **as is** and without
+warranty of any kind (see the license). You are solely responsible for any funds or keys you
+use with it.
