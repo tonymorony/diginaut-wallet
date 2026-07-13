@@ -2,3 +2,14 @@
 node_modules/
 .DS_Store
 apps/*/scripts/*.png
+
+# Local dev artifacts — keep them out of the public repo.
+# Screenshots from headless-Chrome driver runs (root + version series).
+/0[0-9]-*.png
+/v[0-9]*-*.png
+# Session handoff notes (working memory, not documentation).
+HANDOFF.md
+# Belongs to a separate project (api.digiscope.me status service), not this repo.
+deploy/digidollar-status-service.mjs
+deploy/oracle-price-feeder.mjs
+deploy/README-digidollar-status.md

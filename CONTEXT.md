@@ -1,8 +1,9 @@
-# DigiDollar Wallet
+# Diginaut — DigiDollar wallet
 
-A non-custodial, browser-based wallet for the DigiByte **DigiDollar** stablecoin, aimed at letting
-new users create a wallet, get testnet DGB from a faucet, and mint DigiDollar — without running
-their own node. Open-source; anyone can run or host it, but it never takes custody of user keys.
+Diginaut is a non-custodial, browser-based wallet for the DigiByte **DigiDollar** stablecoin. It
+lets new users create a wallet, send and receive DGB, and mint DigiDollar — without running their
+own node. On testnet, DGB comes from a built-in faucet. Open-source; anyone can run or host it,
+but it never takes custody of user keys.
 
 ## Language
 
