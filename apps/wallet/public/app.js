@@ -391,9 +391,10 @@ function closeConnectModal() {
 const openModal = (id) => $(id).classList.add('open');
 document.querySelectorAll('[data-close]').forEach((b) =>
   b.addEventListener('click', () => b.closest('.modal-backdrop').classList.remove('open')));
-for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal']) {
+for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal']) {
   $(id).addEventListener('click', (e) => { if (e.target === $(id)) $(id).classList.remove('open'); });
 }
+$('footer-disclaimer').addEventListener('click', () => openModal('disclaimer-modal'));
 $('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
 $('act-receive').addEventListener('click', () => openModal('receive-modal'));
 $('w-no-indexer-receive').addEventListener('click', () => openModal('receive-modal'));
