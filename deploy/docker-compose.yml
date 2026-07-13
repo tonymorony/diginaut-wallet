@@ -1,4 +1,4 @@
-# DigiDollar wallet stack — everything EXCEPT the DigiByte node (#8).
+# Diginaut wallet stack — everything EXCEPT the DigiByte node (#8).
 # You run your own DigiByte Core v9.26+ (txindex=1, server=1); this compose
 # stands up ElectrumX + indexer + faucet + wallet against it.
 # Copy .env.example → .env, fill it in, then: docker compose up --build -d

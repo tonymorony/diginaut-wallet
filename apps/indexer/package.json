@@ -1,5 +1,5 @@
 {
-  "name": "@digidollar/indexer",
+  "name": "@diginaut/indexer",
   "version": "0.1.0",
   "private": true,
   "description": "Indexer facade — address-level DGB queries over ElectrumX (the wallet's indexer seam)",

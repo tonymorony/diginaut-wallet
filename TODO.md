@@ -13,11 +13,11 @@ Things we consciously punted, with the reason. Revisit before the trigger listed
 
 Tracked as tickets (`ready-for-agent`):
 
-- **[#77](https://github.com/tonymorony/digidollar-wallet/issues/77)** — rename everything
+- **[#77](https://github.com/tonymorony/diginaut-wallet/issues/77)** — rename everything
   to the `diginaut-wallet` brand (repo, package names, README/docs).
-- **[#78](https://github.com/tonymorony/digidollar-wallet/issues/78)** — add license files
+- **[#78](https://github.com/tonymorony/diginaut-wallet/issues/78)** — add license files
   across the monorepo, referenced from the READMEs.
-- **[#79](https://github.com/tonymorony/digidollar-wallet/issues/79)** — add demo/educational
+- **[#79](https://github.com/tonymorony/diginaut-wallet/issues/79)** — add demo/educational
   disclaimers (no warranty, user bears all risk) in the UI footer + README.
 
 ## Before mainnet

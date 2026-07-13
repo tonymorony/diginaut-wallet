@@ -1,7 +1,7 @@
 # Mainnet DigiDollar consensus facts
 
-Research for [Mainnet DigiDollar consensus facts (#51)](https://github.com/tonymorony/digidollar-wallet/issues/51),
-part of the [Mainnet Diginaut launch](https://github.com/tonymorony/digidollar-wallet/issues/50) map.
+Research for [Mainnet DigiDollar consensus facts (#51)](https://github.com/tonymorony/diginaut-wallet/issues/51),
+part of the [Mainnet Diginaut launch](https://github.com/tonymorony/diginaut-wallet/issues/50) map.
 
 **Sources verified 2026-07-10** — every claim below was checked against the
 DigiByte Core **v9.26.4 tag** (`src/consensus/digidollar.h`, `src/kernel/chainparams.cpp`,
@@ -107,7 +107,7 @@ mainnet rather than defaulting to healthy (feeds into #53).
 - Mainnet oracle system: **7-of-35 MuSig2** with hardcoded x-only pubkeys in
   chainparams (35 active on mainnet vs 24 currently active on testnet26), epoch
   40 blocks, price update every 4 blocks — detail belongs to
-  [Mainnet oracle: who feeds the price (#52)](https://github.com/tonymorony/digidollar-wallet/issues/52),
+  [Mainnet oracle: who feeds the price (#52)](https://github.com/tonymorony/diginaut-wallet/issues/52),
   but the headline is that **the network provides signed prices; we run no oracle on mainnet**.
 
 ## Testnet26 → mainnet differences that matter to us

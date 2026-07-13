@@ -1,5 +1,5 @@
 {
-  "name": "@digidollar/wallet",
+  "name": "@diginaut/wallet",
   "version": "0.1.0",
   "private": true,
   "description": "DigiDollar wallet web app — dashboard, calculator, RPC allow-list proxy",
