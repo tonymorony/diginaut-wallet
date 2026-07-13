@@ -1,5 +1,5 @@
 {
-  "name": "@digidollar/faucet",
+  "name": "@diginaut/faucet",
   "version": "0.1.0",
   "private": true,
   "description": "DigiDollar testnet Faucet — dispenses mint-meaningful DGB with rate limits",
