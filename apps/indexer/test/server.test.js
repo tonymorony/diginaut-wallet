@@ -293,6 +293,68 @@ test('tx: malformed txid in the path is rejected (404), Electrum never queried',
   }, TX_HANDLERS);
 });
 
+test('tx: prevout fan-out is capped at 40 — inputs past the cap are unresolved and the fee is null', async () => {
+  const BIGTX = '99'.repeat(32);
+  const PREVBIG = 'dd'.repeat(32);
+  await withIndexer(async (base) => {
+    const body = await (await fetch(`${base}/api/tx/${BIGTX}`)).json();
+    assert.equal(body.vin.length, 45);
+    assert.deepEqual(body.vin[0], { address: 'dgbrt1qfunder0000000000000000000000000fundr0', valueSats: '300000000' });
+    assert.deepEqual(body.vin[39], { address: 'dgbrt1qfunder0000000000000000000000000fundr0', valueSats: '300000000' });
+    assert.deepEqual(body.vin[40], { address: null, valueSats: null }); // past the cap
+    assert.deepEqual(body.vin[44], { address: null, valueSats: null });
+    assert.equal(body.feeSats, null); // inputs incomplete → fee not asserted
+  }, {
+    'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+    'blockchain.transaction.get': (params) => {
+      if (params[0] === BIGTX) return { txid: BIGTX, version: 2, confirmations: 3, blocktime: 1_720_000_000,
+        vin: Array.from({ length: 45 }, () => ({ txid: PREVBIG, vout: 0 })),
+        vout: [{ n: 0, value: 100, scriptPubKey: { address: 'dgbrt1qbig000000000000000000000000000000big0', hex: '0014' } }] };
+      if (params[0] === PREVBIG) return { txid: PREVBIG, version: 2, vout: [{ n: 0, value: 3, scriptPubKey: { address: 'dgbrt1qfunder0000000000000000000000000fundr0', hex: '0014' } }] };
+      throw new Error('unexpected tx: ' + params[0]);
+    },
+  });
+});
+
+test('tx: a mempool tx (no confirmations/blocktime) reports confirmations 0 and time null, fee still resolves', async () => {
+  const MEMTX = '77'.repeat(32);
+  const PREVM = '66'.repeat(32);
+  await withIndexer(async (base) => {
+    const body = await (await fetch(`${base}/api/tx/${MEMTX}`)).json();
+    assert.equal(body.confirmations, 0);
+    assert.equal(body.time, null);
+    assert.equal(body.feeSats, '1000000'); // 10 − 9.99 DGB
+  }, {
+    'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+    'blockchain.transaction.get': (params) => {
+      if (params[0] === MEMTX) return { txid: MEMTX, version: 2, // no confirmations, no blocktime
+        vin: [{ txid: PREVM, vout: 0 }],
+        vout: [{ n: 0, value: 9.99, scriptPubKey: { address: 'dgbrt1qrecv00000000000000000000000000recv0', hex: '0014' } }] };
+      if (params[0] === PREVM) return { txid: PREVM, version: 2, vout: [{ n: 0, value: 10, scriptPubKey: { address: 'dgbrt1qspend0000000000000000000000000spend0', hex: '0014' } }] };
+      throw new Error('unexpected tx: ' + params[0]);
+    },
+  });
+});
+
+test('tx: a vin whose prevout vout index is missing leaves the fee null, tx still resolves', async () => {
+  const GAPTX = '88'.repeat(32);
+  const PREVG = '55'.repeat(32);
+  await withIndexer(async (base) => {
+    const body = await (await fetch(`${base}/api/tx/${GAPTX}`)).json();
+    assert.deepEqual(body.vin, [{ address: null, valueSats: null }]); // vout[5] absent → unresolved
+    assert.equal(body.feeSats, null);
+  }, {
+    'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+    'blockchain.transaction.get': (params) => {
+      if (params[0] === GAPTX) return { txid: GAPTX, version: 2, confirmations: 1, blocktime: 1_720_000_000,
+        vin: [{ txid: PREVG, vout: 5 }], // prevout only has vout[0]
+        vout: [{ n: 0, value: 1, scriptPubKey: { address: 'dgbrt1qgap000000000000000000000000000000gap0', hex: '0014' } }] };
+      if (params[0] === PREVG) return { txid: PREVG, version: 2, vout: [{ n: 0, value: 2, scriptPubKey: { address: 'x', hex: '0014' } }] };
+      throw new Error('unexpected tx: ' + params[0]);
+    },
+  });
+});
+
 test('health reports the electrum tip height', async () => {
   await withIndexer(async (base) => {
     const res = await fetch(`${base}/api/health`);

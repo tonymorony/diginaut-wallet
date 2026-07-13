@@ -38,6 +38,15 @@ function build() {
     feeSats: null,
     vin: [{ address: EXT_X, valueSats: '500000000' }],
     vout: [{ n: 0, address: WALLET, valueSats: '500000000', ddCents: null }] });               // pending received +5
+  // Self-consolidation with >40 wallet inputs: the indexer caps prevout
+  // resolution, so inputs 41+ arrive null. The old net = ΣmyOut − ΣmyIn math
+  // undercounted inMine and rendered a spurious "+X / Received"; the output-flow
+  // model must call this "Sent to self" (nothing left the wallet). Regression
+  // guard for the #69 review finding.
+  addTx(tx32('f4'), 996, { confirmations: 8, time: now - 1800, type: 'dgb', feeSats: null,
+    vin: [...Array.from({ length: 40 }, () => ({ address: WALLET, valueSats: '100000000' })),
+          ...Array.from({ length: 5 }, () => ({ address: null, valueSats: null }))],
+    vout: [{ n: 0, address: WALLET, valueSats: '4499000000', ddCents: null }] });               // 45 DGB in → one self output
   addTx(tx32('a0'), 995, { confirmations: 5, time: now - 3600, type: 'dgb',
     feeSats: '100000',
     vin: [{ address: WALLET, valueSats: '3000000000' }],
@@ -122,9 +131,10 @@ try {
   const t = await histText();
 
   check(/Sent/.test(t) && /Received/.test(t), 'sent and received are visually distinct rows');
-  check(/−10\.001 DGB/.test(t), 'sent shows a signed negative amount (−10.001 DGB)');
+  check(/−10 DGB/.test(t), 'sent shows the amount that left the wallet (−10 DGB, fee shown separately)');
   check(/\+50 DGB/.test(t), 'received shows a signed positive amount (+50 DGB)');
   check(/fee 0\.001 DGB/.test(t), 'own-sent tx shows its fee (0.001 DGB)');
+  check(/Sent to self/.test(t), '>40-input self-consolidation is "Sent to self", not a spurious positive (review regression)');
   check(/Minted DigiDollar/.test(t), 'DD mint is labeled, not shown as an anonymous DGB move');
   check(/to dgbt1qpaye/.test(t), 'counterpart address shown for the sent tx (to …)');
   check(/from dgbt1qsend/.test(t), 'counterpart address shown for a received tx (from …)');
@@ -135,13 +145,13 @@ try {
   await evaluate(`document.querySelector('#w-history').scrollIntoView({block:'center'})`);
   await shot('92-history-enriched.png');
 
-  // pagination: 10 txs → 8 shown + "Show more" → 10
+  // pagination: 11 txs → 8 shown + "Show more" → 11
   const before = await rowCount();
   check(before === 8, `history capped at 8 rows initially (got ${before})`);
   check(await evaluate(`!!document.getElementById('w-history-more')`), '"Show more" offered when >8 txs');
   await click('w-history-more');
-  await waitFor(`document.querySelectorAll('#w-history .tx').length === 10`, 'show more reveals the rest');
-  check((await rowCount()) === 10, 'all 10 txs reachable after "Show more"');
+  await waitFor(`document.querySelectorAll('#w-history .tx').length === 11`, 'show more reveals the rest');
+  check((await rowCount()) === 11, 'all 11 txs reachable after "Show more"');
 
   console.log('\nDone.');
 } finally {

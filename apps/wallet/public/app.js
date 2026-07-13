@@ -489,6 +489,9 @@ function lockWallet() {
   $('w-rd-out').textContent = '';
   clearInterval(moneyTimer);
   $('w-money').style.display = 'none';
+  // drop this wallet's Activity view so the next wallet doesn't inherit its
+  // expanded page or see its rows flash before the first refresh (#69).
+  allHistory = []; historyLimit = 8; myAddrSet = new Set(); $('w-history').innerHTML = '';
   $('w-seed-words').textContent = '';
   $('w-unlock-pass').value = '';
   $('w-locked-err').textContent = '';
@@ -610,8 +613,9 @@ const SECONDS_PER_BLOCK = 15;
 let openPositions = new Map(); // txid → { position, address } — feeds the redeem flow
 
 // Activity list state (#69): the merged per-address history plus a client-side
-// cache of each tx's enrichment, so the 8s balance poll never re-fetches an
-// already-resolved (immutable) confirmed tx.
+// cache of each tx's enrichment. Non-final txs are re-fetched each poll (their
+// confirmation count still climbs); a tx is cached for good only once final.
+const FINAL_CONF = 6;            // Android parity: 6+ confirmations = final
 let allHistory = [];             // merged {txid, height}, newest-first
 let historyLimit = 8;            // "Show more" bumps this by 8
 const txDetailCache = new Map(); // txid → /api/tx enrichment
@@ -732,44 +736,52 @@ function historyRow(h) {
       `<div class="tx-main"><div class="tx-title">Transaction</div><div class="tx-sub">${link}</div></div>` +
       `<div class="tx-right">${conf}</div></div>`;
   }
-  // Signed DGB effect on the wallet = Σ(my outputs) − Σ(my inputs).
   // The indexer is treated as untrusted (#55): parse only well-formed integers,
-  // never interpolate raw fields into the DOM.
+  // tolerate null/garbage array elements, and never interpolate a raw field.
   const sat = (x) => (typeof x === 'string' && /^\d+$/.test(x) ? BigInt(x) : 0n);
   const isMine = (a) => typeof a === 'string' && myAddrSet.has(a.toLowerCase());
-  const vin = Array.isArray(detail.vin) ? detail.vin : [];
-  const vout = Array.isArray(detail.vout) ? detail.vout : [];
-  let inMine = 0n, outMine = 0n;
-  for (const v of vin) if (isMine(v.address)) inMine += sat(v.valueSats);
-  for (const o of vout) if (isMine(o.address)) outMine += sat(o.valueSats);
-  const net = outMine - inMine;
-  const sent = inMine > 0n; // we funded at least one input
+  const vin = (Array.isArray(detail.vin) ? detail.vin : []).filter((v) => v && typeof v === 'object');
+  const vout = (Array.isArray(detail.vout) ? detail.vout : []).filter((o) => o && typeof o === 'object');
+  // Amounts use OUTPUT flow, not net-of-inputs: the indexer caps prevout
+  // resolution (server.js MAX_VIN_RESOLVE), so Σ(my inputs) is unreliable for a
+  // >40-input send/consolidation. What LEFT the wallet = Σ(outputs to others);
+  // what ARRIVED = Σ(outputs to us). Both come from vout, which is never capped.
+  // We only need inputs to answer "did we send?" — true for any wallet-built tx
+  // since its own coins fund vin[0] (within the resolved window). Fee is shown
+  // separately, so excluding it from the amount matches how wallets read.
+  const toOthers = vout.filter((o) => o.address && !isMine(o.address)).reduce((s, o) => s + sat(o.valueSats), 0n);
+  const toMine = vout.filter((o) => isMine(o.address)).reduce((s, o) => s + sat(o.valueSats), 0n);
+  const sent = vin.some((v) => isMine(v.address)); // we funded at least one (resolved) input
   const coinbase = vin.length > 0 && vin.every((v) => v.address == null && v.valueSats == null);
-  const extOut = vout.find((o) => o.address && !isMine(o.address) && o.valueSats !== '0');
+  const extOut = vout.find((o) => o.address && !isMine(o.address) && sat(o.valueSats) > 0n);
   const extIn = vin.find((v) => v.address && !isMine(v.address));
 
-  let title, iconCls, icon, cp = '';
+  let title, iconCls, icon, cp = '', amt;
   if (detail.type !== 'dgb') {
+    // The DGB shown for a DD tx is the collateral movement: a mint locks it
+    // (out), a redeem frees it (back to us); a DD-only transfer is DGB-neutral
+    // (just the fee), so no DGB amount — the label carries the meaning.
     title = DD_LABEL[detail.type] || 'DigiDollar';
     iconCls = 'dd'; icon = '◆';
+    amt = detail.type === 'mint' ? -toOthers : detail.type === 'redeem' ? toMine : 0n;
     cp = sent && extOut ? `to ${truncAddr(extOut.address)}` : (extIn ? `from ${truncAddr(extIn.address)}` : '');
   } else if (sent) {
-    title = extOut ? 'Sent' : 'Sent to self';
-    iconCls = 'out'; icon = '↑';
+    title = toOthers > 0n ? 'Sent' : 'Sent to self';
+    iconCls = 'out'; icon = '↑'; amt = -toOthers;
     cp = extOut ? `to ${truncAddr(extOut.address)}` : '';
   } else {
     title = coinbase ? 'Mined' : 'Received';
-    iconCls = 'in'; icon = '↓';
+    iconCls = 'in'; icon = '↓'; amt = toMine;
     cp = !coinbase && extIn ? `from ${truncAddr(extIn.address)}` : '';
   }
 
-  const amtCls = net > 0n ? 'in' : 'out';
-  const sign = net > 0n ? '+' : net < 0n ? '−' : '';
-  const amtStr = `${sign}${fmtDgb8(net < 0n ? -net : net)} DGB`;
+  const amtCls = amt > 0n ? 'in' : 'out';
+  const sign = amt > 0n ? '+' : amt < 0n ? '−' : '';
+  const amtStr = amt === 0n ? '' : `${sign}${fmtDgb8(amt < 0n ? -amt : amt)} DGB`; // no misleading "0 DGB"
   const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
   const conf = (c <= 0 || h.height === 0)
     ? '<span class="tx-conf pending">pending</span>'
-    : c >= 6 ? '<span class="tx-conf final">✓ final</span>'
+    : c >= FINAL_CONF ? '<span class="tx-conf final">✓ final</span>'
       : `<span class="tx-conf partial">${c} conf</span>`;
   const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
   const time = Number(detail.time) || 0;
@@ -792,11 +804,16 @@ function renderHistory() {
   if (mb) mb.addEventListener('click', () => { historyLimit += 8; renderHistory(); enrichVisible(); });
 }
 
-/** Fetch enrichment for the visible page; re-render as details arrive. Confirmed
- *  txs are cached (immutable); pending ones are re-fetched to track confirmations. */
+/** Fetch enrichment for the visible page; re-render as details arrive. A tx is
+ *  re-fetched every poll until it reaches finality (FINAL_CONF confirmations) —
+ *  before then its confirmation count (and the pending→mined flip) still change,
+ *  so a cached entry would otherwise freeze at "pending"/its first count. */
 async function enrichVisible() {
-  const targets = allHistory.slice(0, historyLimit)
-    .filter((h) => /^[0-9a-f]{64}$/.test(h.txid) && (!txDetailCache.has(h.txid) || h.height === 0));
+  const targets = allHistory.slice(0, historyLimit).filter((h) => {
+    if (!/^[0-9a-f]{64}$/.test(h.txid)) return false;
+    const d = txDetailCache.get(h.txid);
+    return !d || (Number(d.confirmations) || 0) < FINAL_CONF;
+  });
   if (!targets.length) return;
   await Promise.all(targets.map(async (h) => {
     try { txDetailCache.set(h.txid, await fetchIndexer(`/tx/${h.txid}`)); } catch { /* keep the thin row */ }
