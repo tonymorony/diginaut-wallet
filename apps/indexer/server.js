@@ -23,6 +23,10 @@ export function configFromEnv() {
 }
 
 // ---- Minimal Electrum client: newline-delimited JSON-RPC over TCP ----
+// Cap the unframed read buffer: a compromised/broken ElectrumX must not be able
+// to exhaust indexer memory with an endless line that never sends a newline (#55).
+const MAX_ELECTRUM_FRAME = 16 * 1024 * 1024;
+
 class ElectrumClient {
   constructor({ host, port }) {
     this.host = host;
@@ -69,12 +73,26 @@ class ElectrumClient {
 
   #onData(d) {
     this.buf += d;
+    if (this.buf.length > MAX_ELECTRUM_FRAME) {
+      this.buf = '';
+      const err = new Error('electrum response exceeded frame limit');
+      for (const { reject } of this.pending.values()) reject(err);
+      this.pending.clear();
+      return;
+    }
     let nl;
     while ((nl = this.buf.indexOf('\n')) >= 0) {
       const line = this.buf.slice(0, nl);
       this.buf = this.buf.slice(nl + 1);
       if (!line.trim()) continue;
-      const msg = JSON.parse(line);
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        // A malformed line from a malicious/broken backend must not crash the
+        // indexer process (#55) — skip it; the pending request will time out.
+        continue;
+      }
       const entry = this.pending.get(msg.id);
       if (!entry) continue; // subscription notification — not used yet
       this.pending.delete(msg.id);

@@ -103,28 +103,45 @@ async function handleClaim(req, res, ctx) {
   } catch (e) {
     return sendJson(res, 400, { error: `invalid address: ${e.message}` });
   }
+  // Canonicalize to lowercase so an all-uppercase bech32 variant of the same
+  // address can't bypass the per-address cooldown ledger (#55).
+  address = address.toLowerCase();
 
   const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
-  const leftMs = cooldownLeftMs(ctx.claims, { address, ip }, ctx.cooldownHours, ctx.now());
-  if (leftMs > 0) {
-    const hours = Math.ceil(leftMs / 3600_000);
-    return sendJson(res, 429, {
-      error: `already claimed — the Faucet allows one claim per address and IP every ${ctx.cooldownHours}h; try again in ~${hours}h`,
-      retryAfterMs: leftMs,
-    });
+
+  // Serialize concurrent claims for the same address or IP. The cooldown check
+  // and the ledger write are separated by awaits (oracle + sendtoaddress), so
+  // two simultaneous requests could both pass the check and drain the hot wallet
+  // before either writes (#55 TOCTOU). This synchronous guard closes the window.
+  const locks = [`a:${address}`, `i:${ip}`];
+  if (locks.some((k) => ctx.inFlight.has(k))) {
+    return sendJson(res, 429, { error: 'a claim from this address or IP is already being processed — try again shortly' });
   }
+  locks.forEach((k) => ctx.inFlight.add(k));
+  try {
+    const leftMs = cooldownLeftMs(ctx.claims, { address, ip }, ctx.cooldownHours, ctx.now());
+    if (leftMs > 0) {
+      const hours = Math.ceil(leftMs / 3600_000);
+      return sendJson(res, 429, {
+        error: `already claimed — the Faucet allows one claim per address and IP every ${ctx.cooldownHours}h; try again in ~${hours}h`,
+        retryAfterMs: leftMs,
+      });
+    }
 
-  const oracle = await ctx.rpc('getoracleprice', []);
-  if (!oracle?.price_micro_usd || oracle.is_stale) return sendJson(res, 503, { error: 'Oracle price unavailable or stale' });
-  const priceMicroUsd = BigInt(oracle.price_micro_usd);
+    const oracle = await ctx.rpc('getoracleprice', []);
+    if (!oracle?.price_micro_usd || oracle.is_stale) return sendJson(res, 503, { error: 'Oracle price unavailable or stale' });
+    const priceMicroUsd = BigInt(oracle.price_micro_usd);
 
-  const amountSats = dispenseSats(ctx.targetDdCents, priceMicroUsd);
-  const amountDgb = Number(amountSats) / 1e8;
-  const txid = await ctx.rpc('sendtoaddress', [address, amountDgb]);
-  ctx.claims.byAddress[address] = ctx.now();
-  ctx.claims.byIp[ip] = ctx.now();
-  saveClaims(ctx.dataFile, ctx.claims);
-  sendJson(res, 200, { txid, amountSats: amountSats.toString(), amountDgb });
+    const amountSats = dispenseSats(ctx.targetDdCents, priceMicroUsd);
+    const amountDgb = Number(amountSats) / 1e8;
+    const txid = await ctx.rpc('sendtoaddress', [address, amountDgb]);
+    ctx.claims.byAddress[address] = ctx.now();
+    ctx.claims.byIp[ip] = ctx.now();
+    saveClaims(ctx.dataFile, ctx.claims);
+    sendJson(res, 200, { txid, amountSats: amountSats.toString(), amountDgb });
+  } finally {
+    locks.forEach((k) => ctx.inFlight.delete(k));
+  }
 }
 
 async function handleStatus(res, ctx) {
@@ -146,6 +163,7 @@ export function startServer(overrides = {}) {
     dataFile: config.dataFile,
     claims: loadClaims(config.dataFile),
     now: overrides.now || Date.now,
+    inFlight: new Set(), // address/IP keys with a claim currently in progress (#55)
   };
 
   const server = createServer(async (req, res) => {
@@ -154,7 +172,10 @@ export function startServer(overrides = {}) {
       if (req.method === 'GET' && req.url === '/api/status') return await handleStatus(res, ctx);
       res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
     } catch (err) {
-      sendJson(res, 502, { error: String(err.message || err) });
+      // Keep upstream node/Electrum detail server-side; don't relay it to
+      // clients where it can leak node internals (#55).
+      console.error('faucet:', err);
+      sendJson(res, 502, { error: 'faucet upstream error' });
     }
   });
 

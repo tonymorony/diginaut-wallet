@@ -22,6 +22,31 @@ test('serves the wallet UI', async () => {
   });
 });
 
+test('sets a strict Content-Security-Policy and hardening headers on every response (#55)', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(base + '/');
+    const csp = res.headers.get('content-security-policy');
+    assert.ok(csp, 'CSP header present');
+    assert.match(csp, /script-src 'self' 'sha256-/); // inline importmap hashed
+    assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/); // scripts never unsafe-inline → inline handlers blocked
+    assert.match(csp, /frame-ancestors 'none'/);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+  });
+});
+
+test('the CSP script-src hash matches the inline importmap in index.html — no silent drift (#55)', async () => {
+  const { createHash } = await import('node:crypto');
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const inner = html.match(/<script type="importmap">([\s\S]*?)<\/script>/)[1];
+  const hash = `'sha256-${createHash('sha256').update(inner).digest('base64')}'`;
+  await withServer(async (base) => {
+    const csp = (await fetch(base + '/')).headers.get('content-security-policy');
+    assert.ok(csp.includes(hash), `CSP must carry the current importmap hash ${hash}`);
+  });
+});
+
 test('proxies allow-listed read RPCs (mock mode)', async () => {
   await withServer(async (base) => {
     const res = await fetch(base + '/api/rpc', {
