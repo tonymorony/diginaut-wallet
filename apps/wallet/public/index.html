@@ -65,6 +65,24 @@
     .warn-text { color: var(--warn); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
     .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+    /* Activity rows (#69): direction + signed amount, counterpart, date, confirmations */
+    #w-history { margin: 0; }
+    .tx { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--gray-100); }
+    .tx:first-child { padding-top: 2px; } .tx:last-of-type { border-bottom: 0; }
+    .tx-icon { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+    .tx-icon.in { background: var(--good-bg); color: var(--good); }
+    .tx-icon.out { background: var(--gray-100); color: var(--gray-700); }
+    .tx-icon.dd { background: var(--accent-5); color: var(--accent); }
+    .tx-main { flex: 1 1 auto; min-width: 0; }
+    .tx-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .tx-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tx-sub a { color: var(--muted); }
+    .tx-right { flex: 0 0 auto; text-align: right; }
+    .tx-amt { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .tx-amt.in { color: var(--good); } .tx-amt.out { color: var(--text); }
+    .tx-conf { font-size: 11px; margin-top: 1px; }
+    .tx-conf.pending { color: var(--warn); } .tx-conf.partial { color: var(--muted); } .tx-conf.final { color: var(--good); }
+    #w-history-more { width: auto; margin: 10px auto 0; display: block; padding: 5px 14px; font-size: 12px; }
     /* amount entry header: label on the left, currency toggle + Max on the right (#70) */
     .amt-head { display: flex; align-items: flex-end; justify-content: space-between; }
     .amt-head label { margin-bottom: 0; }

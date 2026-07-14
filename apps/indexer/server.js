@@ -196,6 +196,63 @@ function scriptPubKeyToScripthash(spkHex) {
   return createHash('sha256').update(Buffer.from(spkHex, 'hex')).digest().reverse().toString('hex');
 }
 
+// ---- Per-tx enrichment (#69) ----
+// The wallet's history was thin because the façade returned {txid, height}
+// only. This resolves ONE tx into the facts a real history view needs — signed
+// direction, fee, timestamp, confirmations, DD classification — while staying
+// address-agnostic: the caller already knows the txid (a public fact), and
+// which of the resolved in/out addresses are "theirs" is decided wallet-side,
+// where the full watched-address set lives. So no xpub or address set leaks here.
+function spkAddress(spk) {
+  return spk?.address ?? (Array.isArray(spk?.addresses) ? spk.addresses[0] : null) ?? null;
+}
+// Core reports values as float DGB; sats is the integer we settle in.
+const valueToSats = (v) => BigInt(Math.round(v * 1e8));
+
+async function enrichTx(withElectrum, txid) {
+  const tx = await withElectrum('blockchain.transaction.get', [txid, true]);
+  const type = parseDDVersion(tx.version).type || 'dgb';
+  const ddMap = ddAmountsByVout(tx); // vout.n → DD cents (null for a plain DGB tx)
+  const vout = tx.vout.map((o) => ({
+    n: o.n,
+    address: spkAddress(o.scriptPubKey),
+    valueSats: String(valueToSats(o.value)),
+    ddCents: ddMap?.has(o.n) ? String(ddMap.get(o.n)) : null,
+  }));
+  // Resolve each input to its funding address + value by fetching the prevout
+  // tx. Needed for the fee (Σin − Σout) and the received-from counterpart.
+  // Coinbase inputs have no prevout, so the fee is not computable there. Cap the
+  // per-tx prevout fan-out (a consolidation can have thousands of inputs, and
+  // one history row must not trigger thousands of Electrum calls, #55): resolve
+  // the first MAX (enough to name a counterpart), leave the fee null past that.
+  const MAX_VIN_RESOLVE = 40;
+  const prevCache = new Map();
+  let inputsResolved = true;
+  const vin = [];
+  for (let idx = 0; idx < tx.vin.length; idx++) {
+    const i = tx.vin[idx];
+    if (i.coinbase !== undefined || idx >= MAX_VIN_RESOLVE) { vin.push({ address: null, valueSats: null }); inputsResolved = false; continue; }
+    if (!prevCache.has(i.txid)) prevCache.set(i.txid, await withElectrum('blockchain.transaction.get', [i.txid, true]));
+    const po = prevCache.get(i.txid)?.vout?.[i.vout];
+    if (!po) { vin.push({ address: null, valueSats: null }); inputsResolved = false; continue; }
+    vin.push({ address: spkAddress(po.scriptPubKey), valueSats: String(valueToSats(po.value)) });
+  }
+  let feeSats = null;
+  if (inputsResolved) {
+    const fee = vin.reduce((s, v) => s + BigInt(v.valueSats), 0n) - vout.reduce((s, v) => s + BigInt(v.valueSats), 0n);
+    if (fee >= 0n) feeSats = String(fee);
+  }
+  return {
+    txid: tx.txid,
+    confirmations: Number.isFinite(tx.confirmations) ? tx.confirmations : 0,
+    time: tx.blocktime ?? tx.time ?? null,
+    type,
+    feeSats,
+    vin,
+    vout,
+  };
+}
+
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
@@ -248,6 +305,10 @@ export function startServer(overrides = {}) {
           address,
           history: history.map((h) => ({ txid: h.tx_hash, height: h.height })),
         });
+      }
+      const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
+      if (req.method === 'GET' && txMatch) {
+        return sendJson(res, 200, await enrichTx(withElectrum, txMatch[1]));
       }
       if (req.method === 'GET' && req.url === '/api/health') {
         const tip = await withElectrum('blockchain.headers.subscribe', []);

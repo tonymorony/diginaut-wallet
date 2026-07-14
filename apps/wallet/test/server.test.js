@@ -197,9 +197,12 @@ test('proxies indexer GETs to INDEXER_URL and reports availability in config', a
     // DigiDollar positions (#13) and dd-utxos (#15) go through the same seam
     assert.equal((await fetch(base + '/api/indexer/address/dgbrt1qfoo/positions')).status, 200);
     assert.equal((await fetch(base + '/api/indexer/address/dgbrt1qfoo/dd-utxos')).status, 200);
-    assert.deepEqual(hits, ['/api/address/dgbrt1qfoo/utxos', '/api/address/dgbrt1qfoo/positions', '/api/address/dgbrt1qfoo/dd-utxos']);
-    // anything outside /api/address/ is not forwarded
+    // per-tx history enrichment (#69) — /tx/<64-hex> is on the allow-list
+    assert.equal((await fetch(base + `/api/indexer/tx/${'ab'.repeat(32)}`)).status, 200);
+    assert.deepEqual(hits, ['/api/address/dgbrt1qfoo/utxos', '/api/address/dgbrt1qfoo/positions', '/api/address/dgbrt1qfoo/dd-utxos', `/api/tx/${'ab'.repeat(32)}`]);
+    // anything outside the allow-list is not forwarded
     assert.equal((await fetch(base + '/api/indexer/../evil')).status, 404);
+    assert.equal((await fetch(base + '/api/indexer/tx/nothex')).status, 404);
   } finally {
     server.close();
     indexer.close();
