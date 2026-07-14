@@ -8,13 +8,11 @@
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
 //     --remote-debugging-port=9224 --user-data-dir=$(mktemp -d) --no-first-run about:blank &
 //   node apps/wallet/scripts/verify-history.mjs   # exit 0 = all green
-import { writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { startServer } from '../server.js';
+import { connectCdp } from './lib/cdp.mjs';
 
-const CDP_PORT = Number(process.env.CDP_PORT) || 9224;
-const OUT = './'; // cwd-relative — run from /tmp to keep screenshots out of the repo
 const now = Math.floor(Date.now() / 1000);
 
 // ---- Canned chain data. The fake pins the FIRST address the wallet queries as
@@ -87,25 +85,11 @@ const wallet = startServer({ port: 0, indexerUrl: `http://127.0.0.1:${indexer.ad
 await once(wallet, 'listening');
 const APP = `http://127.0.0.1:${wallet.address().port}`;
 
-// ---- CDP plumbing ----
-const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json();
-const ws = new WebSocket(webSocketDebuggerUrl);
-await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
-let msgId = 0; const pending = new Map();
-ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result); } };
-const cdp = (method, params = {}, sessionId) => { const id = ++msgId; ws.send(JSON.stringify({ id, method, params, sessionId })); return new Promise((resolve, reject) => pending.set(id, { resolve, reject })); };
-const { targetId } = await cdp('Target.createTarget', { url: 'about:blank' });
-const { sessionId } = await cdp('Target.attachToTarget', { targetId, flatten: true });
-await cdp('Page.enable', {}, sessionId);
-async function evaluate(expression) { const { result, exceptionDetails } = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId); if (exceptionDetails) throw new Error('page threw: ' + (exceptionDetails.exception?.description || exceptionDetails.text)); return result.value; }
-async function waitFor(expr, label, timeoutMs = 20000) { const t0 = Date.now(); const g = `(() => { try { return !!(${expr}); } catch { return false; } })()`; while (Date.now() - t0 < timeoutMs) { if (await evaluate(g)) return; await new Promise((r) => setTimeout(r, 150)); } throw new Error('timeout: ' + label); }
-async function shot(name) { const { data } = await cdp('Page.captureScreenshot', { format: 'png' }, sessionId); writeFileSync(OUT + name, Buffer.from(data, 'base64')); console.log('  [screenshot]', name); }
-const click = (id) => evaluate(`document.getElementById('${id}').click()`);
-const setVal = (id, v) => evaluate(`{ const el = document.getElementById('${id}'); el.value = ${JSON.stringify(v)}; el.dispatchEvent(new Event('input',{bubbles:true})); }`);
+// ---- CDP plumbing lives in ./lib/cdp.mjs — one copy for all drivers ----
+const b = await connectCdp();
+const { evaluate, waitFor, shot, setVal, click, check } = b;
 const histText = () => evaluate(`document.getElementById('w-history').textContent`);
 const rowCount = () => evaluate(`document.querySelectorAll('#w-history .tx').length`);
-let step = 0;
-const check = (cond, what) => { step++; console.log(`${cond ? '✅' : '❌'} ${step}. ${what}`); if (!cond) process.exitCode = 1; };
 
 const visible = (id) => `document.getElementById('${id}').offsetParent !== null`;
 // app.js is a module (async): re-issue the click until the target view appears.
@@ -114,7 +98,7 @@ async function clickUntil(id, untilExpr, label) {
 }
 
 try {
-  await cdp('Page.navigate', { url: APP }, sessionId);
+  await b.navigate(APP);
   await waitFor(visible('hero-guest'), 'guest hero visible (app booted, no wallet)');
   // create a fresh wallet
   await clickUntil('hero-connect', visible('w-create-choice'), 'connect modal opens');
@@ -155,7 +139,7 @@ try {
 
   console.log('\nDone.');
 } finally {
-  ws.close();
+  b.close();
   wallet.close();
   indexer.close();
 }

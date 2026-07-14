@@ -14,10 +14,10 @@
 //     --remote-debugging-port=9224 --user-data-dir=$(mktemp -d) --no-first-run about:blank &
 //   node apps/wallet/scripts/verify-beta-posture.mjs   # exit 0 = all green
 // Fresh localStorage comes for free: port 0 gives each run a fresh origin.
-import { writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { startServer } from '../server.js';
+import { connectCdp } from './lib/cdp.mjs';
 
 // ---- stub DigiByte node: mainnet, DD ACTIVE, fresh oracle at $0.01342/DGB ----
 const HEIGHT = 23_900_000;
@@ -97,54 +97,13 @@ const server = startServer({
 await once(server, 'listening');
 const APP = `http://127.0.0.1:${server.address().port}`;
 
-// ---- CDP plumbing (same recipe as verify-mainnet-bringup.mjs) ----
-const CDP_PORT = Number(process.env.CDP_PORT) || 9224;
-const OUT = './';
-const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json();
-const ws = new WebSocket(webSocketDebuggerUrl);
-await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
-let msgId = 0;
-const pending = new Map();
-ws.onmessage = (ev) => {
-  const m = JSON.parse(ev.data);
-  if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result); }
-};
-const cdp = (method, params = {}, sessionId) => {
-  const id = ++msgId;
-  ws.send(JSON.stringify({ id, method, params, sessionId }));
-  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
-};
-const { targetId } = await cdp('Target.createTarget', { url: 'about:blank' });
-const { sessionId } = await cdp('Target.attachToTarget', { targetId, flatten: true });
-await cdp('Page.enable', {}, sessionId);
-async function evaluate(expression) {
-  const { result, exceptionDetails } = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId);
-  if (exceptionDetails) throw new Error('page threw: ' + (exceptionDetails.exception?.description || exceptionDetails.text));
-  return result.value;
-}
-async function waitFor(expr, label, timeoutMs = 20000) {
-  const t0 = Date.now();
-  const guarded = `(() => { try { return !!(${expr}); } catch { return false; } })()`;
-  while (Date.now() - t0 < timeoutMs) {
-    if (await evaluate(guarded)) return;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-  throw new Error('timeout: ' + label);
-}
-async function shot(name) {
-  const { data } = await cdp('Page.captureScreenshot', { format: 'png' }, sessionId);
-  writeFileSync(OUT + name, Buffer.from(data, 'base64'));
-  console.log('  [screenshot]', name);
-}
-const text = (id) => `document.getElementById('${id}').textContent`;
-const setVal = (id, v) => evaluate(`{ const el = document.getElementById('${id}'); el.value = ${JSON.stringify(v)}; el.dispatchEvent(new Event('input',{bubbles:true})); }`);
-const click = (id) => evaluate(`document.getElementById('${id}').click()`);
+// ---- CDP plumbing lives in ./lib/cdp.mjs — one copy for all drivers ----
+const b = await connectCdp();
+const { evaluate, waitFor, shot, text, setVal, click, check } = b;
 const ackOpen = () => `document.getElementById('mainnet-ack-modal').classList.contains('open')`;
-let step = 0;
-const check = (cond, what) => { step++; console.log(`${cond ? '✅' : '❌'} ${step}. ${what}`); if (!cond) process.exitCode = 1; };
 
 // ================= 1. Interstitial: blocking, Cancel blocks, Continue persists =================
-await cdp('Page.navigate', { url: APP }, sessionId);
+await b.navigate(APP);
 await waitFor(ackOpen(), 'mainnet interstitial opens on first mainnet load');
 check(true, 'first mainnet load opens the blocking interstitial');
 
@@ -190,7 +149,7 @@ await evaluate(`{ window.scrollTo(0, 0); document.body.style.minHeight = ''; }`)
 await shot('96-mainnet-banner-pill.png');
 
 // ---- reload: the ack is remembered, no interstitial again ----
-await cdp('Page.navigate', { url: APP }, sessionId);
+await b.navigate(APP);
 await waitFor(`!document.getElementById('net-banner').hidden`, 'reload reaches banner');
 check(!(await evaluate(ackOpen())), 'reload after ack: interstitial does not reappear');
 
@@ -263,7 +222,7 @@ check(/DigiByte Core/.test(rdErr), `redeem > $500 blocked, points at Core: "${rd
 
 // ================= 4. Decision 6: no price feed → warn-allow on DGB send =================
 oracleDown = true;
-await cdp('Page.navigate', { url: APP }, sessionId);
+await b.navigate(APP);
 await waitFor(`!document.getElementById('net-banner').hidden`, 'reload reaches banner (oracle down)');
 check(!(await evaluate(ackOpen())), 'ack persists across the oracle-down reload');
 await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked state');
@@ -288,7 +247,7 @@ await click('w-send-cancel');
 // path (capnote + reaches confirm) rather than being blocked at the stale rate.
 oracleDown = false;
 oracleStale = true;
-await cdp('Page.navigate', { url: APP }, sessionId);
+await b.navigate(APP);
 await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked state (stale oracle)');
 await setVal('w-unlock-pass', 'beta posture pass');
 await click('w-unlock');
@@ -309,30 +268,20 @@ chain = 'test';
 oracleDown = false;
 oracleStale = false;
 // same build, different chain — use a FRESH target so no mainnet state lingers
-const t2 = await cdp('Target.createTarget', { url: 'about:blank' });
-const s2 = (await cdp('Target.attachToTarget', { targetId: t2.targetId, flatten: true })).sessionId;
-await cdp('Page.enable', {}, s2);
+const b2 = await b.newTarget();
 // same origin as the mainnet run — clear the stored ack BEFORE app.js boots so
 // "no interstitial on testnet" proves the chain gate, not the persisted ack
-await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `try { localStorage.removeItem('diginaut-mainnet-ack') } catch {}` }, s2);
-const evaluate2 = async (expression) => {
-  const { result, exceptionDetails } = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, s2);
-  if (exceptionDetails) throw new Error('page threw: ' + (exceptionDetails.exception?.description || exceptionDetails.text));
-  return result.value;
-};
-await cdp('Page.navigate', { url: APP }, s2);
-const t0 = Date.now();
-while (Date.now() - t0 < 20000) {
-  if (await evaluate2(`(() => { try { return !document.getElementById('net-banner').hidden; } catch { return false; } })()`)) break;
-  await new Promise((r) => setTimeout(r, 150));
-}
+await b2.cdp('Page.addScriptToEvaluateOnNewDocument', { source: `try { localStorage.removeItem('diginaut-mainnet-ack') } catch {}` });
+const evaluate2 = b2.evaluate;
+await b2.navigate(APP);
+await b2.waitFor(`!document.getElementById('net-banner').hidden`, 'testnet banner renders');
 check(/TESTNET ONLY/.test(await evaluate2(text('net-banner'))), 'testnet banner still amber TESTNET ONLY');
 check(await evaluate2(`!document.getElementById('net-banner').classList.contains('danger')`), 'testnet banner is NOT danger-red');
 check(await evaluate2(`${text('net-pill')} === 'TESTNET' && document.getElementById('net-pill').classList.contains('warn')`), 'TESTNET pill, warn-styled');
 check(!(await evaluate2(ackOpen())), 'no mainnet interstitial on testnet');
 
 console.log('\nDone.');
-ws.close();
+b.close();
 node.close();
 indexer.close();
 server.close();
