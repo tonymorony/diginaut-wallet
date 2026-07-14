@@ -1628,6 +1628,23 @@ async function bootWallet() {
   }
 }
 
+// Cross-wired backend (#64): blocking state — danger banner, CROSS-WIRED
+// badge, wallet chrome hidden. Returns true when the deployment is
+// cross-wired (the server refuses all RPC/indexer/faucet until fixed).
+function renderCrossWire(cfg) {
+  if (!cfg?.chainMismatch) return false;
+  const bannerEl = $('net-banner');
+  bannerEl.textContent = `SERVER MISCONFIGURED — this deployment expects ${cfg.expectedChain?.toUpperCase()} but its node is on ${cfg.chain?.toUpperCase()}. All operations are disabled; contact the operator.`;
+  bannerEl.hidden = false;
+  bannerEl.classList.add('danger');
+  const badge = $('modeBadge');
+  badge.className = 'badge mock';
+  badge.textContent = 'CROSS-WIRED';
+  $('w-loading').textContent = 'wallet disabled: the server refuses to serve a mismatched network';
+  show('loading');
+  return true;
+}
+
 // ---- Boot ----
 async function boot() {
   initCalculator();
@@ -1649,13 +1666,21 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
     if (cfg.faucet) $('w-faucet').style.display = 'block';
+    // Cross-wired backend (#64): the server refuses everything, so no flow
+    // can work — say exactly why in the loudest chrome we have and stop.
+    if (renderCrossWire(cfg)) return; // no wallet boot, no status/oracle loops
   } catch { /* ignore */ }
   bootWallet();
   // retry until the node names its chain: a transient boot failure must not
-  // strand the UI network-unknown (no addresses, no testnet banner) forever
+  // strand the UI network-unknown (no addresses, no testnet banner) forever.
+  // The retry also re-checks the cross-wire flag — a page loaded before the
+  // server's first chain probe must still lock up once the mismatch is known.
   (async function statusLoop() {
     await loadStatus();
-    if (!chainState.netKnown) setTimeout(statusLoop, 5000);
+    if (chainState.netKnown) return;
+    const cfg = await fetch('/api/config').then((r) => r.json()).catch(() => null);
+    if (cfg?.chainMismatch) { appConfig = { ...appConfig, ...cfg }; renderCrossWire(cfg); return; }
+    setTimeout(statusLoop, 5000);
   })();
   loadOracle();
   loadDca();

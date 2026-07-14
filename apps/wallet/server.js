@@ -74,12 +74,20 @@ export function configFromEnv() {
     priceHistory: { dataFile: process.env.PRICE_HISTORY_FILE || '' },
     // Block-explorer tx URL prefix (e.g. https://…/tx/); unset = plain txids.
     explorerTxUrl: process.env.EXPLORER_TX_URL || '',
+    // Cross-wire guard (#64): the chain this deployment MUST be backed by
+    // ('main' | 'test' | 'regtest'). When set and the node reports a different
+    // chain, the server refuses to proxy RPC — a mainnet wallet silently
+    // serving testnet data (or vice versa) is the one misconfiguration a
+    // dual-network host cannot afford. Unset = no guard (single-net setups).
+    expectedChain: process.env.EXPECTED_CHAIN || '',
   };
 }
 
 // Forward address-level reads to the indexer façade (#5: all balance/history
 // queries go through the indexer seam — never node RPC).
-async function handleIndexer(req, res, { indexerUrl }) {
+async function handleIndexer(req, res, { indexerUrl, guard }) {
+  // same fail-closed rule as /api/rpc: a cross-wired deployment serves nothing
+  if (guard?.blocked()) return sendJson(res, 503, { error: guard.describe() });
   if (!indexerUrl) return sendJson(res, 503, { error: 'no indexer configured' });
   const rel = req.url.slice('/api/indexer'.length);
   if (!/^\/(address\/[a-z0-9]+\/(utxos|history|positions|dd-utxos)|tx\/[0-9a-f]{64})$/.test(rel)) {
@@ -97,7 +105,8 @@ async function handleIndexer(req, res, { indexerUrl }) {
 
 // Forward a claim to the Faucet service (same-origin for the browser; the
 // faucet's own rate limiting sees the real client IP via x-forwarded-for).
-async function handleFaucetClaim(req, res, { faucetUrl }) {
+async function handleFaucetClaim(req, res, { faucetUrl, guard }) {
+  if (guard?.blocked()) return sendJson(res, 503, { error: guard.describe() });
   if (!faucetUrl) return sendJson(res, 503, { error: 'no faucet configured' });
   let raw = '';
   for await (const chunk of req) raw += chunk;
@@ -242,7 +251,7 @@ function syntheticPriceSeries(nowSec = Math.floor(Date.now() / 1000)) {
 // Real mode: poll the node's oracle price on an interval into an in-memory
 // series the chart endpoint serves. Persisted to a JSON file so history
 // survives restarts. Stops with the server.
-function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec = 24 * 3600 }, server) {
+function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec = 24 * 3600, guard = null }, server) {
   let series = [];
   const cutoff = () => Math.floor(Date.now() / 1000) - windowSec;
   if (dataFile) {
@@ -254,6 +263,13 @@ function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec 
     }
   }
   async function sample() {
+    // re-confirm the chain in the same cycle that records the price: a
+    // backend swap between guard probes must not leak even one wrong-chain
+    // point into this network's history file
+    if (guard) {
+      await guard.probeNow();
+      if (guard.blocksSampling()) return;
+    }
     try {
       const { price_micro_usd } = await callNode(rpc, 'getoracleprice', []);
       if (price_micro_usd > 0) series.push({ t: Math.floor(Date.now() / 1000), price_micro_usd });
@@ -274,6 +290,50 @@ function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec 
   timer.unref?.();
   server.on('close', () => clearInterval(timer));
   return series;
+}
+
+// Cross-wire guard (#64). A guarded deployment (EXPECTED_CHAIN set) is
+// FAIL-CLOSED: proxying is refused until the node's chain has been confirmed
+// once, and refused permanently while it reports the wrong chain. Probes at
+// boot, then every 5s until first confirmation, then every intervalMs — so a
+// backend swap behind the same URL is caught without a restart. handleRpc
+// also feeds it every getblockchaininfo it proxies.
+function startChainGuard({ rpc, expectedChain, intervalMs = 60_000 }, server) {
+  const guard = {
+    expected: expectedChain,
+    actual: null,
+    seen(chain) { guard.actual = chain; },
+    mismatch: () => Boolean(guard.expected && guard.actual && guard.actual !== guard.expected),
+    // unconfirmed ≠ cross-wired: the node may just be down/starting, so the
+    // refusal message differs — but a guarded deployment still refuses
+    unconfirmed: () => Boolean(guard.expected && !guard.actual),
+    blocked: () => guard.mismatch() || guard.unconfirmed(),
+    blocksSampling: () => Boolean(guard.expected && (guard.mismatch() || !guard.actual)),
+    describe: () => guard.unconfirmed()
+      ? `refusing to serve: this deployment expects chain "${guard.expected}" but the node has not yet confirmed its chain (down or starting) — retrying`
+      : `refusing to serve: this deployment expects chain "${guard.expected}" but the node reports "${guard.actual}" — cross-wired backend (check DGB_RPC_URL / EXPECTED_CHAIN)`,
+    async probeNow() {
+      try {
+        const { chain } = await callNode(rpc, 'getblockchaininfo', []);
+        if (chain) {
+          const chainChanged = guard.actual !== chain;
+          guard.seen(chain);
+          if (guard.mismatch() && chainChanged) console.error(`  CHAIN GUARD: ${guard.describe()}`);
+        }
+      } catch {
+        // node down: keep the last known answer; the RPC proxy reports outages
+      }
+    },
+  };
+  let timer;
+  async function loop() {
+    await guard.probeNow();
+    timer = setTimeout(loop, guard.actual ? intervalMs : 5_000);
+    timer.unref?.();
+  }
+  loop();
+  server.on('close', () => clearTimeout(timer));
+  return guard;
 }
 
 async function callNode(rpc, method, params) {
@@ -301,7 +361,7 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-async function handleRpc(req, res, { rpc, mockMode }) {
+async function handleRpc(req, res, { rpc, mockMode, guard }) {
   let raw = '';
   for await (const chunk of req) raw += chunk;
   let payload;
@@ -314,8 +374,17 @@ async function handleRpc(req, res, { rpc, mockMode }) {
   if (!method || !ALLOWED_METHODS.has(method)) {
     return sendJson(res, 403, { error: `method not allowed: ${method}` });
   }
+  // Fail closed on a guarded deployment: EVERY method is refused while the
+  // backend is cross-wired OR not yet confirmed — even reads would let the UI
+  // render the wrong network's reality under this deployment's branding. The
+  // guard's own probe keeps re-checking (5s until first confirmation), so a
+  // recovering or fixed backend clears this without a restart.
+  if (guard?.blocked()) {
+    return sendJson(res, 503, { error: guard.describe(), mock: mockMode });
+  }
   try {
     const result = mockMode ? mockResponse(method, params) : await callNode(rpc, method, params);
+    if (method === 'getblockchaininfo' && result?.chain) guard?.seen(result.chain);
     sendJson(res, 200, { result, mock: mockMode });
   } catch (err) {
     sendJson(res, 502, { error: String(err.message || err), mock: mockMode });
@@ -356,18 +425,31 @@ export function startServer(overrides = {}) {
   const mockMode = !config.rpc.user || !config.rpc.pass;
 
   let priceSeries = [];
+  let guard = null;
   const server = createServer(async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     try {
-      if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
-      if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, config);
-      if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, config);
+      if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode, guard });
+      if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, { ...config, guard });
+      if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, { ...config, guard });
       // The stablecoin flows (mint/transfer/redeem) ship unconditionally as one
       // unit (ADR-0002, release gate #17) — no feature flag in the config.
       if (req.method === 'GET' && req.url === '/api/price-history') {
         return sendJson(res, 200, { series: mockMode ? syntheticPriceSeries() : priceSeries, mock: mockMode });
       }
-      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl), explorerTxUrl: config.explorerTxUrl });
+      if (req.url === '/api/config') {
+        return sendJson(res, 200, {
+          mock: mockMode,
+          rpcUrl: mockMode ? null : config.rpc.url,
+          faucet: Boolean(config.faucetUrl),
+          indexer: Boolean(config.indexerUrl),
+          explorerTxUrl: config.explorerTxUrl,
+          // cross-wire guard (#64): the UI renders a blocking error on mismatch
+          expectedChain: config.expectedChain || null,
+          chain: guard?.actual ?? null,
+          chainMismatch: Boolean(guard?.mismatch()),
+        });
+      }
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {
@@ -376,7 +458,8 @@ export function startServer(overrides = {}) {
   });
 
   if (!mockMode) {
-    priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}) }, server);
+    guard = startChainGuard({ rpc: config.rpc, expectedChain: config.expectedChain }, server);
+    priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}), guard }, server);
   }
 
   server.listen(config.port, () => {

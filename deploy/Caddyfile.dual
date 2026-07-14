@@ -1,0 +1,9 @@
+# Dual-network routing (#64): testnet domains → the base (testnet) wallet,
+# mainnet domains → wallet-main. Comma-separated lists, one certificate each.
+{$TESTNET_DOMAINS} {
+	reverse_proxy wallet:8791
+}
+
+{$MAINNET_DOMAINS} {
+	reverse_proxy wallet-main:8791
+}
