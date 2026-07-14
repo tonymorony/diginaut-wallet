@@ -1,0 +1,88 @@
+# Dual-network overlay (#64): one server, two networks, split domains — used
+# INSTEAD of docker-compose.tls.yml (it carries its own Caddy TLS service):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dual.yml up --build -d
+#
+# The BASE stack (docker-compose.yml) stays the TESTNET side — unchanged, it
+# keeps working as the staging environment. This overlay adds a parallel
+# MAINNET wallet + indexer + ElectrumX trio and a Caddy that routes each
+# domain list to its network's wallet. The mainnet side has NO faucet.
+#
+# Cross-wire safety: every mainnet variable is MAINNET_*-prefixed (nothing
+# falls back to a testnet value), and BOTH wallets carry EXPECTED_CHAIN — a
+# wallet whose node reports the wrong chain refuses to serve (server.js guard).
+services:
+  # ---- the base services are pinned to their testnet identity ----
+  wallet:
+    environment:
+      EXPECTED_CHAIN: test # refuse to serve if ever pointed at a non-testnet node
+    ports: !override
+      - "127.0.0.1:8791:8791" # Caddy fronts the public interface
+
+  # ---- mainnet trio ----
+  electrumx-main:
+    build: ../scripts/electrumx-regtest # same image; stock ElectrumX knows DigiByte mainnet
+    environment:
+      DAEMON_URL: ${MAINNET_DAEMON_URL:?http://user:pass@host:port of the MAINNET DigiByte node}
+      NET: mainnet
+    volumes:
+      - electrumx-main-data:/data
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+  indexer-main:
+    build:
+      context: ..
+      dockerfile: deploy/node.Dockerfile
+      args: { APP: indexer }
+    environment:
+      PORT: 8789
+      DGB_HRP: dgb # mainnet bech32 HRP — fixed, not configurable, so it cannot cross-wire
+      ELECTRUM_HOST: electrumx-main
+      ELECTRUM_PORT: 50001
+    depends_on: [electrumx-main]
+    restart: unless-stopped
+
+  wallet-main:
+    build:
+      context: ..
+      dockerfile: deploy/node.Dockerfile
+      args: { APP: wallet }
+    environment:
+      PORT: 8791
+      DGB_RPC_URL: ${MAINNET_RPC_URL:?http://host:port of the MAINNET DigiByte node RPC}
+      DGB_RPC_USER: ${MAINNET_RPC_USER:?}
+      DGB_RPC_PASS: ${MAINNET_RPC_PASS:?}
+      # NO FAUCET_URL: there is no mainnet faucet — the UI hides the claim button
+      INDEXER_URL: http://indexer-main:8789
+      EXPLORER_TX_URL: ${MAINNET_EXPLORER_TX_URL:-https://digiexplorer.info/tx/}
+      PRICE_HISTORY_FILE: /data/price-history.json # its own volume → per-network series
+      EXPECTED_CHAIN: main # refuse to serve if ever pointed at a non-mainnet node
+    volumes:
+      - wallet-main-data:/data
+    depends_on: [indexer-main]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+
+  # ---- TLS + per-domain routing (replaces the tls overlay's caddy) ----
+  caddy:
+    image: caddy:2-alpine
+    command: caddy run --config /etc/caddy/Caddyfile
+    environment:
+      TESTNET_DOMAINS: ${TESTNET_DOMAINS:?testnet hostname(s), e.g. dgb.example.com}
+      MAINNET_DOMAINS: ${MAINNET_DOMAINS:?mainnet hostname(s), e.g. diginaut.example.com}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.dual:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [wallet, wallet-main]
+    restart: unless-stopped
+
+volumes:
+  electrumx-main-data:
+  wallet-main-data:
+  caddy-data:

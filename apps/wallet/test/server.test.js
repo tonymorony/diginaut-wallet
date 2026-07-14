@@ -270,10 +270,13 @@ test('real mode samples getoracleprice on an interval and serves the series', as
     let raw = '';
     for await (const c of req) raw += c;
     const { method, id } = JSON.parse(raw);
-    assert.equal(method, 'getoracleprice');
-    price += 10;
+    // the chain guard (#64) probes getblockchaininfo alongside the sampler
+    assert.ok(['getoracleprice', 'getblockchaininfo'].includes(method), `unexpected method ${method}`);
+    const result = method === 'getblockchaininfo'
+      ? { chain: 'test', blocks: 100 }
+      : (price += 10, { price_micro_usd: price, is_stale: false });
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id, result: { price_micro_usd: price, is_stale: false } }));
+    res.end(JSON.stringify({ id, result }));
   });
   await new Promise((r) => node.listen(0, r));
   const server = startServer({
@@ -441,4 +444,134 @@ test('the #62 whitelist extension added no fund-moving RPC', async () => {
       assert.equal(res.status, 403, `${method} must stay blocked`);
     }
   });
+});
+
+// ---- cross-wire guard (#64): a mainnet deployment backed by a testnet node
+// (or vice versa) must fail loudly and closed, not serve the wrong network ----
+
+async function stubNode(chain, price = 13_420) {
+  const { createServer } = await import('node:http');
+  return createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    const { method, id } = JSON.parse(raw);
+    const result = method === 'getblockchaininfo'
+      ? { chain, blocks: 100, headers: 100, initialblockdownload: false }
+      : { price_micro_usd: price, is_stale: false };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id, result }));
+  });
+}
+
+test('cross-wired backend: RPC refused, config flags it, price history stays clean', async () => {
+  const node = await stubNode('test'); // the node is testnet…
+  await new Promise((r) => node.listen(0, r));
+  const server = startServer({
+    port: 0,
+    rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+    expectedChain: 'main', // …but this deployment claims mainnet
+    priceHistory: { intervalMs: 50 },
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    // wait for the guard's boot probe to learn the node's chain
+    let cfg;
+    for (let i = 0; i < 40; i++) {
+      cfg = await (await fetch(base + '/api/config')).json();
+      if (cfg.chain) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(cfg.expectedChain, 'main');
+    assert.equal(cfg.chain, 'test');
+    assert.equal(cfg.chainMismatch, true, '/api/config flags the cross-wire');
+
+    // EVERY rpc method is refused — reads included
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getblockchaininfo', params: [] }),
+    });
+    assert.equal(res.status, 503);
+    const body = await res.json();
+    assert.match(body.error, /refusing to serve/);
+    assert.match(body.error, /expects chain "main"/);
+    assert.match(body.error, /reports "test"/);
+
+    // the sampler recorded nothing from the wrong chain (boot sample included)
+    await new Promise((r) => setTimeout(r, 200));
+    const hist = await (await fetch(base + '/api/price-history')).json();
+    assert.equal(hist.series.length, 0, 'no wrong-chain prices in the history');
+  } finally {
+    server.close();
+    node.close();
+  }
+});
+
+test('matching backend: guard passes RPC and sampling through', async () => {
+  const node = await stubNode('main');
+  await new Promise((r) => node.listen(0, r));
+  const server = startServer({
+    port: 0,
+    rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+    expectedChain: 'main',
+    priceHistory: { intervalMs: 50 },
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    let cfg;
+    for (let i = 0; i < 40; i++) {
+      cfg = await (await fetch(base + '/api/config')).json();
+      if (cfg.chain) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(cfg.chainMismatch, false);
+    assert.equal(cfg.chain, 'main');
+
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getblockchaininfo', params: [] }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).result.chain, 'main');
+
+    // sampling flows once the chain is confirmed
+    let hist;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      hist = await (await fetch(base + '/api/price-history')).json();
+      if (hist.series.length >= 2) break;
+    }
+    assert.ok(hist.series.length >= 2, `sampler runs with a matching guard (got ${hist.series.length})`);
+  } finally {
+    server.close();
+    node.close();
+  }
+});
+
+test('no EXPECTED_CHAIN set: guard is inert (single-net deployments unchanged)', async () => {
+  const node = await stubNode('test');
+  await new Promise((r) => node.listen(0, r));
+  const server = startServer({
+    port: 0,
+    rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getblockchaininfo', params: [] }),
+    });
+    assert.equal(res.status, 200, 'rpc flows with no guard configured');
+    const cfg = await (await fetch(base + '/api/config')).json();
+    assert.equal(cfg.expectedChain, null);
+    assert.equal(cfg.chainMismatch, false);
+  } finally {
+    server.close();
+    node.close();
+  }
 });

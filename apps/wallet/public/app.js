@@ -1643,6 +1643,19 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
     if (cfg.faucet) $('w-faucet').style.display = 'block';
+    // Cross-wired backend (#64): the server refuses all RPC, so no flow can
+    // work — say exactly why in the loudest chrome we have and stop booting.
+    // No retry loop: the guard is server-side; a fixed backend needs a reload.
+    if (cfg.chainMismatch) {
+      const bannerEl = $('net-banner');
+      bannerEl.textContent = `SERVER MISCONFIGURED — this deployment expects ${cfg.expectedChain?.toUpperCase()} but its node is on ${cfg.chain?.toUpperCase()}. All operations are disabled; contact the operator.`;
+      bannerEl.hidden = false;
+      bannerEl.classList.add('danger');
+      badge.className = 'badge mock';
+      badge.textContent = 'CROSS-WIRED';
+      $('w-loading').textContent = 'wallet disabled: the server refuses to serve a mismatched network';
+      return; // no wallet boot, no status/oracle loops — nothing would answer
+    }
   } catch { /* ignore */ }
   bootWallet();
   // retry until the node names its chain: a transient boot failure must not

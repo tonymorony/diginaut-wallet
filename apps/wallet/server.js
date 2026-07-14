@@ -74,6 +74,12 @@ export function configFromEnv() {
     priceHistory: { dataFile: process.env.PRICE_HISTORY_FILE || '' },
     // Block-explorer tx URL prefix (e.g. https://…/tx/); unset = plain txids.
     explorerTxUrl: process.env.EXPLORER_TX_URL || '',
+    // Cross-wire guard (#64): the chain this deployment MUST be backed by
+    // ('main' | 'test' | 'regtest'). When set and the node reports a different
+    // chain, the server refuses to proxy RPC — a mainnet wallet silently
+    // serving testnet data (or vice versa) is the one misconfiguration a
+    // dual-network host cannot afford. Unset = no guard (single-net setups).
+    expectedChain: process.env.EXPECTED_CHAIN || '',
   };
 }
 
@@ -242,7 +248,7 @@ function syntheticPriceSeries(nowSec = Math.floor(Date.now() / 1000)) {
 // Real mode: poll the node's oracle price on an interval into an in-memory
 // series the chart endpoint serves. Persisted to a JSON file so history
 // survives restarts. Stops with the server.
-function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec = 24 * 3600 }, server) {
+function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec = 24 * 3600, guard = null }, server) {
   let series = [];
   const cutoff = () => Math.floor(Date.now() / 1000) - windowSec;
   if (dataFile) {
@@ -254,6 +260,10 @@ function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec 
     }
   }
   async function sample() {
+    // a cross-wired node's prices must never enter this network's history —
+    // including the boot sample, so wait until the guard has confirmed the
+    // chain (guard.actual is null until the node answers the first probe)
+    if (guard?.expected && (guard.mismatch() || !guard.actual)) return;
     try {
       const { price_micro_usd } = await callNode(rpc, 'getoracleprice', []);
       if (price_micro_usd > 0) series.push({ t: Math.floor(Date.now() / 1000), price_micro_usd });
@@ -274,6 +284,38 @@ function startPriceSampler({ rpc, intervalMs = 60_000, dataFile = '', windowSec 
   timer.unref?.();
   server.on('close', () => clearInterval(timer));
   return series;
+}
+
+// Cross-wire guard (#64). Probes the node's chain at boot and on an interval
+// so a backend swap behind the same URL is caught without a restart; handleRpc
+// also feeds it every getblockchaininfo it proxies. `actual` stays null until
+// the node answers once — an unreachable node is "down", never "cross-wired".
+function startChainGuard({ rpc, expectedChain, intervalMs = 60_000 }, server) {
+  const guard = {
+    expected: expectedChain,
+    actual: null,
+    seen(chain) { guard.actual = chain; },
+    mismatch: () => Boolean(guard.expected && guard.actual && guard.actual !== guard.expected),
+    describe: () =>
+      `refusing to serve: this deployment expects chain "${guard.expected}" but the node reports "${guard.actual}" — cross-wired backend (check DGB_RPC_URL / EXPECTED_CHAIN)`,
+  };
+  async function probe() {
+    try {
+      const { chain } = await callNode(rpc, 'getblockchaininfo', []);
+      if (chain) {
+        const isNews = guard.actual !== chain;
+        guard.seen(chain);
+        if (guard.mismatch() && isNews) console.error(`  CHAIN GUARD: ${guard.describe()}`);
+      }
+    } catch {
+      // node down: keep the last known answer; the RPC proxy reports outages
+    }
+  }
+  probe();
+  const timer = setInterval(probe, intervalMs);
+  timer.unref?.();
+  server.on('close', () => clearInterval(timer));
+  return guard;
 }
 
 async function callNode(rpc, method, params) {
@@ -301,7 +343,7 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-async function handleRpc(req, res, { rpc, mockMode }) {
+async function handleRpc(req, res, { rpc, mockMode, guard }) {
   let raw = '';
   for await (const chunk of req) raw += chunk;
   let payload;
@@ -314,8 +356,16 @@ async function handleRpc(req, res, { rpc, mockMode }) {
   if (!method || !ALLOWED_METHODS.has(method)) {
     return sendJson(res, 403, { error: `method not allowed: ${method}` });
   }
+  // Fail closed on a cross-wired backend: EVERY method is refused, not just
+  // the money paths — even reads would let the UI render the wrong network's
+  // reality under this deployment's branding. The guard's own probe keeps
+  // re-checking, so fixing the backend clears this without a restart.
+  if (guard?.mismatch()) {
+    return sendJson(res, 503, { error: guard.describe(), mock: mockMode });
+  }
   try {
     const result = mockMode ? mockResponse(method, params) : await callNode(rpc, method, params);
+    if (method === 'getblockchaininfo' && result?.chain) guard?.seen(result.chain);
     sendJson(res, 200, { result, mock: mockMode });
   } catch (err) {
     sendJson(res, 502, { error: String(err.message || err), mock: mockMode });
@@ -356,10 +406,11 @@ export function startServer(overrides = {}) {
   const mockMode = !config.rpc.user || !config.rpc.pass;
 
   let priceSeries = [];
+  let guard = null;
   const server = createServer(async (req, res) => {
     for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
     try {
-      if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode });
+      if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode, guard });
       if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, config);
       if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, config);
       // The stablecoin flows (mint/transfer/redeem) ship unconditionally as one
@@ -367,7 +418,19 @@ export function startServer(overrides = {}) {
       if (req.method === 'GET' && req.url === '/api/price-history') {
         return sendJson(res, 200, { series: mockMode ? syntheticPriceSeries() : priceSeries, mock: mockMode });
       }
-      if (req.url === '/api/config') return sendJson(res, 200, { mock: mockMode, rpcUrl: mockMode ? null : config.rpc.url, faucet: Boolean(config.faucetUrl), indexer: Boolean(config.indexerUrl), explorerTxUrl: config.explorerTxUrl });
+      if (req.url === '/api/config') {
+        return sendJson(res, 200, {
+          mock: mockMode,
+          rpcUrl: mockMode ? null : config.rpc.url,
+          faucet: Boolean(config.faucetUrl),
+          indexer: Boolean(config.indexerUrl),
+          explorerTxUrl: config.explorerTxUrl,
+          // cross-wire guard (#64): the UI renders a blocking error on mismatch
+          expectedChain: config.expectedChain || null,
+          chain: guard?.actual ?? null,
+          chainMismatch: Boolean(guard?.mismatch()),
+        });
+      }
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {
@@ -376,7 +439,8 @@ export function startServer(overrides = {}) {
   });
 
   if (!mockMode) {
-    priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}) }, server);
+    guard = startChainGuard({ rpc: config.rpc, expectedChain: config.expectedChain }, server);
+    priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}), guard }, server);
   }
 
   server.listen(config.port, () => {

@@ -116,6 +116,44 @@ ElectrumX indexes the testnet chain on first start — wait until
 the node's height before announcing the URL. Fund the faucet wallet first
 (see above).
 
+## Dual-network deployment (testnet + mainnet on one server, #64)
+
+The base stack above stays the **testnet** side; a second, parallel trio
+(`wallet-main`, `indexer-main`, `electrumx-main`) serves **mainnet** on its
+own domains. Use `docker-compose.dual.yml` INSTEAD of the tls overlay — it
+carries its own Caddy:
+
+```sh
+# 1. a MAINNET DigiByte node on this host (server=1, txindex=1, digidollar=1),
+#    reachable from containers (rpcallowip must include the docker bridge
+#    subnet; keep the RPC port closed in the host firewall)
+
+# 2. DNS: A records for BOTH domain lists → this server
+
+# 3. .env additions (all mainnet values are MAINNET_*-prefixed — nothing
+#    falls back to a testnet setting):
+#    TESTNET_DOMAINS=…  MAINNET_DOMAINS=…
+#    MAINNET_RPC_URL/USER/PASS, MAINNET_DAEMON_URL (port 14022)
+docker compose -f docker-compose.yml -f docker-compose.dual.yml up --build -d
+
+# 4. smoke-check both sides (chains, faucet split, no cross-wire):
+node apps/wallet/scripts/verify-dual-public.mjs \
+  https://<testnet-domain> https://<mainnet-domain>
+```
+
+Guard rails, on by default:
+
+- **`EXPECTED_CHAIN`** — each wallet pins the chain its node must report
+  (`test` / `main`). On a mismatch the server refuses **all** RPC (503), the
+  UI shows a blocking SERVER MISCONFIGURED banner, and the price sampler
+  records nothing. The guard re-probes every minute, so fixing the backend
+  clears it without a restart.
+- **No mainnet faucet** — `wallet-main` simply has no `FAUCET_URL`.
+- **Per-network price history** — each wallet persists its series in its own
+  volume (`wallet-data` / `wallet-main-data`).
+- ElectrumX indexes mainnet from genesis on first start (hours, txindex-sized
+  disk) — bring it up well before announcing the domain.
+
 ## Updating
 
 ```sh
@@ -125,3 +163,5 @@ docker compose up --build -d    # rebuilds changed images, keeps volumes
 
 Volumes: `electrumx-data` (chain index — safe to delete, re-syncs),
 `faucet-data` (claim ledger — deleting resets rate limits).
+Dual-network adds `electrumx-main-data` and `wallet-main-data` (same rules;
+`wallet-*-data` holds only the price-history series).
