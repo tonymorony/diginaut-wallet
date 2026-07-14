@@ -97,6 +97,15 @@
       font-size: 12px; font-weight: 600; letter-spacing: .02em;
     }
     .net-banner[hidden] { display: none; }
+    /* mainnet is RED/danger — unmistakably not the amber testnet banner (#54) */
+    .net-banner.danger { background: var(--primary-700); color: #fff; }
+    /* MAINNET/TESTNET pill (#54): always-visible network identity. Floats to a
+       fixed corner once the topbar scrolls away (class toggled in app.js). */
+    .net-pill { font-size: 10px; font-weight: 700; letter-spacing: .06em; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+    .net-pill.warn { background: var(--warn-bg); color: var(--warn); }
+    .net-pill.danger { background: var(--primary-700); color: #fff; }
+    .net-pill[hidden] { display: none; }
+    .net-pill.floating { position: fixed; top: 42px; right: 14px; z-index: 45; box-shadow: 0 1px 5px rgba(21,24,30,.25); }
     a { color: var(--accent); }
     .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
     .logo { display: flex; align-items: center; gap: 8px; }
@@ -120,6 +129,8 @@
     .modal .disclaimer-body p { margin: 0 0 12px; color: var(--gray-700); }
     .modal .disclaimer-body p:last-child { margin-bottom: 0; }
     .modal .disclaimer-body strong { color: var(--text); }
+    .modal .disclaimer-body ul { margin: 0 0 12px; padding-left: 20px; color: var(--gray-700); }
+    .modal .disclaimer-body li { margin-bottom: 6px; }
     .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(21,24,30,.45); z-index: 50; }
     .modal-backdrop.open { display: grid; place-items: center; }
     .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
@@ -250,6 +261,8 @@
         <span id="modeBadge" class="badge mock">loading…</span>
       </div>
       <div class="corner">
+        <!-- network identity pill (#54): text/level set at runtime from the node's chain -->
+        <span id="net-pill" class="net-pill" hidden></span>
         <span id="w-chip" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
         <button id="net-btn" title="Network status"><span id="net-dot" class="dot warn"></span>Network</button>
@@ -461,6 +474,8 @@
               <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-send-c-to" style="word-break:break-all"></span></div>
               <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB<span id="w-send-c-amount-usd" style="color:var(--muted);font-weight:400"></span></span></div>
               <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-send-c-fee"></span> DGB</span></div>
+              <!-- decision #54: DGB send with no price feed is warned, not blocked -->
+              <div class="hint warn-text" id="w-send-c-capnote" style="display:none">Couldn’t verify the $500 beta cap — no price feed.</div>
               <div class="grid">
                 <button id="w-send-go">Confirm &amp; send</button>
                 <button id="w-send-cancel" class="secondary">Cancel</button>
@@ -602,6 +617,30 @@
             <div class="out mono" id="w-seed-words"></div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Mainnet beta interstitial (#54/#63): one-time BLOCKING ack on first
+         mainnet use, persisted in localStorage. Deliberately NOT in the
+         backdrop-click-to-close list and carries no [data-close]: the only
+         ways forward are the two buttons, and Cancel keeps the wallet blocked. -->
+    <div id="mainnet-ack-modal" class="modal-backdrop">
+      <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="mainnet-ack-title">
+        <div class="modal-head"><h3 id="mainnet-ack-title">Real money ahead</h3></div>
+        <div class="disclaimer-body" style="margin-top:14px">
+          <p>You’re about to use the DigiDollar mainnet wallet with <strong>real funds</strong>.</p>
+          <ul>
+            <li>Beta software, “as is”, no warranty; may contain bugs that lose funds.</li>
+            <li>Keys live only in this browser; no backup — clear browser data / lose device = funds gone.</li>
+            <li>During beta, transactions are capped at $500 each.</li>
+            <li>You bear all risk. Authors accept no liability.</li>
+          </ul>
+        </div>
+        <div class="grid">
+          <button id="mainnet-ack-continue">I understand — continue</button>
+          <button id="mainnet-ack-cancel" class="secondary">Cancel</button>
+        </div>
+        <p class="hint warn-text" id="mainnet-ack-note" style="display:none">The wallet stays blocked until you accept the risks above.</p>
       </div>
     </div>
 
