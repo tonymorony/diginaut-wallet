@@ -23,6 +23,7 @@ import { startServer } from '../server.js';
 const HEIGHT = 23_900_000;
 let chain = 'main';       // flipped to 'test' for the regression scenario
 let oracleDown = false;   // flipped to prove decision 6 (warn-allow, no price)
+let oracleStale = false;  // flipped to prove a stale quote → warn-allow, not silent enforce
 function nodeResult(method) {
   switch (method) {
     case 'getblockchaininfo':
@@ -36,7 +37,7 @@ function nodeResult(method) {
       };
     case 'getoracleprice':
       if (oracleDown) throw new Error('no oracle price available');
-      return { price_micro_usd: 13_420, price_cents: 1, price_usd: 0.01342, is_stale: false, oracle_count: 35, status: 'ok' };
+      return { price_micro_usd: 13_420, price_cents: 1, price_usd: 0.01342, is_stale: oracleStale, oracle_count: 35, status: 'ok' };
     case 'getoracles':
       return Array.from({ length: 35 }, (_, i) => ({
         oracle_id: i, name: `oracle-${i}`, is_active: true, in_consensus: true,
@@ -155,6 +156,17 @@ check(/no backup/.test(ackBody) && /all risk/.test(ackBody), 'copy: no backup + 
 check(!(await evaluate(`document.querySelector('#mainnet-ack-modal [data-close]')`)), 'no close button — the two choices are the only way out');
 await shot('95-mainnet-interstitial.png');
 
+// BLOCKING for the keyboard, not just the pointer (adversarial review): a
+// background control that grabs focus must be snapped back into the modal, so
+// a user cannot Tab past the interstitial into the wallet and transact unacked.
+const trapped = await evaluate(`(() => {
+  const bg = document.getElementById('hero-connect') || document.getElementById('w-connect');
+  if (bg) bg.focus();
+  return document.activeElement && document.activeElement.id === 'mainnet-ack-continue';
+})()`);
+check(trapped, 'focus trap: focus escaping to the background snaps back into the modal');
+check(await evaluate(ackOpen()), 'Escape does not dismiss the interstitial');
+
 await click('mainnet-ack-cancel');
 check(await evaluate(ackOpen()), 'Cancel does NOT dismiss it — the wallet stays blocked');
 check(await evaluate(`document.getElementById('mainnet-ack-note').style.display === 'block'`), 'Cancel explains the wallet stays blocked');
@@ -270,9 +282,32 @@ check((await evaluate(text('w-send-c-capnote'))).includes('$500'), 'the warning 
 await shot('98-send-capnote-noprice.png');
 await click('w-send-cancel');
 
+// ============= 4b. Stale quote → warn-allow, NOT silent enforcement at the stale rate =============
+// A stale price is "couldn't verify" (adversarial review): the cap must not
+// enforce against it. An over-cap send under a stale feed takes the warn-allow
+// path (capnote + reaches confirm) rather than being blocked at the stale rate.
+oracleDown = false;
+oracleStale = true;
+await cdp('Page.navigate', { url: APP }, sessionId);
+await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked state (stale oracle)');
+await setVal('w-unlock-pass', 'beta posture pass');
+await click('w-unlock');
+await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked (stale oracle)');
+await waitFor(`${text('w-balance')} === '100,000'`, 'balance back (stale oracle)');
+await click('act-send');
+await setVal('w-send-to', addr);
+await setVal('w-send-amount', '50000'); // ≈ $671 at the stale rate — must NOT enforce
+await click('w-send-review');
+await waitFor(`document.getElementById('w-send-confirm').style.display !== 'none'`, 'stale-priced send reaches confirm (warn-allow, not blocked)');
+check(await evaluate(`document.getElementById('w-send-c-capnote').style.display === 'block'`),
+  'stale quote is treated as unverifiable: warn-allow, not silent enforcement at the stale rate');
+check(!(await evaluate(text('w-send-err'))).includes('capped'), 'stale-priced over-cap send is not blocked at the stale rate');
+await click('w-send-cancel');
+
 // ================= 5. Testnet regression: none of the mainnet chrome =================
 chain = 'test';
 oracleDown = false;
+oracleStale = false;
 // same build, different chain — use a FRESH target so no mainnet state lingers
 const t2 = await cdp('Target.createTarget', { url: 'about:blank' });
 const s2 = (await cdp('Target.attachToTarget', { targetId: t2.targetId, flatten: true })).sessionId;
