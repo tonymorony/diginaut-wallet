@@ -124,6 +124,7 @@
     /* site footer: demo/educational disclaimer + full-text link (#79) */
     footer.site { max-width: 520px; margin: 0 auto; padding: 0 20px 40px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; }
     footer.site .disclaimer-line { margin: 0; }
+    footer.site .version-line { margin: 6px 0 0; font-size: 11px; color: var(--gray-400); }
     footer.site button.linklike { display: inline; width: auto; margin: 0; padding: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; }
     footer.site button.linklike:hover { background: none; color: var(--accent-2); }
     .modal .disclaimer-body p { margin: 0 0 12px; color: var(--gray-700); }
@@ -675,6 +676,7 @@
 
   <footer class="site">
     <p class="disclaimer-line">Diginaut is a demonstration &amp; educational wallet — no warranty, you bear all risk. <button type="button" id="footer-disclaimer" class="linklike">Read the full disclaimer</button></p>
+    <p class="version-line"><span id="app-version"></span></p>
   </footer>
 
 

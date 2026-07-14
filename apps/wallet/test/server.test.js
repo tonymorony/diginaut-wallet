@@ -622,3 +622,11 @@ test('cross-wired backend: indexer and faucet proxies are refused too', async ()
     node.close();
   }
 });
+
+test('config reports the build version (semver + commit stamp)', async () => {
+  await withServer(async (base) => {
+    const cfg = await (await fetch(base + '/api/config')).json();
+    // working tree: git supplies "<sha> <date>"; archive: export-subst; else "dev"
+    assert.match(cfg.version, /^v\d+\.\d+\.\d+\+\S/);
+  });
+});

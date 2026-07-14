@@ -6,12 +6,37 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, extname, normalize } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, 'public');
+
+// ---- Build version ----
+// Semver from package.json + the commit stamp. The stamp file carries a git
+// export-subst placeholder that `git archive` expands at deploy time (the
+// prod server has no .git); from a working tree it falls back to asking git,
+// and failing that reports "dev". Shown in the UI footer and /api/config so
+// each domain of a dual-network deployment names the exact build it runs.
+function resolveVersion() {
+  const semver = JSON.parse(readFileSync(join(__dirname, 'package.json'), 'utf8')).version;
+  let stamp = '';
+  try {
+    stamp = readFileSync(join(__dirname, '.version-stamp'), 'utf8').trim();
+  } catch { /* file missing: fall through to git */ }
+  if (!stamp || stamp.startsWith('$Format')) {
+    try {
+      stamp = execSync('git log -1 --format="%h %cs"', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString().trim().replace(/"/g, '');
+    } catch {
+      stamp = 'dev';
+    }
+  }
+  return `v${semver}+${stamp.replace(' ', ' · ')}`;
+}
+const APP_VERSION = resolveVersion();
 // The pure-protocol library, served to the browser as /lib/ (ADR-0004: the
 // wallet is the lib's first consumer — same code runs in Node and browser).
 // Resolved via Node's module resolution — works wherever npm hoists the package.
@@ -439,6 +464,7 @@ export function startServer(overrides = {}) {
       }
       if (req.url === '/api/config') {
         return sendJson(res, 200, {
+          version: APP_VERSION,
           mock: mockMode,
           rpcUrl: mockMode ? null : config.rpc.url,
           faucet: Boolean(config.faucetUrl),
@@ -464,7 +490,7 @@ export function startServer(overrides = {}) {
 
   server.listen(config.port, () => {
     const { port } = server.address();
-    console.log(`\n  Diginaut · DigiDollar wallet`);
+    console.log(`\n  Diginaut · DigiDollar wallet ${APP_VERSION}`);
     console.log(`  → http://localhost:${port}`);
     console.log(`  mode: ${mockMode ? 'MOCK (set DGB_RPC_USER/DGB_RPC_PASS for a real node)' : `REAL node @ ${config.rpc.url}`}\n`);
   });

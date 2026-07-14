@@ -92,6 +92,22 @@ All PRD stories are shipped and the wallet runs the full mint / transfer / redee
 onboarding (M1), the differential harness (M2), and the stablecoin release (M3). Work is tracked
 in the repo's issue tracker; architecture decisions live in [docs/adr/](docs/adr/).
 
+## Versioning
+
+A deployed build identifies itself as `v<semver>+<short-sha> · <commit-date>` — in the
+UI footer and machine-readably as `version` in `/api/config` (so each domain of a
+dual-network deployment names the exact build it runs: `curl -s <domain>/api/config`).
+
+- The **semver** comes from `apps/wallet/package.json` (the single source of truth) —
+  bump it when behavior changes meaningfully.
+- The **commit stamp** needs no manual step on the reference deploy path:
+  `apps/wallet/.version-stamp` carries a git `export-subst` placeholder that
+  `git archive` expands at deploy time (the prod deploy ships an archive, not a
+  checkout). Running `node server.js` from a working tree asks git directly. A
+  container built from a plain `git pull` checkout has neither, and honestly reports
+  `v<semver>+dev` — deploy from `git archive` if you want stamped builds.
+- Treat the string as opaque (it is not strict semver build metadata).
+
 ## License
 
 [MIT](LICENSE) © Anton Lysakov. All packages in this monorepo are MIT-licensed; the

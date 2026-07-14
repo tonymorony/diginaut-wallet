@@ -1666,6 +1666,7 @@ async function boot() {
       badge.textContent = 'LIVE NODE';
     }
     if (cfg.faucet) $('w-faucet').style.display = 'block';
+    if (cfg.version) $('app-version').textContent = cfg.version; // which build this domain runs
     // Cross-wired backend (#64): the server refuses everything, so no flow
     // can work — say exactly why in the loudest chrome we have and stop.
     if (renderCrossWire(cfg)) return; // no wallet boot, no status/oracle loops
