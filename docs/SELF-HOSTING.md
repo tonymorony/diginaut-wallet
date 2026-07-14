@@ -165,6 +165,10 @@ git pull
 docker compose up --build -d    # rebuilds changed images, keeps volumes
 ```
 
+Note: images built from a `git pull` checkout report their version as
+`v<semver>+dev` — the commit stamp is only expanded when the tree is produced
+by `git archive` (see README → "Versioning"). Cosmetic; everything works.
+
 Volumes: `electrumx-data` (chain index — safe to delete, re-syncs),
 `faucet-data` (claim ledger — deleting resets rate limits).
 Dual-network adds `electrumx-main-data` and `wallet-main-data` (same rules;

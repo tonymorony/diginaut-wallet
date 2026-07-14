@@ -98,12 +98,15 @@ A deployed build identifies itself as `v<semver>+<short-sha> · <commit-date>` �
 UI footer and machine-readably as `version` in `/api/config` (so each domain of a
 dual-network deployment names the exact build it runs: `curl -s <domain>/api/config`).
 
-- The **semver** comes from `apps/wallet/package.json` — bump it when behavior changes
-  meaningfully (the monorepo root `package.json` tracks the same number).
-- The **commit stamp** needs no manual step: `apps/wallet/.version-stamp` carries a git
-  `export-subst` placeholder that `git archive` expands at deploy time (the prod deploy
-  ships an archive, not a checkout). From a working tree the server asks git directly;
-  with neither available it reports `dev`.
+- The **semver** comes from `apps/wallet/package.json` (the single source of truth) —
+  bump it when behavior changes meaningfully.
+- The **commit stamp** needs no manual step on the reference deploy path:
+  `apps/wallet/.version-stamp` carries a git `export-subst` placeholder that
+  `git archive` expands at deploy time (the prod deploy ships an archive, not a
+  checkout). Running `node server.js` from a working tree asks git directly. A
+  container built from a plain `git pull` checkout has neither, and honestly reports
+  `v<semver>+dev` — deploy from `git archive` if you want stamped builds.
+- Treat the string as opaque (it is not strict semver build metadata).
 
 ## License
 
