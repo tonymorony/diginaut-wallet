@@ -139,7 +139,9 @@ check(/^dgb1p[a-z0-9]{50,}$/.test(addr), `mainnet receive address: ${addr.slice(
 check(path === "m/86'/20'/0'/0/0", `SLIP-44 coin type 20 derivation path (${path})`);
 check(!(await evaluate(`document.getElementById('w-copy').disabled`)), 'copy re-enabled once the network is known');
 check((await evaluate(`document.title`)) === 'Diginaut · DigiDollar wallet', 'tab title stays network-neutral on mainnet');
-check(await evaluate(`document.getElementById('net-banner').hidden`), 'no banner on mainnet (beta copy is #63)');
+// #63 landed the beta posture: mainnet now carries the RED beta banner
+// (copy from #54) — verify-beta-posture.mjs proves the full posture.
+check(/MAINNET BETA/.test(await evaluate(text('net-banner'))), 'mainnet shows the beta warning banner (#63)');
 check(!(await evaluate(`document.body.textContent`)).includes('TESTNET'), 'no user-visible TESTNET wording anywhere');
 check((await evaluate(text('modeBadge'))) === 'LIVE NODE', 'LIVE NODE badge (real mode)');
 

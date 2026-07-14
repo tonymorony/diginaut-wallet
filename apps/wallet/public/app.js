@@ -11,7 +11,7 @@ import {
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
 import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
-import { networkChrome } from '/netchrome.js';
+import { networkChrome, betaCapError } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { friendlyDDError, MINT_FREEZE_EXPLANATION } from '/dderrors.js';
 import qrcode from 'qrcode-generator';
@@ -190,6 +190,49 @@ function renderNetDot() {
   $('net-dot').className = 'dot ' + (bad ? 'bad' : ok ? 'good' : 'warn');
 }
 
+// ---- Mainnet beta interstitial (#54/#63) ----
+// One-time BLOCKING ack on first mainnet use, persisted in localStorage.
+// Continue is the only way through; Cancel keeps the modal (and the wallet)
+// blocked. A storage failure (private mode) just means it shows every load.
+const MAINNET_ACK_KEY = 'diginaut-mainnet-ack';
+let mainnetAckShown = false; // don't re-open over a Cancel'd modal on a later poll
+function maybeShowMainnetAck(chain) {
+  if (chain !== 'main' || mainnetAckShown) return;
+  let acked = false;
+  try { acked = localStorage.getItem(MAINNET_ACK_KEY) === '1'; } catch { /* show it */ }
+  if (acked) return;
+  mainnetAckShown = true;
+  $('mainnet-ack-modal').classList.add('open');
+  $('mainnet-ack-continue').focus(); // pull focus in so the trap below can hold it
+}
+$('mainnet-ack-continue').addEventListener('click', () => {
+  try { localStorage.setItem(MAINNET_ACK_KEY, '1'); } catch { /* re-shows next load */ }
+  $('mainnet-ack-modal').classList.remove('open');
+});
+$('mainnet-ack-cancel').addEventListener('click', () => {
+  $('mainnet-ack-note').style.display = 'block';
+});
+// Keep the interstitial genuinely BLOCKING for the keyboard too, not just the
+// pointer (#54, decision 3). The backdrop only occluds clicks; without this a
+// user could Tab into the wallet behind it (the modal sits late in the DOM) and
+// transact unacknowledged. Snap any focus that escapes back onto Continue, and
+// swallow Escape so there is no keyboard route past it.
+document.addEventListener('focusin', (e) => {
+  const modal = $('mainnet-ack-modal');
+  if (modal.classList.contains('open') && !modal.contains(e.target)) {
+    $('mainnet-ack-continue').focus();
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('mainnet-ack-modal').classList.contains('open')) e.preventDefault();
+}, true);
+
+// The network pill must survive scroll (#54): once the topbar scrolls away it
+// floats to a fixed corner just below the sticky banner.
+window.addEventListener('scroll', () => {
+  $('net-pill').classList.toggle('floating', window.scrollY > 64);
+}, { passive: true });
+
 async function loadStatus() {
   try {
     const info = await rpc('getblockchaininfo');
@@ -204,11 +247,18 @@ async function loadStatus() {
       if (wallet.seed) renderAddress();
     }
     // banner + tab title follow the node's chain — same build on every network
-    const { title, banner } = networkChrome(info.chain);
+    const { title, banner, level, pill } = networkChrome(info.chain);
     document.title = title;
     const bannerEl = $('net-banner');
     bannerEl.textContent = banner ?? '';
     bannerEl.hidden = banner === null;
+    bannerEl.classList.toggle('danger', level === 'danger'); // mainnet is RED, not amber (#54)
+    const pillEl = $('net-pill');
+    pillEl.textContent = pill ?? '';
+    pillEl.hidden = pill == null;
+    pillEl.classList.toggle('danger', level === 'danger');
+    pillEl.classList.toggle('warn', level === 'warn');
+    maybeShowMainnetAck(info.chain);
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
   }
@@ -1045,6 +1095,22 @@ function sendAmountSats() {
 
 const satsToUsd = (sats) => lastPriceUsd != null ? Number(sats) * lastPriceUsd / 1e8 : null;
 
+// USD value of a sats amount for the $500 beta cap (#54), from a price fetched
+// FRESH at review time — never the cached lastPriceUsd. Returns null (→ the
+// warn-allow path, decision #6) off-mainnet, or when the node has no quote or
+// reports it stale, so the cap never enforces at a wrong/boot-time rate.
+async function freshCapUsd(amountSats) {
+  if (chainState.netName !== 'mainnet') return null; // cap is mainnet-only
+  try {
+    const price = await rpc('getoracleprice');
+    if (!price?.price_micro_usd || price.is_stale) return null;
+    // price_micro_usd is µUSD per DGB; amountSats is 1e-8 DGB
+    return Number(amountSats) * Number(price.price_micro_usd) / 1e14;
+  } catch {
+    return null; // node unreachable / no quote → couldn't verify
+  }
+}
+
 /** Live "≈ …" line under the input, showing the amount in the other currency. */
 function updateSendEq() {
   const el = $('w-send-amount-eq');
@@ -1141,10 +1207,23 @@ $('w-send-review').addEventListener('click', (e) =>
       if (amountSats <= 0n) throw new Error('amount must be positive');
       plan = planSpend({ utxos: await spendableUtxos(), amountSats, recipientScriptHex });
     }
+    // $500/tx beta cap (#54). Price it from a FRESH quote fetched at review
+    // time — not the boot-time lastPriceUsd, which never refreshes and would
+    // fail open after a transient oracle hiccup or under-count as DGB drifts
+    // (the mint flow already re-fetches here). A stale or unavailable quote is
+    // treated as "couldn't verify" → warn on the confirm screen, ALLOW the
+    // send (decision #6). capUsd is null off-mainnet (the cap is mainnet-only).
+    const capUsd = await freshCapUsd(amountSats);
+    const capErr = betaCapError(chainState.netName, capUsd);
+    if (capErr) throw new Error(`${capErr} (this send is ≈ ${fmtUSD(capUsd)})`);
+    const capUnverified = chainState.netName === 'mainnet' && capUsd == null;
+    $('w-send-c-capnote').style.display = capUnverified ? 'block' : 'none';
+    // prefer the fresh cap price for the confirm estimate; fall back to the
+    // cached oracle price off-mainnet or when the cap price was unavailable
+    const usd = capUsd ?? satsToUsd(amountSats);
     pendingSend = { plan, recipientScriptHex, amountSats, address };
     $('w-send-c-to').textContent = address;
     $('w-send-c-amount').textContent = satsToDgb(amountSats);
-    const usd = satsToUsd(amountSats);
     $('w-send-c-amount-usd').textContent = usd != null ? `  ≈ ${fmtUSD(usd)}` : '';
     $('w-send-c-fee').textContent = satsToDgb(plan.feeSats);
     $('w-send-confirm').style.display = 'block';
@@ -1247,6 +1326,9 @@ $('w-mint-review').addEventListener('click', (e) =>
     if (ddCents > limits.maxMintCents) {
       throw new Error(`this network's consensus maximum is ${fmtC(limits.maxMintCents)} per mint`);
     }
+    // $500/tx beta cap (#54) — USD-native, so it applies regardless of the price feed
+    const mintCapErr = betaCapError(chainState.netName, Number(ddCents) / 100);
+    if (mintCapErr) throw new Error(mintCapErr);
     const tierId = $('w-mint-tier').value;
     const tier = LOCK_TIERS.find((t) => t.id === tierId);
     // 2. oracle gate — a stale quote would be rejected by mempool policy anyway
@@ -1387,6 +1469,9 @@ $('w-tr-review').addEventListener('click', (e) =>
     if (cents < trLimits.minOutputCents) {
       throw new Error(`consensus forbids DigiDollar outputs below $${(Number(trLimits.minOutputCents) / 100).toFixed(2)} — send at least that`);
     }
+    // $500/tx beta cap (#54) — USD-native, so it applies regardless of the price feed
+    const trCapErr = betaCapError(chainState.netName, Number(cents) / 100);
+    if (trCapErr) throw new Error(trCapErr);
     const ddUtxos = await ddUtxosWithKeys();
     const totalCents = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
     const ddUtxo = ddUtxos.filter((u) => u.ddCents >= cents).sort((a, b) => (a.ddCents < b.ddCents ? -1 : 1))[0];
@@ -1458,6 +1543,13 @@ $('w-positions').addEventListener('click', (e) => {
     const p = openPositions.get(txid);
     const needCents = BigInt(p.ddCents);
     const fmtDD = (c) => (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    // $500/tx beta cap (#54). Redemption is all-or-nothing, so an over-cap
+    // position (minted outside this wallet) can't shrink to fit — point at
+    // Core rather than stranding the funds without an explanation.
+    const rdCapErr = betaCapError(chainState.netName, Number(needCents) / 100);
+    if (rdCapErr) {
+      throw new Error(`${rdCapErr} — this position redeems $${fmtDD(needCents)} at once; use DigiByte Core to redeem it during the beta`);
+    }
     // burnable DD must sit on the position's own address (one signing key)
     const all = await ddUtxosWithKeys();
     const onAddr = all.filter((u) => u.address === p.address).sort((a, b) => (a.ddCents < b.ddCents ? 1 : -1));
