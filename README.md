@@ -92,6 +92,19 @@ All PRD stories are shipped and the wallet runs the full mint / transfer / redee
 onboarding (M1), the differential harness (M2), and the stablecoin release (M3). Work is tracked
 in the repo's issue tracker; architecture decisions live in [docs/adr/](docs/adr/).
 
+## Versioning
+
+A deployed build identifies itself as `v<semver>+<short-sha> · <commit-date>` — in the
+UI footer and machine-readably as `version` in `/api/config` (so each domain of a
+dual-network deployment names the exact build it runs: `curl -s <domain>/api/config`).
+
+- The **semver** comes from `apps/wallet/package.json` — bump it when behavior changes
+  meaningfully (the monorepo root `package.json` tracks the same number).
+- The **commit stamp** needs no manual step: `apps/wallet/.version-stamp` carries a git
+  `export-subst` placeholder that `git archive` expands at deploy time (the prod deploy
+  ships an archive, not a checkout). From a working tree the server asks git directly;
+  with neither available it reports `dev`.
+
 ## License
 
 [MIT](LICENSE) © Anton Lysakov. All packages in this monorepo are MIT-licensed; the
