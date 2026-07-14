@@ -52,6 +52,8 @@ test('beta cap: mainnet blocks above $500, allows at and below it', () => {
   assert.equal(betaCapError('mainnet', 0.01), null);
   assert.match(betaCapError('mainnet', 500.01), /\$500/);
   assert.match(betaCapError('mainnet', 100_000), /mainnet beta/);
+  // both mainnet spellings cap — node chain 'main' vs wallet netName 'mainnet'
+  assert.match(betaCapError('main', 500.01), /\$500/);
 });
 
 test('beta cap: testnet/regtest are never capped (no regression, #63 AC)', () => {

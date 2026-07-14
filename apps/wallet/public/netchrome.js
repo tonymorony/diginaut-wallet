@@ -9,9 +9,11 @@ export const BETA_TX_CAP_USD = 500;
 
 /** The beta-cap violation message, or null when the amount is allowed.
  * usdAmount == null means the USD value is unknowable (no price feed) —
- * decision #54: warn on the confirm screen, but ALLOW the transaction. */
+ * decision #54: warn on the confirm screen, but ALLOW the transaction.
+ * Accepts both mainnet spellings — the node says 'main', the wallet's
+ * netName says 'mainnet' — so a mixed-up caller can't silently drop the cap. */
 export function betaCapError(netName, usdAmount) {
-  if (netName !== 'mainnet') return null;
+  if (netName !== 'mainnet' && netName !== 'main') return null;
   if (usdAmount == null) return null;
   if (usdAmount <= BETA_TX_CAP_USD) return null;
   return `during the mainnet beta, transactions are capped at $${BETA_TX_CAP_USD} each`;
