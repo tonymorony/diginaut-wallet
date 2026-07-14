@@ -44,6 +44,23 @@ async function checkSide(base, { label, chain, faucet }) {
   check(info.status === 200 && info.body?.result?.chain === chain,
     `rpc proxy serves getblockchaininfo on "${chain}" (height ${info.body?.result?.blocks ?? '?'})`);
 
+  // exercise the wallet→indexer→ElectrumX chain, not just the config flag: a
+  // tx lookup must be ANSWERED by the indexer (any status but the wallet
+  // proxy's own 502 'indexer unreachable' / 503 proves the trio responds)
+  const idx = await getJson(base, `/api/indexer/tx/${'0'.repeat(64)}`);
+  check(idx.status !== 502 && idx.status !== 503, `indexer chain answers (status ${idx.status})`);
+
+  if (!faucet) {
+    // the mainnet side must refuse a claim outright, not merely hide the button
+    const claim = await fetch(base + '/api/faucet/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: 'probe' }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    check(claim.status === 503, `faucet claim refused with 503 (got ${claim.status})`);
+  }
+
   const hist = await getJson(base, '/api/price-history');
   check(hist.status === 200 && hist.body?.mock === false, 'price-history endpoint live');
   console.log(`   (price series: ${hist.body?.series?.length ?? 0} points)`);

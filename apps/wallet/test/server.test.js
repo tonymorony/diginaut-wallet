@@ -264,20 +264,8 @@ test('mock mode serves a synthetic 24h price history for the chart', async () =>
 });
 
 test('real mode samples getoracleprice on an interval and serves the series', async () => {
-  const { createServer } = await import('node:http');
   let price = 13_000;
-  const node = createServer(async (req, res) => {
-    let raw = '';
-    for await (const c of req) raw += c;
-    const { method, id } = JSON.parse(raw);
-    // the chain guard (#64) probes getblockchaininfo alongside the sampler
-    assert.ok(['getoracleprice', 'getblockchaininfo'].includes(method), `unexpected method ${method}`);
-    const result = method === 'getblockchaininfo'
-      ? { chain: 'test', blocks: 100 }
-      : (price += 10, { price_micro_usd: price, is_stale: false });
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id, result }));
-  });
+  const node = await stubNode('test', () => (price += 10));
   await new Promise((r) => node.listen(0, r));
   const server = startServer({
     port: 0,
@@ -449,18 +437,33 @@ test('the #62 whitelist extension added no fund-moving RPC', async () => {
 // ---- cross-wire guard (#64): a mainnet deployment backed by a testnet node
 // (or vice versa) must fail loudly and closed, not serve the wrong network ----
 
+// `price` may be a number or a function (per-call values, e.g. an increasing
+// series for the sampler test). Only the two methods the server's background
+// loops use are answered — anything else is a test bug.
 async function stubNode(chain, price = 13_420) {
   const { createServer } = await import('node:http');
   return createServer(async (req, res) => {
     let raw = '';
     for await (const c of req) raw += c;
     const { method, id } = JSON.parse(raw);
+    assert.ok(['getoracleprice', 'getblockchaininfo'].includes(method), `unexpected method ${method}`);
     const result = method === 'getblockchaininfo'
       ? { chain, blocks: 100, headers: 100, initialblockdownload: false }
-      : { price_micro_usd: price, is_stale: false };
+      : { price_micro_usd: typeof price === 'function' ? price() : price, is_stale: false };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id, result }));
   });
+}
+
+// wait for the chain guard's boot probe to learn the node's chain
+async function waitForChain(base) {
+  let cfg;
+  for (let i = 0; i < 40; i++) {
+    cfg = await (await fetch(base + '/api/config')).json();
+    if (cfg.chain) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return cfg;
 }
 
 test('cross-wired backend: RPC refused, config flags it, price history stays clean', async () => {
@@ -475,13 +478,7 @@ test('cross-wired backend: RPC refused, config flags it, price history stays cle
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    // wait for the guard's boot probe to learn the node's chain
-    let cfg;
-    for (let i = 0; i < 40; i++) {
-      cfg = await (await fetch(base + '/api/config')).json();
-      if (cfg.chain) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    const cfg = await waitForChain(base);
     assert.equal(cfg.expectedChain, 'main');
     assert.equal(cfg.chain, 'test');
     assert.equal(cfg.chainMismatch, true, '/api/config flags the cross-wire');
@@ -520,12 +517,7 @@ test('matching backend: guard passes RPC and sampling through', async () => {
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    let cfg;
-    for (let i = 0; i < 40; i++) {
-      cfg = await (await fetch(base + '/api/config')).json();
-      if (cfg.chain) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    const cfg = await waitForChain(base);
     assert.equal(cfg.chainMismatch, false);
     assert.equal(cfg.chain, 'main');
 
@@ -570,6 +562,61 @@ test('no EXPECTED_CHAIN set: guard is inert (single-net deployments unchanged)',
     const cfg = await (await fetch(base + '/api/config')).json();
     assert.equal(cfg.expectedChain, null);
     assert.equal(cfg.chainMismatch, false);
+  } finally {
+    server.close();
+    node.close();
+  }
+});
+
+test('guarded deployment is fail-closed BEFORE the chain is confirmed (node down at boot)', async () => {
+  // no node listening at all — the guard can never confirm the chain
+  const server = startServer({
+    port: 0,
+    rpc: { url: 'http://127.0.0.1:1', user: 'u', pass: 'p' },
+    expectedChain: 'main',
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'getblockchaininfo', params: [] }),
+    });
+    assert.equal(res.status, 503, 'rpc held until the chain is confirmed');
+    assert.match((await res.json()).error, /not yet confirmed/);
+    const cfg = await (await fetch(base + '/api/config')).json();
+    assert.equal(cfg.chainMismatch, false, 'down is not reported as cross-wired');
+    assert.equal(cfg.chain, null);
+  } finally {
+    server.close();
+  }
+});
+
+test('cross-wired backend: indexer and faucet proxies are refused too', async () => {
+  const node = await stubNode('test');
+  await new Promise((r) => node.listen(0, r));
+  const server = startServer({
+    port: 0,
+    rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+    expectedChain: 'main',
+    indexerUrl: 'http://127.0.0.1:1', // must never be contacted
+    faucetUrl: 'http://127.0.0.1:1',
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await waitForChain(base);
+    const idx = await fetch(base + `/api/indexer/tx/${'0'.repeat(64)}`);
+    assert.equal(idx.status, 503);
+    assert.match((await idx.json()).error, /refusing to serve/);
+    const claim = await fetch(base + '/api/faucet/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: 'x' }),
+    });
+    assert.equal(claim.status, 503);
+    assert.match((await claim.json()).error, /refusing to serve/);
   } finally {
     server.close();
     node.close();

@@ -144,10 +144,14 @@ node apps/wallet/scripts/verify-dual-public.mjs \
 Guard rails, on by default:
 
 - **`EXPECTED_CHAIN`** — each wallet pins the chain its node must report
-  (`test` / `main`). On a mismatch the server refuses **all** RPC (503), the
-  UI shows a blocking SERVER MISCONFIGURED banner, and the price sampler
-  records nothing. The guard re-probes every minute, so fixing the backend
-  clears it without a restart.
+  (`test` / `main`). Guarded deployments are **fail-closed**: RPC, indexer,
+  and faucet proxying are all refused (503) until the node's chain is
+  confirmed once, and refused permanently while it reports the wrong chain —
+  the UI shows a blocking SERVER MISCONFIGURED banner. The price sampler
+  re-confirms the chain in the same cycle that records each point, so a
+  backend swap can't leak even one wrong-chain price into the history. The
+  guard probes every 5 s until first confirmation, then every minute — fixing
+  the backend clears the block without a restart.
 - **No mainnet faucet** — `wallet-main` simply has no `FAUCET_URL`.
 - **Per-network price history** — each wallet persists its series in its own
   volume (`wallet-data` / `wallet-main-data`).
