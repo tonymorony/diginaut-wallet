@@ -1338,10 +1338,12 @@ $('w-mint-review').addEventListener('click', (e) =>
       throw new Error('the oracle price is stale — the network has not published a fresh quote; try again in a few minutes');
     }
     const priceMicroUsd = BigInt(price.price_micro_usd);
-    // consensus sanity bounds (#62): the node rejects mints built against a
-    // price outside $0.01–$10 per DGB (bad-oracle-price) — say so BEFORE signing
-    if (priceMicroUsd < 10_000n || priceMicroUsd > 10_000_000n) {
-      throw new Error(`the oracle price ($${(Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })}/DGB) is outside the consensus bounds $0.01–$10 — the network would reject this mint`);
+    // consensus sanity bounds: oracle bundles are rejected outside
+    // $0.0001–$100 per DGB (ORACLE_MIN/MAX_PRICE_MICRO_USD, Core
+    // primitives/oracle.h) — say so BEFORE signing. Sub-cent DGB prices
+    // are valid: the micro-USD path has no $0.01 floor.
+    if (priceMicroUsd < 100n || priceMicroUsd > 100_000_000n) {
+      throw new Error(`the oracle price ($${(Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })}/DGB) is outside the consensus bounds $0.0001–$100 — the network would reject this mint`);
     }
     // 3. volatility gate (#62): consensus freezes mints on sharp price moves.
     // Best-effort — if the status RPC is unavailable the broadcast error
@@ -1386,7 +1388,8 @@ $('w-mint-review').addEventListener('click', (e) =>
     $('w-mint-c-ratio').textContent = dcaNote()
       ? `${effRatio}% (${tier.ratioPercent}% base, ${dcaNote()})`
       : `${effRatio}%`;
-    $('w-mint-c-price').textContent = '$' + (Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 5 }) + ' / DGB';
+    // 6 digits = exact for micro-USD; 5 would round sub-cent prices ($0.002546 → $0.00255)
+    $('w-mint-c-price').textContent = '$' + (Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' / DGB';
     $('w-mint-c-fee').textContent = fmtSats(MINT_FEE_SATS);
     $('w-mint-c-unlock').textContent = `≈ ${blocksToDate(unlockHeight - tipHeight)} (block ${unlockHeight.toLocaleString('en-US')})`;
     $('w-mint-confirm').style.display = 'block';
