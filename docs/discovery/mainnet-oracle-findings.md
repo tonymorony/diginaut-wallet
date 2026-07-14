@@ -18,9 +18,14 @@ who signs/publishes the attested DGB/USD price, and what must our stack run?
 - **`deploy/oracle-price-feeder.mjs` must NOT run against the mainnet node.**
   It drives `enablemockoracle`/`setmockoracleprice`, which are **regtest-only**
   RPCs (gated by `ChainType::REGTEST` throughout `src/rpc/digidollar.cpp`); on
-  mainnet/testnet they don't exist. The mainnet wallet stack simply polls
-  `getoracleprice` on the synced node (the existing `startPriceSampler` in
-  `apps/wallet/server.js` already does exactly this).
+  mainnet/testnet they don't exist.
+- **Where the wallet's mainnet price data comes from — two paths, same source:**
+  (1) the wallet UI calls `rpc('getoracleprice')` through the server's
+  allow-listed `/api/rpc` proxy (quote/mint flows and the header price in
+  `apps/wallet/public/app.js`); (2) the **`/api/price-history` chart** is fed by
+  `startPriceSampler` in `apps/wallet/server.js`, which polls the same
+  `getoracleprice` every 60 s into a persisted 24 h series. Both terminate at
+  the synced node's bundle-manager cache — no external feed anywhere.
 - **We cannot become a price feeder even if we wanted to**: `startoracle` only
   produces messages peers accept if our key matches one of the 35 chainparams
   roster slots (`net_processing.cpp` rejects non-roster signatures with
@@ -80,7 +85,8 @@ who signs/publishes the attested DGB/USD price, and what must our stack run?
 ## Unconfirmed / flags
 
 - Core checkout is `develop`, not the v9.26.4 release tag — mainnet roster keys
-  are labelled RC («release candidate»); re-verify the shipped keyset if it ever
-  matters (it doesn't for our stack — we never verify oracle sigs ourselves).
+  carry RC («release candidate») labels (block comment says RC44, individual
+  keys RC46); re-verify the shipped keyset if it ever matters (it doesn't for
+  our stack — we never verify oracle sigs ourselves).
 - MuSig2 aggregate-signature verification internals (`oracle/musig2_*`) were not
   read line-by-line; quorum gating and call sites were confirmed.

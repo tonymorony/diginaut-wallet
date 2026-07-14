@@ -176,7 +176,7 @@ await waitFor(`document.getElementById('w-mint-confirm').style.display === 'bloc
 const cPrice = await evaluate(text('w-mint-c-price'));
 check(cPrice === '$0.002546 / DGB', `confirm screen quotes the sub-cent price EXACTLY (no 5-digit rounding): "${cPrice}"`);
 check(!(await evaluate(text('w-mint-err'))), 'no error shown for the in-bounds sub-cent price');
-await shot('98-subcent-mint-confirm.png');
+await shot('99-subcent-mint-confirm.png');
 
 // ================= 4. regression: a 1-cent price (the old wrong floor) still passes =================
 priceMicroUsd = 10_000; // $0.01 — the boundary the old check used as its floor

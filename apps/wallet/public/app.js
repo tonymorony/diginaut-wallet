@@ -18,6 +18,11 @@ import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
 
+// Consensus oracle price bounds, mirrored from Core primitives/oracle.h
+// (ORACLE_MIN/MAX_PRICE_MICRO_USD). Sub-cent DGB prices are consensus-valid.
+const ORACLE_MIN_PRICE_MICRO_USD = 100n; // $0.0001 / DGB
+const ORACLE_MAX_PRICE_MICRO_USD = 100_000_000n; // $100 / DGB
+
 // Escape untrusted strings before they reach an innerHTML sink. The node,
 // indexer, and oracle responses are semi-trusted JSON, and txids/addresses can
 // be peer-supplied — a malicious value must never break out into markup or an
@@ -1338,11 +1343,9 @@ $('w-mint-review').addEventListener('click', (e) =>
       throw new Error('the oracle price is stale — the network has not published a fresh quote; try again in a few minutes');
     }
     const priceMicroUsd = BigInt(price.price_micro_usd);
-    // consensus sanity bounds: oracle bundles are rejected outside
-    // $0.0001–$100 per DGB (ORACLE_MIN/MAX_PRICE_MICRO_USD, Core
-    // primitives/oracle.h) — say so BEFORE signing. Sub-cent DGB prices
-    // are valid: the micro-USD path has no $0.01 floor.
-    if (priceMicroUsd < 100n || priceMicroUsd > 100_000_000n) {
+    // consensus sanity bounds — say so BEFORE signing. Sub-cent DGB
+    // prices are valid: the micro-USD path has no $0.01 floor.
+    if (priceMicroUsd < ORACLE_MIN_PRICE_MICRO_USD || priceMicroUsd > ORACLE_MAX_PRICE_MICRO_USD) {
       throw new Error(`the oracle price ($${(Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 })}/DGB) is outside the consensus bounds $0.0001–$100 — the network would reject this mint`);
     }
     // 3. volatility gate (#62): consensus freezes mints on sharp price moves.
