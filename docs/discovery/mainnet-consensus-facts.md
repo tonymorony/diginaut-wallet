@@ -101,8 +101,14 @@ mainnet rather than defaulting to healthy (feeds into #53).
   (`minting-frozen-volatility`); ≥50% within 7 d freezes all DD operations
   (`all-operations-frozen`). The wallet should map these mempool reject strings
   to friendly errors (→ #53).
-- **Oracle price sanity bounds**: consensus rejects prices outside $0.01–$10.00
-  per DGB.
+- **Oracle price sanity bounds**: consensus rejects oracle bundles with prices
+  outside **$0.0001–$100.00 per DGB** (`ORACLE_MIN_PRICE_MICRO_USD = 100`,
+  `ORACLE_MAX_PRICE_MICRO_USD = 100000000`, `src/primitives/oracle.h`). Sub-cent
+  DGB prices are valid. (An earlier revision of this doc claimed $0.01–$10 —
+  that range comes from `ValidateOraclePrice`/`ValidateOraclePriceForTx`, legacy
+  cents-scaled helpers that are NOT called on the block-consensus path; the live
+  tx validation in `src/digidollar/validation.cpp` is micro-USD and only requires
+  price > 0.)
 - **Oracle price freshness**: `priceValidBlocks = 20` (~5 min) on mainnet and testnet.
 - Mainnet oracle system: **7-of-35 MuSig2** with hardcoded x-only pubkeys in
   chainparams (35 active on mainnet vs 24 currently active on testnet26), epoch
