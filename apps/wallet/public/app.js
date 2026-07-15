@@ -420,18 +420,30 @@ function showTxSuccess(modalId, txid, title, note) {
 // The modal's inner step visibility is driven SOLELY by this mode, decoupled
 // from the app's none/locked/open state — so add-wallet/backup flows can run
 // while the wallet stays open. show() only decides whether the modal closes.
-// Modes: 'choice' | 'create' | 'restore' | 'unlock' | 'backup' | 'quiz' |
-// 'backup-done' ('import' arrives with the keystore-file stage).
+// Modes: 'choice' | 'create' | 'restore' | 'import' | 'unlock' | 'backup' |
+// 'quiz' | 'backup-done'.
 let connectMode = 'choice';
+let pendingImport = null; // parsed keystore-file envelope while the import step is open (§4)
 
 function setConnectMode(mode) {
   connectMode = mode;
-  $('w-none').style.display = ['choice', 'create', 'restore'].includes(mode) ? 'block' : 'none';
+  $('w-none').style.display = ['choice', 'create', 'restore', 'import'].includes(mode) ? 'block' : 'none';
   $('w-choice').style.display = mode === 'choice' ? 'block' : 'none';
-  $('w-form').style.display = mode === 'create' || mode === 'restore' ? 'block' : 'none';
+  $('w-form').style.display = ['create', 'restore', 'import'].includes(mode) ? 'block' : 'none';
   $('w-restore').style.display = mode === 'restore' ? 'block' : 'none';
+  $('w-import').style.display = mode === 'import' ? 'block' : 'none';
+  $('w-name-field').style.display = mode === 'import' ? 'none' : 'block'; // import names the wallet from the file
   $('w-create').style.display = mode === 'create' ? 'block' : 'none';
   $('w-restore-go').style.display = mode === 'restore' ? 'block' : 'none';
+  $('w-import-go').style.display = mode === 'import' ? 'block' : 'none';
+  // a parsed envelope (and the file password) never outlives the import step
+  if (mode !== 'import') {
+    pendingImport = null;
+    $('w-import-file').value = '';
+    $('w-import-pass').value = '';
+    $('w-import-info').style.display = 'none';
+    $('w-import-warn').style.display = 'none';
+  }
   // master password fields only exist while no vault does (§2.1)
   $('w-pass-fields').style.display = vault.status === 'none' ? 'block' : 'none';
   $('w-locked').style.display = mode === 'unlock' ? 'block' : 'none';
@@ -683,6 +695,65 @@ $('w-restore-go').addEventListener('click', (e) =>
     }
   }));
 
+// ---- Keystore file import (spec §4) ----
+// Picker → validate the envelope (clear errors) → the FILE's password →
+// decrypt → add as a new wallet and switch to it. A file import proves the
+// password, not the words, so the wallet stays backedUp:false.
+$('w-show-import').addEventListener('click', () => { setConnectMode('import'); });
+
+$('w-import-file').addEventListener('change', (e) =>
+  busy(e.target, 'w-none-err', async () => {
+    pendingImport = null;
+    $('w-import-info').style.display = 'none';
+    $('w-import-warn').style.display = 'none';
+    const file = $('w-import-file').files[0];
+    if (!file) return;
+    pendingImport = keystore.parseKeystoreFile(await file.text());
+    const when = new Date(pendingImport.exportedAt);
+    $('w-import-info').textContent = `“${pendingImport.name}”` +
+      (Number.isNaN(when.getTime()) ? '' : ` — exported ${when.toLocaleDateString('en-CA')}`) +
+      (pendingImport.network ? ` on ${pendingImport.network}` : '');
+    $('w-import-info').style.display = 'block';
+    // network mismatch: warn but allow (§4) — mnemonics are network-agnostic,
+    // the same seed just derives different-looking addresses per chain
+    if (pendingImport.network && chainState.netKnown && pendingImport.network !== chainState.netName) {
+      $('w-import-warn').textContent = `This file was exported on ${pendingImport.network}, but this wallet runs on ` +
+        `${chainState.netName}. The seed phrase works on both networks — only the addresses look different.`;
+      $('w-import-warn').style.display = 'block';
+    }
+    $('w-import-pass').focus();
+  }));
+
+// name from the envelope, de-duplicated against the vault ("Trading" → "Trading 2")
+function importedWalletName(name) {
+  const base = String(name ?? '').trim() || nextWalletName();
+  const taken = new Set((vault.meta()?.wallets ?? []).map((w) => w.name.trim().toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  let n = 2;
+  while (taken.has(`${base.toLowerCase()} ${n}`)) n += 1;
+  return `${base} ${n}`;
+}
+
+$('w-import-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-none-err', async () => {
+    if (!pendingImport) throw new Error('pick a backup file first');
+    let mnemonic;
+    try {
+      mnemonic = await keystore.decryptKeystoreFile(pendingImport, $('w-import-pass').value);
+    } catch (err) {
+      throw err?.name === 'OperationError' ? new Error('wrong password for this file') : err;
+    }
+    if (!validateMnemonic(mnemonic)) throw new Error('the file decrypted, but it does not hold a valid seed phrase');
+    const name = importedWalletName(pendingImport.name);
+    const { id, existed } = await createWalletEntry({ name, mnemonic, backedUp: false });
+    switchToWallet(id); // also resets the import step (mode leaves 'import')
+    // duplicate-mnemonic contract (§2): say so in the wallet switcher
+    if (existed) {
+      const w = vault.meta().wallets.find((x) => x.id === id);
+      openWalletModal(`You already have this wallet (${w.name}) — switched to it.`);
+    }
+  }));
+
 $('w-unlock').addEventListener('click', (e) =>
   busy(e.target, 'w-locked-err', async () => {
     let meta;
@@ -739,9 +810,11 @@ $('w-faucet').addEventListener('click', (e) =>
 
 // ---- Password re-auth (spec §5) ----
 // One small prompt reused by every sensitive action: seed reveal, backup
-// re-entry, and (S4) keystore export. Remove-wallet uses its own type-the-name
-// ceremony instead. Resolves true only after verifyPassword — a decrypt probe
-// against storage, no state change.
+// re-entry, and keystore export. Remove-wallet uses its own type-the-name
+// ceremony instead. Resolves the TYPED password (truthy) only after
+// verifyPassword — a decrypt probe against storage, no state change — and
+// false on cancel; boolean callers and the export (which derives the file's
+// key from the password) share the same gate.
 let reauthResolve = null;
 function requireReauth(hint) {
   return new Promise((resolve) => {
@@ -754,9 +827,10 @@ function requireReauth(hint) {
   });
 }
 function settleReauth(ok) {
+  const pass = ok && $('reauth-pass').value; // never empty: createVault enforces ≥8 chars
   $('reauth-modal').classList.remove('open');
   $('reauth-pass').value = '';
-  reauthResolve?.(ok);
+  reauthResolve?.(pass);
   reauthResolve = null;
 }
 $('reauth-go').addEventListener('click', (e) =>
@@ -931,18 +1005,32 @@ function renderWalletList() {
   }).join('');
 }
 
-// TODO(S4): the Export-backup-file action joins Rename/Remove… here.
 function walletEditHtml(w) {
   return `<div class="wal-edit">` +
     `<input id="w-rename-input" autocomplete="off" value="${esc(w.name)}" />` +
     `<div class="grid">` +
     `<button type="button" id="w-rename-go" class="secondary" data-rename="${esc(w.id)}">Rename</button>` +
     `<button type="button" id="w-remove-open" class="danger" data-remove="${esc(w.id)}">Remove…</button>` +
-    `</div></div>`;
+    `</div>` +
+    // deliberately SECONDARY messaging (§4): the file is a convenience copy
+    `<button type="button" id="w-export-go" class="secondary" data-export="${esc(w.id)}">Export backup file</button>` +
+    `<p class="hint" style="margin:6px 0 0">An encrypted copy of this wallet. It only opens with your password — it is NOT a replacement for the seed phrase.</p>` +
+    `</div>`;
+}
+
+// Hand the envelope to the browser as a download (Blob URL, §4 filename).
+// Revoke on a timeout — revoking synchronously can abort the save.
+function downloadKeystoreFile(envelope) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = keystore.keystoreFileName(envelope.name, new Date(envelope.exportedAt));
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 $('w-wallet-list').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-switch],[data-manage],[data-rename],[data-remove]');
+  const btn = e.target.closest('[data-switch],[data-manage],[data-rename],[data-export],[data-remove]');
   if (!btn) return;
   $('w-wallet-err').textContent = '';
   try {
@@ -957,6 +1045,20 @@ $('w-wallet-list').addEventListener('click', async (e) => {
       await vault.renameWallet(btn.dataset.rename, $('w-rename-input').value); // duplicate guard inside
       managingId = null;
       renderWalletList();
+    } else if (btn.dataset.export) {
+      // export requires typing the password (§4/§5) — it re-proves the user
+      // can open what they save, and the file's fresh KDF runs on that string
+      const pass = await requireReauth('Confirm your password to export an encrypted copy of this wallet.');
+      if (!pass) return;
+      const w = vault.meta().wallets.find((x) => x.id === btn.dataset.export);
+      downloadKeystoreFile(await keystore.buildKeystoreFile({
+        name: w.name,
+        network: chainState.netKnown ? chainState.netName : null,
+        mnemonic: vault.getMnemonic(w.id), // export does NOT set backedUp (§4)
+        password: pass,
+      }));
+      managingId = null;
+      openWalletModal(`Saved ${keystore.keystoreFileName(w.name)} — it only opens with your password.`);
     } else if (btn.dataset.remove) {
       showRemoveView(btn.dataset.remove);
     }
@@ -966,8 +1068,8 @@ $('w-wallet-list').addEventListener('click', async (e) => {
 });
 
 // Add wallet: the connect modal in choice mode while the app stays OPEN —
-// password fields stay hidden (the vault exists), create/restore ride the
-// unlocked session key (§2 modal-mode decoupling).
+// password fields stay hidden (the vault exists), create/restore/import ride
+// the unlocked session key (§2 modal-mode decoupling).
 $('w-add-wallet').addEventListener('click', () => {
   closeWalletModal();
   openConnectModal();

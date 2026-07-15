@@ -102,6 +102,60 @@ export async function decryptJsonWithKey(blob, key) {
   return JSON.parse(new TextDecoder().decode(plain));
 }
 
+// ---- Keystore file export/import envelope (spec §4) ----
+// A per-wallet encrypted export: ONE mnemonic under the master password with a
+// fresh salt + IV (never the vault's). It only opens with that password — a
+// convenience copy, NOT a replacement for the seed phrase.
+
+export const KEYSTORE_FILE_FORMAT = 'diginaut-keystore';
+export const KEYSTORE_FILE_VERSION = 1;
+
+/** Build the export envelope for one wallet. network is 'mainnet'/'testnet'
+ * or null when the node hasn't named its chain. */
+export async function buildKeystoreFile({ name, network, mnemonic, password }) {
+  const { kdf, cipher } = await encryptString(mnemonic, password);
+  return {
+    format: KEYSTORE_FILE_FORMAT,
+    v: KEYSTORE_FILE_VERSION,
+    name,
+    network: network ?? null,
+    exportedAt: new Date().toISOString(),
+    kdf,
+    cipher,
+  };
+}
+
+/** Parse + validate a keystore file's JSON text. Throws a message the import
+ * UI can show verbatim for a wrong format, version, or damaged file. */
+export function parseKeystoreFile(text) {
+  let obj;
+  try {
+    obj = JSON.parse(text);
+  } catch {
+    throw new Error('this is not a keystore file (not valid JSON)');
+  }
+  if (obj?.format !== KEYSTORE_FILE_FORMAT) throw new Error('this is not a diginaut keystore file');
+  if (obj.v !== KEYSTORE_FILE_VERSION) {
+    throw new Error(`unsupported keystore file version: ${obj.v} (this app reads v${KEYSTORE_FILE_VERSION})`);
+  }
+  if (typeof obj.kdf?.salt !== 'string' || typeof obj.cipher?.iv !== 'string' || typeof obj.cipher?.data !== 'string') {
+    throw new Error('keystore file is damaged — its crypto fields are missing');
+  }
+  return obj;
+}
+
+/** Decrypt an envelope's mnemonic with the FILE's password (raw string, like
+ * v1 blobs). Throws on a wrong password (GCM auth failure). */
+export async function decryptKeystoreFile(envelope, password) {
+  return (await decryptString(envelope, password)).str;
+}
+
+/** Filename convention: diginaut-<name-slug>-<yyyymmdd>.keystore.json */
+export function keystoreFileName(name, when = new Date()) {
+  const slug = String(name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'wallet';
+  return `diginaut-${slug}-${when.toISOString().slice(0, 10).replace(/-/g, '')}.keystore.json`;
+}
+
 // ---- IndexedDB persistence (browser only) ----
 
 const DB_NAME = 'dd-wallet';

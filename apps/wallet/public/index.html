@@ -446,16 +446,29 @@
           <p class="hint" style="margin-top:0">Your keys are generated in this browser and never sent anywhere. Pick how to start:</p>
           <button id="w-create-choice">Create new wallet</button>
           <button id="w-show-restore" class="secondary">I already have a seed phrase</button>
+          <button id="w-show-import" class="secondary">Restore from backup file</button>
         </div>
         <div id="w-form" style="display:none">
           <div id="w-restore" style="display:none">
             <label for="w-restore-seed">Seed phrase (12 or 24 words)</label>
             <textarea id="w-restore-seed" rows="3" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
           </div>
+          <!-- keystore file import (spec §4): picker → validated envelope →
+               the FILE's password. The wallet name comes from the file. -->
+          <div id="w-import" style="display:none">
+            <label for="w-import-file">Backup file (.keystore.json)</label>
+            <input id="w-import-file" type="file" accept=".json,application/json" />
+            <div class="hint" id="w-import-info" style="display:none"></div>
+            <div class="hint warn-text" id="w-import-warn" style="display:none"></div>
+            <label for="w-import-pass">File password <span class="hint" style="display:inline">— the master password of the wallet that exported it</span></label>
+            <input id="w-import-pass" type="password" autocomplete="off" />
+          </div>
           <!-- pre-filled with "Wallet N" so an untouched submit succeeds
                (drivers set only the passwords and click w-create) -->
-          <label for="w-create-name">Wallet name</label>
-          <input id="w-create-name" autocomplete="off" />
+          <div id="w-name-field">
+            <label for="w-create-name">Wallet name</label>
+            <input id="w-create-name" autocomplete="off" />
+          </div>
           <!-- master password: only shown (and required) while no vault exists;
                adding a wallet to an unlocked vault skips straight to reveal -->
           <div id="w-pass-fields">
@@ -466,6 +479,7 @@
           </div>
           <button id="w-create">Create wallet</button>
           <button id="w-restore-go" style="display:none">Restore wallet</button>
+          <button id="w-import-go" style="display:none">Import wallet</button>
           <button id="w-form-back" class="secondary">Back</button>
         </div>
         <div class="err" id="w-none-err"></div>
@@ -517,9 +531,10 @@
     </div>
 
     <!-- Wallet switcher (spec §7): opened by clicking the header address chip.
-         List rows switch the active wallet; per-row ⋯ expands inline rename
-         and the remove ceremony; Add wallet reuses the connect modal while the
-         app stays open (§2 modal-mode decoupling). -->
+         List rows switch the active wallet; per-row ⋯ expands inline rename,
+         the keystore-file export (§4) and the remove ceremony; Add wallet
+         reuses the connect modal while the app stays open (§2 modal-mode
+         decoupling). -->
     <div id="wallet-modal" class="modal-backdrop">
       <div class="modal">
         <div class="modal-head"><h3>Wallets</h3><button class="secondary chip-btn" data-close>Close</button></div>
@@ -734,7 +749,7 @@
     </div>
 
     <!-- Password re-auth (spec §5): small gate reused by seed reveal, backup
-         re-entry and (S4) the keystore-file export. Remove-wallet has its own
+         re-entry and the keystore-file export. Remove-wallet has its own
          type-the-name ceremony instead.
          Deliberately NOT in the backdrop-click list handled by data-close:
          cancel must settle the pending promise, so it has its own handlers. -->
