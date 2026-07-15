@@ -249,6 +249,30 @@
     #send-modal .send-forms > div { display: none; }
     #send-modal.asset-dgb #w-send { display: block; }
     #send-modal.asset-dd #w-transfer { display: block; }
+    /* seed reveal ceremony (backup + show-seed): numbered word grid, blurred
+       until tapped. Numbers come from a CSS counter so the element's
+       textContent stays exactly the whitespace-joined words (drivers parse it). */
+    .seed-reveal { position: relative; margin-top: 12px; }
+    .seed-grid { list-style: none; counter-reset: seed; margin: 0; padding: 12px; background: var(--gray-100);
+      border-radius: var(--radius-s); display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 8px; }
+    .seed-grid li { counter-increment: seed; font-size: 13px; padding: 5px 8px; background: #fff; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; }
+    .seed-grid li::before { content: counter(seed); display: inline-block; width: 18px; color: var(--gray-400); font-size: 11px; }
+    .seed-reveal.blurred .seed-grid { filter: blur(7px); user-select: none; pointer-events: none; }
+    .seed-veil { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; display: none;
+      background: none; color: var(--gray-700); font-weight: 600; border-radius: var(--radius-s); }
+    .seed-veil:hover { background: rgba(255,255,255,.3); }
+    .seed-reveal.blurred .seed-veil { display: block; }
+    /* backup quiz: 3 labeled slots + word chips */
+    .quiz-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .quiz-slot { margin: 0; padding: 7px 6px 8px; background: var(--gray-100); color: var(--text);
+      border: 1px dashed var(--gray-300); border-radius: var(--radius-s); font-weight: 600; font-size: 13px; }
+    .quiz-slot:hover { background: var(--gray-100); }
+    .quiz-slot.filled { border-style: solid; border-color: var(--gray-300); background: #fff; }
+    .quiz-slot.filled:hover { background: var(--gray-50); }
+    .quiz-slot .qn { display: block; font-size: 10.5px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+    .quiz-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .quiz-chip { width: auto; margin: 0; padding: 6px 13px; border-radius: 999px; font-size: 13px; }
+    .quiz-chip:disabled { opacity: .35; }
     section[hidden] { display: none !important; }
   </style>
 </head>
@@ -411,10 +435,18 @@
             <label for="w-restore-seed">Seed phrase (12 or 24 words)</label>
             <textarea id="w-restore-seed" rows="3" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
           </div>
-          <label for="w-create-pass">Password <span class="hint" style="display:inline">— encrypts the wallet on this device only</span></label>
-          <input id="w-create-pass" type="password" autocomplete="new-password" />
-          <label for="w-create-pass2">Repeat password</label>
-          <input id="w-create-pass2" type="password" autocomplete="new-password" />
+          <!-- pre-filled with "Wallet N" so an untouched submit succeeds
+               (drivers set only the passwords and click w-create) -->
+          <label for="w-create-name">Wallet name</label>
+          <input id="w-create-name" autocomplete="off" />
+          <!-- master password: only shown (and required) while no vault exists;
+               adding a wallet to an unlocked vault skips straight to reveal -->
+          <div id="w-pass-fields">
+            <label for="w-create-pass">Master password <span class="hint" style="display:inline">— one password for every wallet on this device</span></label>
+            <input id="w-create-pass" type="password" autocomplete="new-password" />
+            <label for="w-create-pass2">Repeat password</label>
+            <input id="w-create-pass2" type="password" autocomplete="new-password" />
+          </div>
           <button id="w-create">Create wallet</button>
           <button id="w-restore-go" style="display:none">Restore wallet</button>
           <button id="w-form-back" class="secondary">Back</button>
@@ -422,12 +454,34 @@
         <div class="err" id="w-none-err"></div>
       </div>
 
-      <!-- one-time backup right after creating a NEW wallet -->
+      <!-- backup ceremony (spec §2): reveal (blur + decoy words + tap to
+           reveal, no copy button) → quiz (3 slots, chips) → success beat.
+           The wallet is already OPEN underneath — this only overlays it. -->
       <div id="w-backup-view" style="display:none">
-        <p class="hint warn-text" style="margin-top:0">This seed phrase is the ONLY backup of your new wallet. Anyone who has it controls the funds — write it down somewhere safe.</p>
-        <div class="out mono" id="w-backup-words"></div>
-        <button id="w-backup-done">I saved it — continue</button>
+        <p class="hint warn-text" style="margin-top:0">These words are the ONLY backup of this wallet. Write them down in order and keep them offline — anyone who has them controls the funds.</p>
+        <div class="seed-reveal blurred" id="w-backup-reveal">
+          <ol class="seed-grid mono" id="w-backup-words"></ol>
+          <button type="button" id="w-backup-show" class="seed-veil">Tap to reveal</button>
+        </div>
+        <button id="w-backup-continue">Continue</button>
       </div>
+      <div id="w-quiz-view" style="display:none">
+        <p class="hint" style="margin-top:0">Check your backup: pick the right word for each position. The slots change every attempt.</p>
+        <div class="quiz-slots" id="w-quiz-slots"></div>
+        <div class="quiz-chips" id="w-quiz-chips"></div>
+        <button id="w-quiz-verify">Verify</button>
+        <div class="err" id="w-quiz-err"></div>
+      </div>
+      <div id="w-backup-success" style="display:none;text-align:center;padding:16px 0 4px">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style="color:var(--good)"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div style="font-size:18px;font-weight:600;margin:10px 0 2px">Backed up</div>
+        <p class="hint" style="margin-top:2px">Keep the written words offline and private — anyone who has them controls the funds.</p>
+        <button id="w-backup-success-done">Done</button>
+      </div>
+      <!-- skip: shared by the reveal and quiz steps. The id w-backup-done is
+           load-bearing — existing drivers dismiss the backup flow with ONE
+           click on it right after w-create. -->
+      <button id="w-backup-done" class="secondary" style="display:none">Remind me later</button>
 
       <!-- wallet exists, locked -->
       <div id="w-locked" style="display:none">
@@ -609,15 +663,38 @@
         <div class="hint" id="o-hint"></div>
         <div id="net-wallet-sec" style="display:none">
           <h2 style="margin-top:18px">Wallet</h2>
+          <!-- hidden once the active wallet passes the backup quiz -->
+          <button id="w-backup-now">Back up now</button>
           <div class="grid">
             <button id="w-backup" class="secondary">Show seed phrase</button>
             <button id="w-lock" class="secondary">Lock wallet</button>
           </div>
+          <!-- reveal ceremony (spec §5): re-auth gated, blurred decoys until
+               tapped. After reveal w-seed-words holds the REAL words as plain
+               text (numbers are CSS counters) — drivers parse its textContent. -->
           <div id="w-seed" style="display:none">
             <p class="hint warn-text">Anyone with these words controls the wallet. Write them down; this is the only backup.</p>
-            <div class="out mono" id="w-seed-words"></div>
+            <div class="seed-reveal blurred" id="w-seed-reveal">
+              <ol class="seed-grid mono" id="w-seed-words"></ol>
+              <button type="button" id="w-seed-show" class="seed-veil">Tap to reveal</button>
+            </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Password re-auth (spec §5): small gate reused by seed reveal, backup
+         re-entry and (later stages) keystore export / remove-wallet flows.
+         Deliberately NOT in the backdrop-click list handled by data-close:
+         cancel must settle the pending promise, so it has its own handlers. -->
+    <div id="reauth-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Confirm your password</h3><button id="reauth-cancel" class="secondary chip-btn">Cancel</button></div>
+        <p class="hint" id="reauth-hint" style="margin-bottom:0"></p>
+        <label for="reauth-pass">Master password</label>
+        <input id="reauth-pass" type="password" autocomplete="current-password" />
+        <button id="reauth-go">Continue</button>
+        <div class="err" id="reauth-err"></div>
       </div>
     </div>
 
