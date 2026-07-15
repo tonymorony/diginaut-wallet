@@ -37,6 +37,37 @@ IndexedDB `dd-wallet` / store `keystore` keeps a SINGLE record, id `vault`:
   dropped on lock.
 - `meta.wallets[]` order is display order. Wallet ids are `w<epoch-ish counter>`; never reuse.
 
+### Concurrency: revision control (multi-tab safety — S1, non-negotiable)
+
+Two unlocked tabs doing blind read-modify-write on the single vault record is last-writer-
+wins — the losing tab's freshly created mnemonic would vanish from the ciphertext while its
+UI reports success. Therefore:
+
+- The vault record carries a monotonically increasing `rev` (integer). `saveVaultRecord`
+  is COMPARE-AND-SET: inside ONE IndexedDB readwrite transaction, re-read the stored `rev`;
+  if it differs from the base `rev` the mutation was computed from, ABORT the transaction
+  and throw `VaultConflictError` — never overwrite.
+- On `VaultConflictError` the vault manager reloads the record and surfaces "This wallet
+  was changed in another tab — reloading" (the UI relocks or refreshes state; it must NOT
+  silently retry the stale write).
+- A `BroadcastChannel('diginaut-vault')` message is posted after every successful write;
+  other tabs listening refresh their in-memory record (and, if unlocked, re-decrypt with
+  their held key) so stale bases are rare rather than routine.
+- `vault.test.js` must cover: two managers over one store, interleaved writes → second
+  write throws, no mnemonic lost.
+
+### Key↔salt invariant (S1, non-negotiable)
+
+The held session key MUST always be `PBKDF2(password, record.kdf.salt)` for the record
+actually in storage. `createVault` and `migrateV1` therefore either (a) derive the key
+FIRST from a fresh salt and encrypt with `encryptJsonWithKey`, or (b) have
+`encryptJson` return `{blob, key}` so the caller holds the key matching the salt it just
+generated. Never keep a key derived from an old salt (e.g. the v1 salt) after writing a
+record that advertises a new one — the next `encryptJsonWithKey` write would brick the
+vault (GCM auth failure on every future unlock, with the correct password).
+`vault.test.js` must include the chained case: migrate v1 → mutate via held key →
+re-unlock from storage → decrypt succeeds.
+
 ### Module layout (keep node-testable)
 
 - `keystore.js` (crypto + IDB, stays small): generalize to `encryptJson(obj, password)` /
@@ -62,6 +93,19 @@ IndexedDB `dd-wallet` / store `keystore` keeps a SINGLE record, id `vault`:
   unnamed wallet). On successful password entry: decrypt v1, build v2 vault with one wallet
   `{name: 'Wallet 1', createdAt: now, backedUp: false}` under the SAME password, save
   `vault`, delete `primary`. Loss-proof order: write v2, verify decrypt, then delete v1.
+- **Interrupted-migration GC**: if BOTH `vault` and `primary` exist at boot, treat it as an
+  incomplete migration. On the next successful unlock, probe-decrypt the v2 record: if it
+  decrypts, delete the orphan v1; if it does NOT, fall back to unlocking the v1 record and
+  redo the migration (overwriting the bad v2). `loadKeystoreAny` must therefore return both
+  records when both exist. Test: seed both, unlock, assert one clean v2 and no orphan.
+- **Raw-string v1 semantics**: real installed v1 blobs encrypt the mnemonic as a raw UTF-8
+  string, NOT JSON. `decryptMnemonic` must keep returning that raw string even if it is
+  reimplemented over `decryptJson` internals. Add a FROZEN v1 fixture blob (captured from
+  the current keystore.js output, hardcoded in the test) asserting
+  `decryptMnemonic(fixture, pw) === mnemonic` — same-code round-trip tests cannot catch
+  this regression.
+- `encryptMnemonic`/`saveKeystore`-equivalent primitives must remain importable from page
+  context (the migration driver seeds a legacy `primary` record via page JS).
 - Migrated wallets get `backedUp: false` deliberately — existing users get the quiz path
   (the whole point of map #92). The badge, not a modal, carries the nag.
 
@@ -70,18 +114,30 @@ IndexedDB `dd-wallet` / store `keystore` keeps a SINGLE record, id `vault`:
 Create flow (inside the existing `w-connect-modal`, keeping today's overlay structure:
 wallet opens immediately, backup flow overlays it — drivers depend on this):
 
-1. **Create step**: name (default `Wallet N`) + master password (only asked when no vault
-   exists; adding a wallet to an unlocked vault skips straight to reveal).
+**Modal-mode decoupling (blocker fix):** today `show(state)` force-hides `w-none` (which
+contains every create/restore form) in all states except `none`, so an "Add wallet" opened
+while `open` would render an empty modal. The connect modal gets its OWN mode state
+(`choice | create | restore | import | backup`) decoupled from the app's
+none/locked/open machine: `show()` keeps deciding whether the modal auto-opens, but the
+modal's inner step visibility is driven solely by its mode. Add-wallet from the switcher
+opens the modal in `create`/`restore`/`import` mode while the app stays `open`.
+
+1. **Create step**: name (an `<input>` PRE-FILLED with the literal value `Wallet N` — not
+   placeholder text; ~16 drivers click `w-create` having set only the passwords, so an
+   untouched submit must succeed) + master password (password fields only shown/required
+   when no vault exists; adding a wallet to an unlocked vault skips straight to reveal).
 2. **Reveal step** (`w-backup-view`, rebuilt): 12 words in a numbered 3×4 grid, blurred via
    CSS; while blurred the grid renders DECOY words (random BIP39 words, re-rolled per open)
    so the blur can't be peeked through. "Tap to reveal" swaps in the real words. Warning
    copy above; **no copy-to-clipboard button**. Buttons: `Continue` → quiz, and a
    lower-emphasis `Remind me later` → skip.
 3. **Quiz step**: 3 slots labeled with 3 distinct random indices (ascending, e.g. "Word #3,
-   #7, #11"); choices are all 12 seed words shuffled as chips; clicking a chip fills the
-   next empty slot (click a filled slot to clear it). `Verify` checks; on fail: error, slots
-   cleared, indices re-randomized, chips re-shuffled — unlimited retries. `Remind me later`
-   here too. Pass → `setBackedUp(id)` + success beat → close.
+   #7, #11"); chips are ONLY the 3 removed words plus 6 random BIP39 decoys, shuffled —
+   NEVER the full seed in legible plaintext (that would defeat the reveal ceremony; matches
+   the MetaMask design the benchmark recommends). Clicking a chip fills the next empty slot
+   (click a filled slot to clear it). `Verify` checks; on fail: error, slots cleared,
+   indices re-randomized, chips (removed words + fresh decoys) re-shuffled — unlimited
+   retries. `Remind me later` here too. Pass → `setBackedUp(id)` + success beat → close.
 4. **Skip** (`Remind me later` — keep the DOM id `w-backup-done` on it so existing drivers'
    one-click dismiss keeps working): wallet stays `backedUp:false`.
 
@@ -89,6 +145,11 @@ Re-entry: the "Not backed up" badge and a `Back up now` button (net-modal wallet
 open the SAME reveal+quiz flow for the active wallet, gated by password re-auth (§5).
 Restore-from-seed marks the new wallet `backedUp: true` (typing the words proves
 possession). File import does NOT (§4).
+
+Duplicate-mnemonic contract (defined ONCE on `vault.addWallet`, applies to restore-from-
+seed AND file import alike): adding a mnemonic already in the vault does not create a
+second entry — it returns the existing wallet's id; the UI shows "You already have this
+wallet (<name>)" and switches to it.
 
 **Seed handling rules (unchanged spirit):** real words exist in the DOM only while the
 reveal step is open and revealed; wiped on close/lock/tab-blur (§5).
@@ -108,7 +169,10 @@ and after quiz pass):
 - **Receive interception** (BlueWallet pattern, fires EVERY time until backed up): opening
   the receive modal on an un-backed-up wallet first shows a warning step inside the modal —
   "Back up before receiving funds" + `Back up now` / `Continue anyway`. `Continue anyway`
-  proceeds to the normal receive view for that open only.
+  proceeds to the normal receive view for that open only. Gate this at the SHARED
+  modal-open path so BOTH entry points pass through it — `act-receive` and
+  `w-no-indexer-receive` (on a no-indexer deployment the balance-gated banner can never
+  fire, so the interception is the only funds-arriving guard there).
 
 No timer-based reminder modals (rejected: no honest scheduler in a browser).
 
@@ -142,6 +206,13 @@ No timer-based reminder modals (rejected: no honest scheduler in a browser).
   (minutes) as a select in the net-modal wallet section, persisted in `localStorage`
   (`diginaut.autolock`, device-scoped, not in the vault). Activity = pointerdown/keydown
   on the document (throttled). Timer only runs while unlocked; firing calls `lockWallet()`.
+  The `?autolockSecs=` test hook (§8) is honored ONLY in mock mode (`appConfig.mock`) and
+  never on mainnet — a URL-controlled override on a live deployment would let a crafted
+  link silently disable auto-lock.
+- **Lock teardown**: locking (manual or auto) must also close the wallet switcher modal and
+  any open backup/reveal overlay and wipe their word nodes — an auto-lock firing
+  mid-ceremony must not leave a revealed seed or the old wallet's details floating over the
+  locked screen.
 - **Reveal re-auth**: `Show seed phrase` and keystore export and backup-flow re-entry all
   require typing the master password (verified via `verifyPassword` — a decrypt probe, no
   state change). Reveal uses the same blur + decoy-word ceremony as onboarding; auto-hides
@@ -150,7 +221,10 @@ No timer-based reminder modals (rejected: no honest scheduler in a browser).
 - **Remove wallet** (per-wallet, from the wallet manager): danger dialog stating the
   wallet's balance (if known) and backup status ("this wallet is NOT backed up — removing
   it without the seed phrase means the funds are unrecoverable"), confirmed by **typing the
-  wallet's name**. Removing the last wallet deletes the vault record entirely → `none` state.
+  wallet's name**. Removing the last wallet deletes the vault record entirely → `none`
+  state. Removing the ACTIVE wallet (non-last) reassigns `meta.activeId` to the adjacent
+  wallet in display order and immediately re-runs the switch path (state reset +
+  `openWallet` of the new active) — the open view must never keep showing a removed wallet.
 - **Global reset** (locked screen only, MetaMask pattern): today's `w-forget` link becomes
   "Erase all wallets on this device" → danger dialog listing wallet names + type `ERASE`
   to confirm → `deleteAllRecords()` → `none`.
@@ -186,6 +260,20 @@ No timer-based reminder modals (rejected: no honest scheduler in a browser).
 - `verify-ui.mjs`: update the create flow for the reveal step (click `w-backup-done` =
   Remind-me-later fast path), keep all 18 checks green; add checks for badge presence after
   skip.
+- **Known breakage to fix explicitly** (found by spec review — do not rediscover the hard
+  way):
+  - *Show-seed re-auth* (§5) breaks every driver that clicks `w-backup` and reads
+    `w-seed-words` bare — verify-ui.mjs (seed capture + restore round-trip) and
+    verify-walkthrough.mjs (`mnemonicA` capture + later restore). New driver sequence:
+    enter master password in the re-auth prompt → click Tap-to-reveal → read words. After
+    reveal, `w-seed-words` MUST contain the REAL mnemonic (decoys only while blurred) so
+    capture-and-restore round-trips keep working. verify-public.mjs captures the seed too
+    (word-count check only) — update its sequence, no round-trip there.
+  - *Global-reset ceremony* (§5) breaks every driver that does `w-forget.click()` →
+    expect `w-none`: verify-ui.mjs, verify-walkthrough.mjs (twice), verify-public.mjs,
+    verify-transfer.mjs. Each needs the new steps (open ceremony → type `ERASE` → confirm).
+  - *Create-step name field* must be pre-filled (§2.1) so the ~16 drivers that set only
+    passwords and click `w-create` keep passing unmodified.
 - Other verify-* drivers that create/unlock wallets: audit `scripts/lib` + each driver's
   prologue; the skip path must remain ONE extra click at most (id kept stable on purpose).
 - NEW `verify-wallet-mgmt.mjs` (mock mode): create w/ quiz pass (badge absent) → create 2nd
