@@ -524,7 +524,23 @@
         <input id="w-unlock-pass" type="password" autocomplete="current-password" />
         <button id="w-unlock">Unlock</button>
         <div class="err" id="w-locked-err"></div>
-        <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase this wallet</a> and restore from your seed phrase.</p>
+        <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase all wallets on this device</a> and restore from your seed phrases.</p>
+      </div>
+
+      <!-- global reset ceremony (spec §5, locked screen only): lists every
+           wallet's name, armed only by a typed ERASE — one stray click must
+           never wipe a device. deleteAllRecords() → none state. -->
+      <div id="w-erase-view" style="display:none">
+        <p class="hint warn-text" style="margin-top:0">This erases every wallet stored in this browser:</p>
+        <ul class="hint" id="w-erase-names" style="margin:0;padding-left:18px"></ul>
+        <p class="hint">Without a wallet's seed phrase (or a keystore file plus its password), its funds are gone forever.</p>
+        <label for="w-erase-input">Type ERASE to confirm</label>
+        <input id="w-erase-input" autocomplete="off" />
+        <div class="grid">
+          <button id="w-erase-go" class="danger" disabled>Erase everything</button>
+          <button id="w-erase-cancel" class="secondary">Cancel</button>
+        </div>
+        <div class="err" id="w-erase-err"></div>
       </div>
 
       </div>
@@ -744,6 +760,16 @@
               <button type="button" id="w-seed-show" class="seed-veil">Tap to reveal</button>
             </div>
           </div>
+          <!-- inactivity auto-lock (spec §5): device-scoped preference in
+               localStorage (minutes, 0 = never) — not in the vault -->
+          <label for="w-autolock">Auto-lock after inactivity</label>
+          <select id="w-autolock">
+            <option value="1">1 minute</option>
+            <option value="5" selected>5 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="0">Never</option>
+          </select>
         </div>
       </div>
     </div>

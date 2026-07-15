@@ -420,8 +420,8 @@ function showTxSuccess(modalId, txid, title, note) {
 // The modal's inner step visibility is driven SOLELY by this mode, decoupled
 // from the app's none/locked/open state — so add-wallet/backup flows can run
 // while the wallet stays open. show() only decides whether the modal closes.
-// Modes: 'choice' | 'create' | 'restore' | 'import' | 'unlock' | 'backup' |
-// 'quiz' | 'backup-done'.
+// Modes: 'choice' | 'create' | 'restore' | 'import' | 'unlock' | 'erase' |
+// 'backup' | 'quiz' | 'backup-done'.
 let connectMode = 'choice';
 let pendingImport = null; // parsed keystore-file envelope while the import step is open (§4)
 
@@ -448,6 +448,9 @@ function setConnectMode(mode) {
   $('w-pass-fields').style.display = vault.status === 'none' ? 'block' : 'none';
   $('w-locked').style.display = mode === 'unlock' ? 'block' : 'none';
   if (mode === 'unlock') renderLockedNames();
+  $('w-erase-view').style.display = mode === 'erase' ? 'block' : 'none';
+  // the typed ERASE never survives leaving the ceremony — re-entry re-arms
+  if (mode !== 'erase') { $('w-erase-input').value = ''; $('w-erase-go').disabled = true; $('w-erase-err').textContent = ''; }
   $('w-backup-view').style.display = mode === 'backup' ? 'block' : 'none';
   $('w-quiz-view').style.display = mode === 'quiz' ? 'block' : 'none';
   $('w-backup-success').style.display = mode === 'backup-done' ? 'block' : 'none';
@@ -455,7 +458,8 @@ function setConnectMode(mode) {
   // dismiss the whole flow with one click on it)
   $('w-backup-done').style.display = mode === 'backup' || mode === 'quiz' ? 'block' : 'none';
   document.querySelector('#w-connect-modal .modal-head h3').textContent =
-    ['backup', 'quiz', 'backup-done'].includes(mode) ? 'Back up your seed phrase' : 'Connect wallet';
+    ['backup', 'quiz', 'backup-done'].includes(mode) ? 'Back up your seed phrase'
+      : mode === 'erase' ? 'Erase all wallets' : 'Connect wallet';
   // real words live in the ceremony DOM only while its steps are open
   if (mode !== 'backup') $('w-backup-words').innerHTML = '';
   if (mode !== 'quiz') { $('w-quiz-slots').innerHTML = ''; $('w-quiz-chips').innerHTML = ''; $('w-quiz-err').textContent = ''; }
@@ -570,6 +574,7 @@ function openWallet(id, mnemonic) {
   $('w-open-err').textContent = '';
   show('open');
   startMoneyPolling();
+  armAutolock(); // the inactivity countdown starts (only) with an unlocked wallet
 }
 
 // Shared teardown for lock AND wallet switch (spec §7): every pending draft
@@ -595,6 +600,7 @@ function resetWalletState() {
   hideSeed(); // an open reveal must not float over the next view (§5)
   closeConnectModal(); // nor a mid-ceremony backup view — words wiped with it
   closeWalletModal(); // nor the switcher (lock teardown, §5)
+  clearTimeout(autolockTimer); // openWallet re-arms it on switch/unlock
 }
 
 function lockWallet() {
@@ -770,14 +776,30 @@ $('w-unlock').addEventListener('click', (e) =>
   }));
 $('w-unlock-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('w-unlock').click(); });
 
-$('w-forget').addEventListener('click', async (e) => {
+// ---- Global reset ceremony (spec §5, locked screen only) ----
+// "Erase all wallets on this device": list every wallet's name, arm the
+// button only on a typed ERASE, then wipe v1 and v2 records alike. A
+// not-yet-migrated v1 record has no names — it migrates to "Wallet 1", so
+// call it that here too.
+$('w-forget').addEventListener('click', (e) => {
   e.preventDefault();
-  // TODO(S5): becomes the "Erase all wallets on this device" ceremony (list
-  // names + type ERASE). Until then: one click wipes v1 and v2 records alike.
-  await keystore.deleteAllRecords();
-  await vault.load();
-  show('none');
+  const names = (vault.meta()?.wallets ?? []).map((w) => w.name);
+  $('w-erase-names').innerHTML = (names.length ? names : ['Wallet 1 (created by an older version)'])
+    .map((n) => `<li>${esc(n)}</li>`).join('');
+  setConnectMode('erase');
+  $('w-erase-input').focus();
 });
+$('w-erase-input').addEventListener('input', () => {
+  $('w-erase-go').disabled = $('w-erase-input').value.trim() !== 'ERASE';
+});
+$('w-erase-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('w-erase-go').disabled) $('w-erase-go').click(); });
+$('w-erase-cancel').addEventListener('click', () => setConnectMode('unlock'));
+$('w-erase-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-erase-err', async () => {
+    await keystore.deleteAllRecords();
+    await vault.load();
+    show('none'); // back to the guest hero; the modal drops to choice mode
+  }));
 
 $('w-lock').addEventListener('click', lockWallet);
 $('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); refreshMoney(); });
@@ -807,6 +829,50 @@ $('w-faucet').addEventListener('click', (e) =>
       throw err;
     }
   }));
+
+// ---- Inactivity auto-lock (spec §5) ----
+// Device-scoped preference in localStorage (minutes; 0 = Never) — NOT in the
+// vault, so it is readable without an unlock and never follows a keystore
+// file to another device. The ?autolockSecs= override exists for drivers and
+// is honored ONLY in mock mode: on a live deployment a crafted link must not
+// silently disable (or stretch) auto-lock.
+const AUTOLOCK_KEY = 'diginaut.autolock';
+const AUTOLOCK_DEFAULT_MIN = 5;
+function autolockDelayMs() {
+  if (appConfig.mock) {
+    const secs = Number(new URLSearchParams(location.search).get('autolockSecs'));
+    if (Number.isFinite(secs) && secs > 0) return secs * 1000;
+  }
+  let mins = AUTOLOCK_DEFAULT_MIN;
+  try {
+    const stored = Number(localStorage.getItem(AUTOLOCK_KEY));
+    if (Number.isFinite(stored) && stored >= 0) mins = stored;
+  } catch { /* private mode → default */ }
+  return mins * 60_000; // 0 = Never
+}
+let autolockTimer = null;
+function armAutolock() {
+  clearTimeout(autolockTimer);
+  if (vault.status !== 'unlocked') return; // the timer only runs while unlocked
+  const ms = autolockDelayMs();
+  if (!ms) return; // Never
+  // re-check on fire: the vault may have been erased/removed since arming
+  autolockTimer = setTimeout(() => { if (vault.status === 'unlocked') lockWallet(); }, ms);
+}
+// Activity = pointerdown/keydown anywhere, throttled to one re-arm a second —
+// typing must not schedule hundreds of timers.
+let lastActivityArm = 0;
+function noteActivity() {
+  if (Date.now() - lastActivityArm < 1000) return;
+  lastActivityArm = Date.now();
+  armAutolock();
+}
+document.addEventListener('pointerdown', noteActivity, true);
+document.addEventListener('keydown', noteActivity, true);
+$('w-autolock').addEventListener('change', () => {
+  try { localStorage.setItem(AUTOLOCK_KEY, $('w-autolock').value); } catch { /* stays a session preference */ }
+  armAutolock();
+});
 
 // ---- Password re-auth (spec §5) ----
 // One small prompt reused by every sensitive action: seed reveal, backup
@@ -879,7 +945,7 @@ function beginBackupCeremony(id, mnemonic) {
   setConnectMode('backup');
   $('w-connect-modal').classList.add('open');
 }
-$('w-backup-show').addEventListener('click', () => renderBackupGrid(true));
+$('w-backup-show').addEventListener('click', () => { renderBackupGrid(true); armSeedHide(); });
 $('w-backup-continue').addEventListener('click', () => { buildQuiz(); setConnectMode('quiz'); });
 
 // Quiz: 3 slots at distinct random indices (ascending); chips are ONLY the 3
@@ -947,13 +1013,13 @@ $('w-backup-now').addEventListener('click', async () => {
 
 // Show seed phrase (net-modal): re-auth, then the same blur + decoy ceremony.
 // After the tap, w-seed-words holds the REAL mnemonic as plain text.
-// TODO(S5): auto-hide after 60 s and wipe on visibilitychange.
 function renderSeedGrid(revealed) {
   const words = wallet.mnemonic.trim().split(/\s+/);
   $('w-seed-words').innerHTML = wordGridHtml(revealed ? words : randomBip39Words(words.length));
   $('w-seed-reveal').classList.toggle('blurred', !revealed);
 }
 function hideSeed() {
+  clearTimeout(seedHideTimer);
   $('w-seed').style.display = 'none';
   $('w-seed-words').innerHTML = ''; // never leave a seed in the DOM
   $('w-backup').textContent = 'Show seed phrase';
@@ -965,7 +1031,23 @@ $('w-backup').addEventListener('click', async () => {
   $('w-seed').style.display = 'block';
   $('w-backup').textContent = 'Hide seed phrase';
 });
-$('w-seed-show').addEventListener('click', () => renderSeedGrid(true));
+$('w-seed-show').addEventListener('click', () => { renderSeedGrid(true); armSeedHide(); });
+
+// A revealed seed auto-hides after 60 s, and switching tabs hides it at once
+// (spec §5): both grids — w-seed-words AND the backup ceremony's words — are
+// wiped and re-blurred (fresh decoys), so a walked-away-from screen or a
+// backgrounded tab never keeps a legible seed.
+let seedHideTimer = null;
+function armSeedHide() {
+  clearTimeout(seedHideTimer);
+  seedHideTimer = setTimeout(wipeRevealedSeeds, 60_000);
+}
+function wipeRevealedSeeds() {
+  clearTimeout(seedHideTimer);
+  if ($('w-seed').style.display !== 'none') hideSeed();
+  if (connectMode === 'backup' && ceremony) renderBackupGrid(false); // decoys + blur back on
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) wipeRevealedSeeds(); });
 
 // ---- Wallet switcher (spec §7) ----
 // Names + backup flags come from the CLEARTEXT vault meta; the address is
@@ -2145,6 +2227,13 @@ async function boot() {
   // release gate (#17) removed the feature flag per ADR-0002.
   initMintTiers();
   enhanceSelect('send-asset');
+  // reflect the stored auto-lock choice (only ladder values — a garbage/stale
+  // entry falls back to the markup's 5-minute default)
+  try {
+    const v = localStorage.getItem(AUTOLOCK_KEY);
+    if (v !== null && [...$('w-autolock').options].some((o) => o.value === v)) $('w-autolock').value = v;
+  } catch { /* private mode → default */ }
+  enhanceSelect('w-autolock');
   loadPriceChart();
   setInterval(loadPriceChart, 60_000);
   try {
