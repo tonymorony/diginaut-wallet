@@ -137,6 +137,20 @@ test('removeWallet hands active to the adjacent wallet; last removal deletes the
   assert.equal(await vm2.load(), 'none');
 });
 
+test('removing the active wallet prefers the next in display order, else the previous', async () => {
+  const store = memStorage();
+  const vm = createVaultManager(store);
+  const id1 = await vm.createVault(PW, { name: 'A', mnemonic: M1 });
+  const { id: id2 } = await vm.addWallet({ name: 'B', mnemonic: M2 });
+  const { id: id3 } = await vm.addWallet({ name: 'C', mnemonic: M3 });
+  await vm.setActive(id2);
+  await vm.removeWallet(id2); // middle of the list → the NEXT wallet takes over
+  assert.equal(vm.meta().activeId, id3);
+  await vm.removeWallet(id3); // active is last in order → the previous one does
+  assert.equal(vm.meta().activeId, id1);
+  assert.equal(vm.getMnemonic(id1), M1); // survivors' secrets are intact
+});
+
 test('verifyPassword is a pure probe — no state change either way', async () => {
   const store = memStorage();
   const vm = createVaultManager(store);

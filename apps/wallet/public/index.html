@@ -273,6 +273,23 @@
     .quiz-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .quiz-chip { width: auto; margin: 0; padding: 6px 13px; border-radius: 999px; font-size: 13px; }
     .quiz-chip:disabled { opacity: .35; }
+    /* wallet switcher (spec §7): the address chip opens it; rows carry the
+       active check + not-backed-up dot, per-row manage expands rename/remove */
+    #w-chip { cursor: pointer; }
+    #w-chip:hover #w-chip-addr { color: var(--text); }
+    .wal-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    .wal-pick { flex: 1 1 auto; width: auto; margin: 0; padding: 8px 10px; background: none; color: var(--text);
+      text-align: left; border-radius: var(--radius-s); display: flex; align-items: center; gap: 10px; }
+    .wal-pick:hover { background: var(--gray-100); }
+    .wal-name { font-weight: 600; }
+    .wal-sub { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+    .wal-check { margin-left: auto; color: var(--accent); font-weight: 700; }
+    .wal-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); vertical-align: 1px; }
+    .wal-manage { flex: none; width: auto; margin: 0; padding: 6px 12px; font-size: 14px; line-height: 1.2; }
+    .wal-edit { padding: 2px 0 12px; border-bottom: 1px solid var(--gray-100); }
+    .wal-edit .grid button { margin-top: 10px; }
+    button.danger { background: var(--primary-700); }
+    button.danger:hover { background: var(--primary-800); }
     section[hidden] { display: none !important; }
   </style>
 </head>
@@ -485,6 +502,9 @@
 
       <!-- wallet exists, locked -->
       <div id="w-locked" style="display:none">
+        <!-- every wallet's name (cleartext vault meta, spec §7); hidden for a
+             not-yet-migrated v1 record, which has no names -->
+        <div class="hint" id="w-locked-names" style="display:none;margin-top:0;font-weight:600"></div>
         <p class="hint" style="margin-top:0">Wallet is locked. Enter your password to unlock.</p>
         <label for="w-unlock-pass">Password</label>
         <input id="w-unlock-pass" type="password" autocomplete="current-password" />
@@ -493,6 +513,36 @@
         <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase this wallet</a> and restore from your seed phrase.</p>
       </div>
 
+      </div>
+    </div>
+
+    <!-- Wallet switcher (spec §7): opened by clicking the header address chip.
+         List rows switch the active wallet; per-row ⋯ expands inline rename
+         and the remove ceremony; Add wallet reuses the connect modal while the
+         app stays open (§2 modal-mode decoupling). -->
+    <div id="wallet-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Wallets</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div id="w-wallet-main">
+          <p class="hint" id="w-wallet-note" style="display:none"></p>
+          <div id="w-wallet-list" style="margin-top:10px"></div>
+          <div class="err" id="w-wallet-err"></div>
+          <button id="w-add-wallet">Add wallet</button>
+        </div>
+        <!-- remove ceremony (spec §5): balance + backup warnings, confirmed by
+             typing the wallet's name. Removing the last wallet deletes the
+             whole vault → none state. -->
+        <div id="w-remove-view" style="display:none">
+          <p class="hint" style="margin-top:14px">Removing <strong id="w-remove-target"></strong> from this device.</p>
+          <ul class="hint" id="w-remove-warnings" style="margin:0;padding-left:18px"></ul>
+          <label for="w-remove-name">Type the wallet's name to confirm</label>
+          <input id="w-remove-name" autocomplete="off" />
+          <div class="grid">
+            <button id="w-remove-go" class="danger" disabled>Remove wallet</button>
+            <button id="w-remove-cancel" class="secondary">Cancel</button>
+          </div>
+          <div class="err" id="w-remove-err"></div>
+        </div>
       </div>
     </div>
 
@@ -684,7 +734,8 @@
     </div>
 
     <!-- Password re-auth (spec §5): small gate reused by seed reveal, backup
-         re-entry and (later stages) keystore export / remove-wallet flows.
+         re-entry and (S4) the keystore-file export. Remove-wallet has its own
+         type-the-name ceremony instead.
          Deliberately NOT in the backdrop-click list handled by data-close:
          cancel must settle the pending promise, so it has its own handlers. -->
     <div id="reauth-modal" class="modal-backdrop">
