@@ -106,13 +106,20 @@ await setVal('w-create-pass', PASS);
 await setVal('w-create-pass2', PASS);
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'wallet A unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 const addrA = await evaluate(text('w-address'));
 check(await evaluate(`document.getElementById('w-mint').style.display !== 'none'`)
   && await evaluate(`document.getElementById('w-transfer').style.display !== 'none'`),
   'mint AND transfer sections visible with no feature flag (ADR-0002: all or nothing)');
+// seed capture is re-auth gated now (spec §5): password → tap to reveal
 await click('w-backup');
+await waitFor(`document.getElementById('reauth-modal').classList.contains('open')`, 're-auth prompt');
+await setVal('reauth-pass', PASS);
+await click('reauth-go');
+await waitFor(`document.getElementById('w-seed').style.display !== 'none'`, 'seed view after re-auth');
+await click('w-seed-show'); // un-blur: swaps the decoys for the REAL words
 await waitFor(`${text('w-seed-words')}.trim().split(/\\s+/).length === 12`, 'seed phrase shown');
-const mnemonicA = (await evaluate(text('w-seed-words'))).trim();
+const mnemonicA = (await evaluate(text('w-seed-words'))).trim().split(/\s+/).join(' ');
 await click('w-backup'); // hide it again
 check(mnemonicA.split(/\s+/).length === 12, 'wallet A seed phrase captured from the backup UI (12 words)');
 
@@ -168,6 +175,10 @@ await shot('82-walkthrough-transferred.png');
 await click('w-lock');
 await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked');
 await evaluate(`document.getElementById('w-forget').click()`);
+// erase is a ceremony now (spec §5): type ERASE to arm, then confirm
+await waitFor(`document.getElementById('w-erase-view').style.display !== 'none'`, 'erase ceremony');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
 await waitFor(`document.getElementById('w-none').style.display !== 'none'`, 'erased');
 await click('w-show-restore');
 await setVal('w-restore-seed', MNEMONIC_B);
@@ -208,6 +219,9 @@ check(true, `wallet B sent $2.50 back through the same UI (B's DD: $${bExpected}
 await click('w-lock');
 await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked again');
 await evaluate(`document.getElementById('w-forget').click()`);
+await waitFor(`document.getElementById('w-erase-view').style.display !== 'none'`, 'erase ceremony again');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
 await waitFor(`document.getElementById('w-none').style.display !== 'none'`, 'B erased');
 await click('w-show-restore');
 await setVal('w-restore-seed', mnemonicA);

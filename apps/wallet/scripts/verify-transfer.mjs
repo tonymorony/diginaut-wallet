@@ -79,6 +79,7 @@ await setVal('w-create-pass', 'transfer flow pass');
 await setVal('w-create-pass2', 'transfer flow pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'wallet A unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 const addrA = await evaluate(text('w-address'));
 const miner = await nodeRpc('getnewaddress', [], 'stand');
 await nodeRpc('sendtoaddress', [addrA, 6_000], 'stand');
@@ -149,6 +150,10 @@ check(true, "wallet A reflects the transfer: DigiDollar (spendable) = $12.50");
 await click('w-lock');
 await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked');
 await evaluate(`document.getElementById('w-forget').click()`);
+// erase is a ceremony now (spec §5): type ERASE to arm, then confirm
+await waitFor(`document.getElementById('w-erase-view').style.display !== 'none'`, 'erase ceremony');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
 await waitFor(`document.getElementById('w-none').style.display !== 'none'`, 'erased');
 await click('w-show-restore');
 await setVal('w-restore-seed', MNEMONIC_B);

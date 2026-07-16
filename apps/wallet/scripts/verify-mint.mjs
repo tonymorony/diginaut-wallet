@@ -71,6 +71,7 @@ await setVal('w-create-pass', 'mint flow pass');
 await setVal('w-create-pass2', 'mint flow pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 check(await evaluate(`document.getElementById('w-mint').style.display !== 'none'`), 'mint section visible by default — no feature flag (#17, ADR-0002)');
 check(await evaluate(`document.getElementById('w-transfer').style.display !== 'none'`), 'transfer section visible by default too (ADR-0002: never mint alone)');
 const addr0 = await evaluate(text('w-address'));

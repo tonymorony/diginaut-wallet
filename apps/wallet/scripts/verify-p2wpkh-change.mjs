@@ -82,6 +82,7 @@ await setVal('w-create-pass', 'p2wpkh change pass');
 await setVal('w-create-pass2', 'p2wpkh change pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 const addr0 = await evaluate(text('w-address'));
 const miner = await nodeRpc('getnewaddress', [], 'stand');
 await nodeRpc('sendtoaddress', [addr0, 8000], 'stand');

@@ -115,6 +115,17 @@
     #w-chip .mono { font-size: 12px; color: var(--gray-700); white-space: nowrap; word-break: normal; }
     .topbar { flex-wrap: wrap; }
     #w-chip .chip-btn { border-radius: 999px; padding: 7px 12px; }
+    /* backup-status chip (spec §3): red "Not backed up" next to the address
+       chip, cleared only by a quiz pass. Click re-enters the backup ceremony. */
+    #w-backup-badge { width: auto; margin: 0; padding: 8px 12px; font-size: 12px; white-space: nowrap;
+      background: var(--bad-bg); color: var(--bad); border-radius: 999px; }
+    #w-backup-badge:hover { background: var(--primary-300); }
+    /* balance-gated warning strip (spec §3): funds but no backup, under the header */
+    .backup-strip { max-width: 520px; margin: 0 auto; padding: 12px 20px 0; }
+    .backup-strip-inner { display: flex; align-items: center; gap: 10px; background: var(--warn-bg);
+      color: var(--warn); border-radius: var(--radius-s); padding: 10px 14px; font-size: 12.5px; font-weight: 600; }
+    .backup-strip-inner span { flex: 1 1 auto; }
+    .backup-strip-inner button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; flex: none; }
     /* header Network button: quiet chip with an aggregate status dot */
     #net-btn { display: inline-flex; align-items: center; gap: 7px; margin: 0; width: auto;
       background: #fff; color: var(--gray-700); border-radius: 999px; padding: 9px 14px; font-size: 13px;
@@ -167,7 +178,7 @@
     #wallet-open-card, #w-open { display: grid; gap: 14px; }
     /* adaptive: single phone-like column by default, two columns on desktop */
     @media (min-width: 960px) {
-      header, main { max-width: 1000px; }
+      header, main, .backup-strip { max-width: 1000px; }
       .money-grid { grid-template-columns: 1.08fr .92fr; align-items: start; }
     }
     /* tier slider (mint modal): 7 discrete stops over the lock tiers */
@@ -249,6 +260,47 @@
     #send-modal .send-forms > div { display: none; }
     #send-modal.asset-dgb #w-send { display: block; }
     #send-modal.asset-dd #w-transfer { display: block; }
+    /* seed reveal ceremony (backup + show-seed): numbered word grid, blurred
+       until tapped. Numbers come from a CSS counter so the element's
+       textContent stays exactly the whitespace-joined words (drivers parse it). */
+    .seed-reveal { position: relative; margin-top: 12px; }
+    .seed-grid { list-style: none; counter-reset: seed; margin: 0; padding: 12px; background: var(--gray-100);
+      border-radius: var(--radius-s); display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 8px; }
+    .seed-grid li { counter-increment: seed; font-size: 13px; padding: 5px 8px; background: #fff; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; }
+    .seed-grid li::before { content: counter(seed); display: inline-block; width: 18px; color: var(--gray-400); font-size: 11px; }
+    .seed-reveal.blurred .seed-grid { filter: blur(7px); user-select: none; pointer-events: none; }
+    .seed-veil { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; display: none;
+      background: none; color: var(--gray-700); font-weight: 600; border-radius: var(--radius-s); }
+    .seed-veil:hover { background: rgba(255,255,255,.3); }
+    .seed-reveal.blurred .seed-veil { display: block; }
+    /* backup quiz: 3 labeled slots + word chips */
+    .quiz-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+    .quiz-slot { margin: 0; padding: 7px 6px 8px; background: var(--gray-100); color: var(--text);
+      border: 1px dashed var(--gray-300); border-radius: var(--radius-s); font-weight: 600; font-size: 13px; }
+    .quiz-slot:hover { background: var(--gray-100); }
+    .quiz-slot.filled { border-style: solid; border-color: var(--gray-300); background: #fff; }
+    .quiz-slot.filled:hover { background: var(--gray-50); }
+    .quiz-slot .qn { display: block; font-size: 10.5px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+    .quiz-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .quiz-chip { width: auto; margin: 0; padding: 6px 13px; border-radius: 999px; font-size: 13px; }
+    .quiz-chip:disabled { opacity: .35; }
+    /* wallet switcher (spec §7): the address chip opens it; rows carry the
+       active check + not-backed-up dot, per-row manage expands rename/remove */
+    #w-chip { cursor: pointer; }
+    #w-chip:hover #w-chip-addr { color: var(--text); }
+    .wal-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    .wal-pick { flex: 1 1 auto; width: auto; margin: 0; padding: 8px 10px; background: none; color: var(--text);
+      text-align: left; border-radius: var(--radius-s); display: flex; align-items: center; gap: 10px; }
+    .wal-pick:hover { background: var(--gray-100); }
+    .wal-name { font-weight: 600; }
+    .wal-sub { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+    .wal-check { margin-left: auto; color: var(--accent); font-weight: 700; }
+    .wal-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); vertical-align: 1px; }
+    .wal-manage { flex: none; width: auto; margin: 0; padding: 6px 12px; font-size: 14px; line-height: 1.2; }
+    .wal-edit { padding: 2px 0 12px; border-bottom: 1px solid var(--gray-100); }
+    .wal-edit .grid button { margin-top: 10px; }
+    button.danger { background: var(--primary-700); }
+    button.danger:hover { background: var(--primary-800); }
     section[hidden] { display: none !important; }
   </style>
 </head>
@@ -264,12 +316,27 @@
       <div class="corner">
         <!-- network identity pill (#54): text/level set at runtime from the node's chain -->
         <span id="net-pill" class="net-pill" hidden></span>
-        <span id="w-chip" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
+        <!-- backup-status chip (spec §3): shown while the ACTIVE wallet has no
+             verified backup; click re-enters the backup ceremony -->
+        <button id="w-backup-badge" style="display:none" title="Back up this wallet's seed phrase">Not backed up</button>
+        <!-- role/tabindex, not a <button>: it nests the real Disconnect button,
+             and a button inside a button is invalid HTML (browsers re-parent it) -->
+        <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
         <button id="net-btn" title="Network status"><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
     </div>
   </header>
+
+  <!-- balance-gated backup warning (spec §3): the active wallet holds funds
+       but has no verified backup. Dismiss hides it for this session only. -->
+  <div class="backup-strip" id="w-backup-strip" style="display:none">
+    <div class="backup-strip-inner">
+      <span>This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.</span>
+      <button id="w-backup-strip-go" type="button">Back up now</button>
+      <button id="w-backup-strip-dismiss" type="button" class="secondary" title="Dismiss for this session" aria-label="Dismiss for this session">✕</button>
+    </div>
+  </div>
 
   <main>
     <!-- boot placeholder (drivers key on w-loading via show()) -->
@@ -405,40 +472,134 @@
           <p class="hint" style="margin-top:0">Your keys are generated in this browser and never sent anywhere. Pick how to start:</p>
           <button id="w-create-choice">Create new wallet</button>
           <button id="w-show-restore" class="secondary">I already have a seed phrase</button>
+          <button id="w-show-import" class="secondary">Restore from backup file</button>
         </div>
         <div id="w-form" style="display:none">
           <div id="w-restore" style="display:none">
             <label for="w-restore-seed">Seed phrase (12 or 24 words)</label>
             <textarea id="w-restore-seed" rows="3" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
           </div>
-          <label for="w-create-pass">Password <span class="hint" style="display:inline">— encrypts the wallet on this device only</span></label>
-          <input id="w-create-pass" type="password" autocomplete="new-password" />
-          <label for="w-create-pass2">Repeat password</label>
-          <input id="w-create-pass2" type="password" autocomplete="new-password" />
+          <!-- keystore file import (spec §4): picker → validated envelope →
+               the FILE's password. The wallet name comes from the file. -->
+          <div id="w-import" style="display:none">
+            <label for="w-import-file">Backup file (.keystore.json)</label>
+            <input id="w-import-file" type="file" accept=".json,application/json" />
+            <div class="hint" id="w-import-info" style="display:none"></div>
+            <div class="hint warn-text" id="w-import-warn" style="display:none"></div>
+            <label for="w-import-pass">File password <span class="hint" style="display:inline">— the master password of the wallet that exported it</span></label>
+            <input id="w-import-pass" type="password" autocomplete="off" />
+          </div>
+          <!-- pre-filled with "Wallet N" so an untouched submit succeeds
+               (drivers set only the passwords and click w-create) -->
+          <div id="w-name-field">
+            <label for="w-create-name">Wallet name</label>
+            <input id="w-create-name" autocomplete="off" />
+          </div>
+          <!-- master password: only shown (and required) while no vault exists;
+               adding a wallet to an unlocked vault skips straight to reveal -->
+          <div id="w-pass-fields">
+            <label for="w-create-pass">Master password <span class="hint" style="display:inline">— one password for every wallet on this device</span></label>
+            <input id="w-create-pass" type="password" autocomplete="new-password" />
+            <label for="w-create-pass2">Repeat password</label>
+            <input id="w-create-pass2" type="password" autocomplete="new-password" />
+          </div>
           <button id="w-create">Create wallet</button>
           <button id="w-restore-go" style="display:none">Restore wallet</button>
+          <button id="w-import-go" style="display:none">Import wallet</button>
           <button id="w-form-back" class="secondary">Back</button>
         </div>
         <div class="err" id="w-none-err"></div>
       </div>
 
-      <!-- one-time backup right after creating a NEW wallet -->
+      <!-- backup ceremony (spec §2): reveal (blur + decoy words + tap to
+           reveal, no copy button) → quiz (3 slots, chips) → success beat.
+           The wallet is already OPEN underneath — this only overlays it. -->
       <div id="w-backup-view" style="display:none">
-        <p class="hint warn-text" style="margin-top:0">This seed phrase is the ONLY backup of your new wallet. Anyone who has it controls the funds — write it down somewhere safe.</p>
-        <div class="out mono" id="w-backup-words"></div>
-        <button id="w-backup-done">I saved it — continue</button>
+        <p class="hint warn-text" style="margin-top:0">These words are the ONLY backup of this wallet. Write them down in order and keep them offline — anyone who has them controls the funds.</p>
+        <div class="seed-reveal blurred" id="w-backup-reveal">
+          <ol class="seed-grid mono" id="w-backup-words"></ol>
+          <button type="button" id="w-backup-show" class="seed-veil">Tap to reveal</button>
+        </div>
+        <button id="w-backup-continue">Continue</button>
       </div>
+      <div id="w-quiz-view" style="display:none">
+        <p class="hint" style="margin-top:0">Check your backup: pick the right word for each position. The slots change every attempt.</p>
+        <div class="quiz-slots" id="w-quiz-slots"></div>
+        <div class="quiz-chips" id="w-quiz-chips"></div>
+        <button id="w-quiz-verify">Verify</button>
+        <div class="err" id="w-quiz-err"></div>
+      </div>
+      <div id="w-backup-success" style="display:none;text-align:center;padding:16px 0 4px">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style="color:var(--good)"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div style="font-size:18px;font-weight:600;margin:10px 0 2px">Backed up</div>
+        <p class="hint" style="margin-top:2px">Keep the written words offline and private — anyone who has them controls the funds.</p>
+        <button id="w-backup-success-done">Done</button>
+      </div>
+      <!-- skip: shared by the reveal and quiz steps. The id w-backup-done is
+           load-bearing — existing drivers dismiss the backup flow with ONE
+           click on it right after w-create. -->
+      <button id="w-backup-done" class="secondary" style="display:none">Remind me later</button>
 
       <!-- wallet exists, locked -->
       <div id="w-locked" style="display:none">
+        <!-- every wallet's name (cleartext vault meta, spec §7); hidden for a
+             not-yet-migrated v1 record, which has no names -->
+        <div class="hint" id="w-locked-names" style="display:none;margin-top:0;font-weight:600"></div>
         <p class="hint" style="margin-top:0">Wallet is locked. Enter your password to unlock.</p>
         <label for="w-unlock-pass">Password</label>
         <input id="w-unlock-pass" type="password" autocomplete="current-password" />
         <button id="w-unlock">Unlock</button>
         <div class="err" id="w-locked-err"></div>
-        <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase this wallet</a> and restore from your seed phrase.</p>
+        <p class="hint">Forgot the password? <a href="#" id="w-forget">Erase all wallets on this device</a> and restore from your seed phrases.</p>
       </div>
 
+      <!-- global reset ceremony (spec §5, locked screen only): lists every
+           wallet's name, armed only by a typed ERASE — one stray click must
+           never wipe a device. deleteAllRecords() → none state. -->
+      <div id="w-erase-view" style="display:none">
+        <p class="hint warn-text" style="margin-top:0">This erases every wallet stored in this browser:</p>
+        <ul class="hint" id="w-erase-names" style="margin:0;padding-left:18px"></ul>
+        <p class="hint">Without a wallet's seed phrase (or a keystore file plus its password), its funds are gone forever.</p>
+        <label for="w-erase-input">Type ERASE to confirm</label>
+        <input id="w-erase-input" autocomplete="off" />
+        <div class="grid">
+          <button id="w-erase-go" class="danger" disabled>Erase everything</button>
+          <button id="w-erase-cancel" class="secondary">Cancel</button>
+        </div>
+        <div class="err" id="w-erase-err"></div>
+      </div>
+
+      </div>
+    </div>
+
+    <!-- Wallet switcher (spec §7): opened by clicking the header address chip.
+         List rows switch the active wallet; per-row ⋯ expands inline rename,
+         the keystore-file export (§4) and the remove ceremony; Add wallet
+         reuses the connect modal while the app stays open (§2 modal-mode
+         decoupling). -->
+    <div id="wallet-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Wallets</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div id="w-wallet-main">
+          <p class="hint" id="w-wallet-note" style="display:none"></p>
+          <div id="w-wallet-list" style="margin-top:10px"></div>
+          <div class="err" id="w-wallet-err"></div>
+          <button id="w-add-wallet">Add wallet</button>
+        </div>
+        <!-- remove ceremony (spec §5): balance + backup warnings, confirmed by
+             typing the wallet's name. Removing the last wallet deletes the
+             whole vault → none state. -->
+        <div id="w-remove-view" style="display:none">
+          <p class="hint" style="margin-top:14px">Removing <strong id="w-remove-target"></strong> from this device.</p>
+          <ul class="hint" id="w-remove-warnings" style="margin:0;padding-left:18px"></ul>
+          <label for="w-remove-name">Type the wallet's name to confirm</label>
+          <input id="w-remove-name" autocomplete="off" />
+          <div class="grid">
+            <button id="w-remove-go" class="danger" disabled>Remove wallet</button>
+            <button id="w-remove-cancel" class="secondary">Cancel</button>
+          </div>
+          <div class="err" id="w-remove-err"></div>
+        </div>
       </div>
     </div>
 
@@ -522,6 +683,16 @@
     <div id="receive-modal" class="modal-backdrop">
       <div class="modal">
         <div class="modal-head"><h3>Receive</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <!-- backup interception (spec §3, BlueWallet pattern): shown on EVERY
+             open until this wallet passes the quiz. "Continue anyway" swaps in
+             the normal receive view for that open only. -->
+        <div id="w-receive-guard" style="display:none">
+          <p class="warn-text" style="margin:14px 0 4px;font-weight:600">Back up before receiving funds</p>
+          <p class="hint" style="margin-top:0">This wallet's seed phrase is not backed up. If this browser data is lost before you write the words down, any funds you receive are gone.</p>
+          <button id="w-receive-backup">Back up now</button>
+          <button id="w-receive-anyway" class="secondary">Continue anyway</button>
+        </div>
+        <div id="w-receive-body">
         <div class="qr" id="w-qr" aria-label="Receive address QR code"></div>
         <div class="row" style="border:0"><span class="k">DGB address <span class="mono" id="w-path"></span></span><span></span></div>
         <div class="out mono" style="margin-top:0" id="w-address"></div>
@@ -544,6 +715,7 @@
         <div class="out mono" style="margin-top:0" id="w-dd-address"></div>
         <div class="grid" style="margin-top:0">
           <button id="w-copy-dd" class="secondary">Copy DigiDollar address</button>
+        </div>
         </div>
       </div>
     </div>
@@ -609,15 +781,49 @@
         <div class="hint" id="o-hint"></div>
         <div id="net-wallet-sec" style="display:none">
           <h2 style="margin-top:18px">Wallet</h2>
+          <!-- hidden once the active wallet passes the backup quiz -->
+          <button id="w-backup-now">Back up now</button>
           <div class="grid">
             <button id="w-backup" class="secondary">Show seed phrase</button>
             <button id="w-lock" class="secondary">Lock wallet</button>
           </div>
+          <!-- reveal ceremony (spec §5): re-auth gated, blurred decoys until
+               tapped. After reveal w-seed-words holds the REAL words as plain
+               text (numbers are CSS counters) — drivers parse its textContent. -->
           <div id="w-seed" style="display:none">
             <p class="hint warn-text">Anyone with these words controls the wallet. Write them down; this is the only backup.</p>
-            <div class="out mono" id="w-seed-words"></div>
+            <div class="seed-reveal blurred" id="w-seed-reveal">
+              <ol class="seed-grid mono" id="w-seed-words"></ol>
+              <button type="button" id="w-seed-show" class="seed-veil">Tap to reveal</button>
+            </div>
           </div>
+          <!-- inactivity auto-lock (spec §5): device-scoped preference in
+               localStorage (minutes, 0 = never) — not in the vault -->
+          <label for="w-autolock">Auto-lock after inactivity</label>
+          <select id="w-autolock">
+            <option value="1">1 minute</option>
+            <option value="5" selected>5 minutes</option>
+            <option value="15">15 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="0">Never</option>
+          </select>
         </div>
+      </div>
+    </div>
+
+    <!-- Password re-auth (spec §5): small gate reused by seed reveal, backup
+         re-entry and the keystore-file export. Remove-wallet has its own
+         type-the-name ceremony instead.
+         Deliberately NOT in the backdrop-click list handled by data-close:
+         cancel must settle the pending promise, so it has its own handlers. -->
+    <div id="reauth-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Confirm your password</h3><button id="reauth-cancel" class="secondary chip-btn">Cancel</button></div>
+        <p class="hint" id="reauth-hint" style="margin-bottom:0"></p>
+        <label for="reauth-pass">Master password</label>
+        <input id="reauth-pass" type="password" autocomplete="current-password" />
+        <button id="reauth-go">Continue</button>
+        <div class="err" id="reauth-err"></div>
       </div>
     </div>
 
@@ -632,7 +838,7 @@
           <p>You’re about to use the DigiDollar mainnet wallet with <strong>real funds</strong>.</p>
           <ul>
             <li>Beta software, “as is”, no warranty; may contain bugs that lose funds.</li>
-            <li>Keys live only in this browser; no backup — clear browser data / lose device = funds gone.</li>
+            <li>Keys live only in this browser. Back up each wallet's seed phrase (Network → Back up now) — clearing browser data or losing this device without a backup means the funds are gone.</li>
             <li>During beta, transactions are capped at $500 each.</li>
             <li>You bear all risk. Authors accept no liability.</li>
           </ul>
@@ -653,7 +859,7 @@
           <p>Diginaut is provided <strong>for demonstration and educational purposes only</strong>. It is not a commercial product or a custodial service.</p>
           <p>The software is provided <strong>“as is”, with no warranty of any kind</strong>, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.</p>
           <p><strong>You bear all risk.</strong> This includes, without limitation, loss of funds arising from bugs, mistakes, misconfiguration, key loss, or network failures. The authors accept no liability for any loss or damage.</p>
-          <p>Your keys are generated in your browser and never leave it. <strong>If you lose your keys or recovery phrase, no one — including the authors — can recover your funds.</strong></p>
+          <p>Your keys are generated in your browser and never leave it. <strong>If you lose your keys or seed phrase, no one — including the authors — can recover your funds.</strong></p>
           <p>Nothing here is financial, legal, or tax advice. See the <a href="https://github.com/tonymorony/diginaut-wallet/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a> for the full terms.</p>
         </div>
       </div>

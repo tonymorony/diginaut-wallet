@@ -10,7 +10,9 @@ import {
   buildSignedMintTx, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS,
   buildSignedTransferTx, buildSignedRedeemTx, DD_TX_LIMITS,
 } from '/lib/index.js';
-import { encryptMnemonic, decryptMnemonic, saveKeystore, loadKeystore, deleteKeystore } from '/keystore.js';
+import * as keystore from '/keystore.js';
+import { createVaultManager } from '/vault.js';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { friendlyDDError, MINT_FREEZE_EXPLANATION } from '/dderrors.js';
@@ -339,21 +341,30 @@ let appConfig = { mock: true, faucet: false, indexer: false };
 // addresses are never rendered from the guess — see renderAddress.
 const chainState = { ddActive: null, netName: 'testnet', netKnown: false };
 const wallet = {
+  id: null, // active wallet id in the vault (meta.activeId)
   mnemonic: null, // set only while unlocked
   seed: null,
   index: 0,
   network: HD_NETWORKS.testnet, // refined from the node's `chain` once known
 };
 
+// The vault manager owns metadata + mnemonics (vault.js); keystore.js is its
+// browser storage. One master password for every wallet on this device.
+const vault = createVaultManager(keystore);
+
+let shownState = 'loading'; // what the app currently renders — cross-tab sync diffs against it
 function show(state) {
-  for (const s of ['loading', 'none', 'locked', 'open']) {
-    $('w-' + s).style.display = s === state ? (s === 'open' ? 'grid' : 'block') : 'none';
-  }
+  shownState = state;
+  $('w-loading').style.display = state === 'loading' ? 'block' : 'none';
+  $('w-open').style.display = state === 'open' ? 'grid' : 'none';
   // EVM-style corner control: Connect when idle, address chip when connected
   const open = state === 'open';
   $('hero-guest').style.display = state === 'none' || state === 'locked' ? 'block' : 'none';
   $('w-connect').style.display = open || state === 'loading' ? 'none' : 'inline-block';
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
+  // backup-status surfaces belong to an OPEN wallet; renderBackupCta shows
+  // them again (or not) once openWallet knows the active wallet's flag
+  if (!open) { $('w-backup-badge').style.display = 'none'; $('w-backup-strip').style.display = 'none'; }
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
   // no indexer on this deployment: the money grid never loads, so say why (#61).
@@ -361,13 +372,15 @@ function show(state) {
   // confident false "no indexer here" claim on an indexer-equipped deployment.
   $('w-no-indexer').style.display = open && appConfig.loaded && !appConfig.indexer ? 'block' : 'none';
   if (open) {
-    if (freshMnemonicBackup) showBackupView(); else closeConnectModal();
+    // the backup ceremony OVERLAYS the already-open wallet (drivers depend on
+    // the wallet opening immediately); any other modal content closes
+    if (!['backup', 'quiz', 'backup-done'].includes(connectMode)) closeConnectModal();
   } else {
-    $('w-backup-view').style.display = 'none';
-    $('w-backup-words').textContent = ''; // never leave a seed in the DOM
-    document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Connect wallet';
+    // the modal's inner mode follows the app state while no wallet is open;
+    // while open it is driven solely by the ceremony/add-wallet flows (§2)
+    setConnectMode(state === 'locked' ? 'unlock' : 'choice');
     // action modals must not survive a lock/disconnect
-    for (const id of ['send-modal', 'receive-modal', 'mint-modal']) $(id).classList.remove('open');
+    for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'wallet-modal']) $(id).classList.remove('open');
   }
   dockPriceBlock(open);
   // loading veil covers the gap between unlock and the first indexer answer
@@ -408,51 +421,86 @@ function showTxSuccess(modalId, txid, title, note) {
   modal.classList.add('success');
 }
 
-let freshMnemonicBackup = null; // set right after creating a NEW wallet, shown once
+// ---- Connect modal mode machine (spec §2) ----
+// The modal's inner step visibility is driven SOLELY by this mode, decoupled
+// from the app's none/locked/open state — so add-wallet/backup flows can run
+// while the wallet stays open. show() only decides whether the modal closes.
+// Modes: 'choice' | 'create' | 'restore' | 'import' | 'unlock' | 'erase' |
+// 'backup' | 'quiz' | 'backup-done'.
+let connectMode = 'choice';
+let pendingImport = null; // parsed keystore-file envelope while the import step is open (§4)
 
-function connectFormMode(mode) { // 'choice' | 'create' | 'restore'
-  // A failed create leaves a discarded mnemonic here; switching mode (e.g. to
-  // restore) must drop it or the backup view would show the wrong seed.
-  freshMnemonicBackup = null;
+function setConnectMode(mode) {
+  connectMode = mode;
+  $('w-none').style.display = ['choice', 'create', 'restore', 'import'].includes(mode) ? 'block' : 'none';
   $('w-choice').style.display = mode === 'choice' ? 'block' : 'none';
-  $('w-form').style.display = mode === 'choice' ? 'none' : 'block';
+  $('w-form').style.display = ['create', 'restore', 'import'].includes(mode) ? 'block' : 'none';
   $('w-restore').style.display = mode === 'restore' ? 'block' : 'none';
-  $('w-create').style.display = mode === 'restore' ? 'none' : 'block';
+  $('w-import').style.display = mode === 'import' ? 'block' : 'none';
+  $('w-name-field').style.display = mode === 'import' ? 'none' : 'block'; // import names the wallet from the file
+  $('w-create').style.display = mode === 'create' ? 'block' : 'none';
   $('w-restore-go').style.display = mode === 'restore' ? 'block' : 'none';
+  $('w-import-go').style.display = mode === 'import' ? 'block' : 'none';
+  // a parsed envelope (and the file password) never outlives the import step
+  if (mode !== 'import') {
+    pendingImport = null;
+    $('w-import-file').value = '';
+    $('w-import-pass').value = '';
+    $('w-import-info').style.display = 'none';
+    $('w-import-warn').style.display = 'none';
+  }
+  // master password fields only exist while no vault does (§2.1)
+  $('w-pass-fields').style.display = vault.status === 'none' ? 'block' : 'none';
+  $('w-locked').style.display = mode === 'unlock' ? 'block' : 'none';
+  if (mode === 'unlock') renderLockedNames();
+  $('w-erase-view').style.display = mode === 'erase' ? 'block' : 'none';
+  // the typed ERASE never survives leaving the ceremony — re-entry re-arms
+  if (mode !== 'erase') { $('w-erase-input').value = ''; $('w-erase-go').disabled = true; $('w-erase-err').textContent = ''; }
+  $('w-backup-view').style.display = mode === 'backup' ? 'block' : 'none';
+  $('w-quiz-view').style.display = mode === 'quiz' ? 'block' : 'none';
+  $('w-backup-success').style.display = mode === 'backup-done' ? 'block' : 'none';
+  // Remind-me-later is shared by both ceremony steps (id kept stable — drivers
+  // dismiss the whole flow with one click on it)
+  $('w-backup-done').style.display = mode === 'backup' || mode === 'quiz' ? 'block' : 'none';
+  document.querySelector('#w-connect-modal .modal-head h3').textContent =
+    ['backup', 'quiz', 'backup-done'].includes(mode) ? 'Back up your seed phrase'
+      : mode === 'erase' ? 'Erase all wallets' : 'Connect wallet';
+  // real words live in the ceremony DOM only while its steps are open
+  if (mode !== 'backup') $('w-backup-words').innerHTML = '';
+  if (mode !== 'quiz') { $('w-quiz-slots').innerHTML = ''; $('w-quiz-chips').innerHTML = ''; $('w-quiz-err').textContent = ''; }
   $('w-none-err').textContent = '';
 }
-function showBackupView() {
-  for (const id of ['w-choice', 'w-form']) $(id).style.display = 'none';
-  $('w-none').style.display = 'none';
-  document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Back up your seed phrase';
-  $('w-backup-view').style.display = 'block';
-  $('w-backup-words').textContent = freshMnemonicBackup;
-  $('w-connect-modal').classList.add('open');
-}
 function openConnectModal() {
-  connectFormMode('choice');
-  document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Connect wallet';
+  setConnectMode(vault.status === 'locked' ? 'unlock' : 'choice');
   $('w-connect-modal').classList.add('open');
 }
 function closeConnectModal() {
   $('w-connect-modal').classList.remove('open');
-  $('w-backup-words').textContent = ''; // never leave the seed in the DOM
-  freshMnemonicBackup = null;
-  // the backup view retitles the modal; don't let that leak into the next open
-  document.querySelector('#w-connect-modal .modal-head h3').textContent = 'Connect wallet';
+  ceremony = null; // drop the plaintext words held for the reveal/quiz steps
+  // resetting the mode wipes the ceremony word nodes and restores the title
+  setConnectMode(vault.status === 'locked' ? 'unlock' : 'choice');
 }
 
 // ---- v3 action modals: Send / Receive / Mint / Network ----
 const openModal = (id) => $(id).classList.add('open');
 document.querySelectorAll('[data-close]').forEach((b) =>
-  b.addEventListener('click', () => b.closest('.modal-backdrop').classList.remove('open')));
-for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal']) {
-  $(id).addEventListener('click', (e) => { if (e.target === $(id)) $(id).classList.remove('open'); });
+  b.addEventListener('click', () => {
+    const modal = b.closest('.modal-backdrop');
+    modal.classList.remove('open');
+    if (modal.id === 'net-modal') hideSeed(); // a revealed seed must not outlive the modal (§5)
+  }));
+for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal', 'wallet-modal']) {
+  $(id).addEventListener('click', (e) => {
+    if (e.target !== $(id)) return;
+    $(id).classList.remove('open');
+    if (id === 'net-modal') hideSeed(); // same rule on backdrop-click close
+  });
 }
 $('footer-disclaimer').addEventListener('click', () => openModal('disclaimer-modal'));
 $('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
-$('act-receive').addEventListener('click', () => openModal('receive-modal'));
-$('w-no-indexer-receive').addEventListener('click', () => openModal('receive-modal'));
+// both receive entry points go through the backup interception gate (spec §3)
+$('act-receive').addEventListener('click', openReceiveModal);
+$('w-no-indexer-receive').addEventListener('click', openReceiveModal);
 $('act-mint').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('dd-mint-open').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('net-btn').addEventListener('click', () => openModal('net-modal'));
@@ -464,10 +512,27 @@ $('send-asset').addEventListener('change', () => {
   $('send-modal').classList.toggle('asset-dgb', dgb);
   $('send-modal').classList.toggle('asset-dd', !dgb);
 });
-$('w-create-choice').addEventListener('click', () => { connectFormMode('create'); $('w-create-pass').focus(); });
-$('w-form-back').addEventListener('click', () => connectFormMode('choice'));
+$('w-create-choice').addEventListener('click', () => { setConnectMode('create'); $('w-create-name').value = nextWalletName(); $('w-create-pass').focus(); });
+$('w-form-back').addEventListener('click', () => setConnectMode('choice'));
+// Remind me later: the wallet simply stays backedUp:false — the badge nags
 $('w-backup-done').addEventListener('click', closeConnectModal);
+$('w-backup-success-done').addEventListener('click', closeConnectModal);
 $('w-connect').addEventListener('click', openConnectModal);
+// the address chip is the wallet-switcher trigger (spec §7); its embedded
+// Disconnect button keeps its own job
+$('w-chip').addEventListener('click', (e) => {
+  if (e.target.closest('#w-disconnect')) return;
+  openWalletModal();
+});
+// the chip is a role="button" span (a real <button> can't nest Disconnect), so
+// Enter/Space must open the switcher for keyboard/AT users too — it is the
+// ONLY entry point to add/switch/rename/export/remove (spec §7)
+$('w-chip').addEventListener('keydown', (e) => {
+  if (e.target !== $('w-chip')) return; // the inner Disconnect button handles its own keys
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault(); // Space must not scroll the page
+  openWalletModal();
+});
 $('w-modal-close').addEventListener('click', closeConnectModal);
 $('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) closeConnectModal(); });
 $('w-disconnect').addEventListener('click', () => lockWallet());
@@ -521,20 +586,24 @@ function updateReceiveQr() {
   $('w-copy-uri').style.display = useUri ? '' : 'none';
 }
 
-function openWallet(mnemonic) {
+function openWallet(id, mnemonic) {
+  wallet.id = id;
   wallet.mnemonic = mnemonic;
   wallet.seed = mnemonicToSeed(mnemonic);
   wallet.index = 0;
   renderAddress();
-  $('w-seed').style.display = 'none';
+  hideSeed();
+  renderBackupCta();
   $('w-open-err').textContent = '';
   show('open');
   startMoneyPolling();
+  armAutolock(); // the inactivity countdown starts (only) with an unlocked wallet
 }
 
-function lockWallet() {
-  wallet.mnemonic = null;
-  wallet.seed = null;
+// Shared teardown for lock AND wallet switch (spec §7): every pending draft
+// holds per-UTXO private keys, and history/positions/balances belong to the
+// outgoing wallet. Does NOT touch the vault key — lockWallet drops that on top.
+function resetWalletState() {
   resetSend(); // pendingSend holds per-UTXO private keys — drop them with the seed
   resetMint(); // pendingMint holds the funding UTXO's private key — same
   resetTransfer(); // pendingTransfer holds DD + fee UTXO keys — same
@@ -548,18 +617,122 @@ function lockWallet() {
   // drop this wallet's Activity view so the next wallet doesn't inherit its
   // expanded page or see its rows flash before the first refresh (#69).
   allHistory = []; historyLimit = 8; myAddrSet = new Set(); $('w-history').innerHTML = '';
-  $('w-seed-words').textContent = '';
+  // the next wallet's balances are unknown until its first refresh — a stale
+  // figure must not leak into fiat rows or the remove-ceremony warning
+  lastConfirmedDgb = null; lastDdUsd = 0; openPositions = new Map();
+  renderBackupStrip(); // funds unknown again — the outgoing wallet's nag must not carry over
+  hideSeed(); // an open reveal must not float over the next view (§5)
+  closeConnectModal(); // nor a mid-ceremony backup view — words wiped with it
+  closeWalletModal(); // nor the switcher (lock teardown, §5)
+  // nor a pending re-auth prompt: its promise must settle (false) so the
+  // awaiting flow dies here instead of resuming against a torn-down wallet,
+  // and the password box must not float over the locked screen (§5)
+  settleReauth(false);
+  clearTimeout(autolockTimer); // openWallet re-arms it on switch/unlock
+}
+
+function lockWallet() {
+  vault.lock(); // drops the session key + every plaintext mnemonic
+  wallet.id = null;
+  wallet.mnemonic = null;
+  wallet.seed = null;
+  resetWalletState();
   $('w-unlock-pass').value = '';
   $('w-locked-err').textContent = '';
   show('locked');
 }
 
-async function createOrRestore(mnemonic) {
+/** Switch the open view to another wallet in the unlocked vault: the full
+ * lock-style state reset (drafts, history, positions) WITHOUT dropping the
+ * vault key, then open the new wallet (spec §7). */
+function switchToWallet(id) {
+  resetWalletState();
+  openWallet(id, vault.getMnemonic(id));
+}
+
+// ---- Cross-tab sync (spec §1) ----
+// The vault manager refreshes its own record on BroadcastChannel writes, but
+// the UI must follow: an erased vault relocks this tab (dropping the seed from
+// the page), a cross-tab switch/remove re-opens the wallet the vault now says
+// is active, and meta-driven surfaces (switcher list, backup badge, locked
+// names) re-render. Also runs after a VaultConflictError — the manager
+// refreshed before rethrowing, so the same reconciliation applies.
+function reconcileVaultUi() {
+  const st = vault.status;
+  if (st === 'unlocked') {
+    const m = vault.meta();
+    if (wallet.id && m.activeId !== wallet.id) {
+      // another tab switched away from (or removed) the wallet on display —
+      // the shown address and its guard state must come from the same wallet
+      switchToWallet(m.activeId);
+    } else {
+      renderBackupCta(); // badge/strip may have changed (quiz pass elsewhere)
+      if ($('wallet-modal').classList.contains('open')) renderWalletList();
+    }
+    return;
+  }
+  // dropped out of unlocked: the vault was erased or re-created under a new
+  // salt in another tab. The in-memory seed is torn down like a lock.
+  if (wallet.seed || wallet.id) {
+    wallet.id = null;
+    wallet.mnemonic = null;
+    wallet.seed = null;
+    resetWalletState();
+  }
+  const target = st === 'none' ? 'none' : 'locked';
+  if (shownState !== target) show(target);
+  else if (target === 'locked' && connectMode === 'unlock') renderLockedNames(); // names may have changed
+}
+keystore.onVaultChanged(() => {
+  vault.refresh().then(reconcileVaultUi).catch(() => {});
+});
+
+// Locked screen: every wallet's name from the cleartext meta and ONE password
+// field (spec §7). A not-yet-migrated v1 record has no names → line hidden.
+function renderLockedNames() {
+  const el = $('w-locked-names');
+  const wallets = vault.meta()?.wallets ?? [];
+  el.textContent = wallets.length > 1
+    ? `${wallets.length} wallets · ${wallets.map((w) => w.name).join(', ')}`
+    : wallets[0]?.name ?? '';
+  el.style.display = el.textContent ? 'block' : 'none';
+}
+
+// "Wallet N" prefill for the create/restore name field — N past every taken
+// default so an untouched submit never trips the duplicate-name guard.
+function nextWalletName() {
+  const names = new Set((vault.meta()?.wallets ?? []).map((w) => w.name.trim().toLowerCase()));
+  let n = names.size + 1;
+  while (names.has(`wallet ${n}`)) n += 1;
+  return `Wallet ${n}`;
+}
+
+/** Put a wallet into the vault: first one creates the vault (master password
+ * fields), later ones ride the unlocked session key — no password re-prompt. */
+async function createWalletEntry({ name, mnemonic, backedUp = false }) {
+  if (vault.status === 'unlocked') {
+    // duplicate-mnemonic contract: an existing seed comes back existed:true
+    const { id, existed } = await vault.addWallet({ name, mnemonic, backedUp });
+    await vault.setActive(id); // new or duplicate, it becomes the active wallet
+    return { id, existed };
+  }
   const pass = $('w-create-pass').value;
   if (pass.length < 8) throw new Error('password must be at least 8 characters');
   if (pass !== $('w-create-pass2').value) throw new Error('passwords do not match');
-  await saveKeystore(await encryptMnemonic(mnemonic, pass));
-  openWallet(mnemonic);
+  const id = await vault.createVault(pass, { name, mnemonic, backedUp });
+  return { id, existed: false };
+}
+
+// Error → user copy at the UI boundary. A lost CAS race must never leak the
+// internal VaultConflictError message (spec §1): show the mandated copy and
+// re-drive the UI — the manager already re-synced from storage before
+// rethrowing, so reconcile renders what the other tab wrote.
+function surfaceError(e) {
+  if (e instanceof keystore.VaultConflictError) {
+    reconcileVaultUi();
+    return 'This wallet was changed in another tab — reloading.';
+  }
+  return e.message;
 }
 
 async function busy(btn, errId, fn) {
@@ -569,46 +742,141 @@ async function busy(btn, errId, fn) {
   try {
     await fn();
   } catch (e) {
-    el.textContent = e.message;
+    el.textContent = surfaceError(e);
   } finally {
     btn.disabled = false;
   }
 }
 
 $('w-create').addEventListener('click', (e) =>
-  busy(e.target, 'w-none-err', () => {
+  busy(e.target, 'w-none-err', async () => {
+    const name = $('w-create-name').value.trim() || nextWalletName();
     const mnemonic = generateMnemonic();
-    freshMnemonicBackup = mnemonic; // shown once in the backup view, then wiped
-    return createOrRestore(mnemonic);
+    const { id } = await createWalletEntry({ name, mnemonic });
+    // the wallet opens immediately; the backup ceremony overlays it (drivers
+    // click w-backup-done once to dismiss and find the wallet already open).
+    // switchToWallet also resets the previous wallet's state (add-while-open).
+    switchToWallet(id);
+    beginBackupCeremony(id, mnemonic);
   }));
 
-$('w-show-restore').addEventListener('click', () => { connectFormMode('restore'); $('w-restore-seed').focus(); });
+$('w-show-restore').addEventListener('click', () => { setConnectMode('restore'); $('w-create-name').value = nextWalletName(); $('w-restore-seed').focus(); });
 
 $('w-restore-go').addEventListener('click', (e) =>
   busy(e.target, 'w-none-err', async () => {
     const words = $('w-restore-seed').value.trim().toLowerCase().split(/\s+/).join(' ');
     if (!validateMnemonic(words)) throw new Error('not a valid BIP39 seed phrase (check the words and their order)');
-    await createOrRestore(words);
+    const name = $('w-create-name').value.trim() || nextWalletName();
+    // typing the words proves possession — a restored wallet IS backed up (§2)
+    const { id, existed } = await createWalletEntry({ name, mnemonic: words, backedUp: true });
+    $('w-restore-seed').value = ''; // no mnemonic left in the DOM (§2 rules)
+    switchToWallet(id);
+    // duplicate-mnemonic contract (§2): say so in the wallet switcher
+    if (existed) {
+      const w = vault.meta().wallets.find((x) => x.id === id);
+      openWalletModal(`You already have this wallet (${w.name}) — switched to it.`);
+    }
+  }));
+
+// ---- Keystore file import (spec §4) ----
+// Picker → validate the envelope (clear errors) → the FILE's password →
+// decrypt → add as a new wallet and switch to it. A file import proves the
+// password, not the words, so the wallet stays backedUp:false.
+$('w-show-import').addEventListener('click', () => { setConnectMode('import'); });
+
+$('w-import-file').addEventListener('change', (e) =>
+  busy(e.target, 'w-none-err', async () => {
+    pendingImport = null;
+    $('w-import-info').style.display = 'none';
+    $('w-import-warn').style.display = 'none';
+    const file = $('w-import-file').files[0];
+    if (!file) return;
+    pendingImport = keystore.parseKeystoreFile(await file.text());
+    const when = new Date(pendingImport.exportedAt);
+    $('w-import-info').textContent = `“${pendingImport.name}”` +
+      (Number.isNaN(when.getTime()) ? '' : ` — exported ${when.toLocaleDateString('en-CA')}`) +
+      (pendingImport.network ? ` on ${pendingImport.network}` : '');
+    $('w-import-info').style.display = 'block';
+    // network mismatch: warn but allow (§4) — mnemonics are network-agnostic,
+    // the same seed just derives different-looking addresses per chain
+    if (pendingImport.network && chainState.netKnown && pendingImport.network !== chainState.netName) {
+      $('w-import-warn').textContent = `This file was exported on ${pendingImport.network}, but this wallet runs on ` +
+        `${chainState.netName}. The seed phrase works on both networks — only the addresses look different.`;
+      $('w-import-warn').style.display = 'block';
+    }
+    $('w-import-pass').focus();
+  }));
+
+// name from the envelope, de-duplicated against the vault ("Trading" → "Trading 2")
+function importedWalletName(name) {
+  const base = String(name ?? '').trim() || nextWalletName();
+  const taken = new Set((vault.meta()?.wallets ?? []).map((w) => w.name.trim().toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  let n = 2;
+  while (taken.has(`${base.toLowerCase()} ${n}`)) n += 1;
+  return `${base} ${n}`;
+}
+
+$('w-import-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-none-err', async () => {
+    if (!pendingImport) throw new Error('pick a backup file first');
+    let mnemonic;
+    try {
+      mnemonic = await keystore.decryptKeystoreFile(pendingImport, $('w-import-pass').value);
+    } catch (err) {
+      throw err?.name === 'OperationError' ? new Error('wrong password for this file') : err;
+    }
+    if (!validateMnemonic(mnemonic)) throw new Error('the file decrypted, but it does not hold a valid seed phrase');
+    const name = importedWalletName(pendingImport.name);
+    const { id, existed } = await createWalletEntry({ name, mnemonic, backedUp: false });
+    switchToWallet(id); // also resets the import step (mode leaves 'import')
+    // duplicate-mnemonic contract (§2): say so in the wallet switcher
+    if (existed) {
+      const w = vault.meta().wallets.find((x) => x.id === id);
+      openWalletModal(`You already have this wallet (${w.name}) — switched to it.`);
+    }
   }));
 
 $('w-unlock').addEventListener('click', (e) =>
   busy(e.target, 'w-locked-err', async () => {
-    const blob = await loadKeystore();
-    let mnemonic;
+    let meta;
     try {
-      mnemonic = await decryptMnemonic(blob, $('w-unlock-pass').value);
-    } catch {
-      throw new Error('wrong password');
+      meta = await vault.unlock($('w-unlock-pass').value); // migrates v1 transparently
+    } catch (err) {
+      // GCM auth failure = wrong password; anything else (storage failure,
+      // interrupted migration) deserves its real message
+      throw err?.name === 'OperationError' ? new Error('wrong password') : err;
     }
-    openWallet(mnemonic);
+    $('w-unlock-pass').value = '';
+    // one password opens the whole vault; the switcher picks any other wallet
+    openWallet(meta.activeId, vault.getMnemonic(meta.activeId));
   }));
 $('w-unlock-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('w-unlock').click(); });
 
-$('w-forget').addEventListener('click', async (e) => {
+// ---- Global reset ceremony (spec §5, locked screen only) ----
+// "Erase all wallets on this device": list every wallet's name, arm the
+// button only on a typed ERASE, then wipe v1 and v2 records alike. A
+// not-yet-migrated v1 record has no names — it migrates to "Wallet 1", so
+// call it that here too.
+$('w-forget').addEventListener('click', (e) => {
   e.preventDefault();
-  await deleteKeystore();
-  show('none');
+  const names = (vault.meta()?.wallets ?? []).map((w) => w.name);
+  $('w-erase-names').innerHTML = (names.length ? names : ['Wallet 1 (created by an older version)'])
+    .map((n) => `<li>${esc(n)}</li>`).join('');
+  setConnectMode('erase');
+  $('w-erase-input').focus();
 });
+$('w-erase-input').addEventListener('input', () => {
+  $('w-erase-go').disabled = $('w-erase-input').value.trim() !== 'ERASE';
+});
+$('w-erase-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('w-erase-go').disabled) $('w-erase-go').click(); });
+$('w-erase-cancel').addEventListener('click', () => setConnectMode('unlock'));
+$('w-erase-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-erase-err', async () => {
+    await keystore.deleteAllRecords();
+    await vault.load();
+    show('none'); // back to the guest hero; the modal drops to choice mode
+  }));
 
 $('w-lock').addEventListener('click', lockWallet);
 $('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); refreshMoney(); });
@@ -639,13 +907,450 @@ $('w-faucet').addEventListener('click', (e) =>
     }
   }));
 
-$('w-backup').addEventListener('click', () => {
-  const box = $('w-seed');
-  const showing = box.style.display !== 'none';
-  box.style.display = showing ? 'none' : 'block';
-  $('w-seed-words').textContent = showing ? '' : wallet.mnemonic;
-  $('w-backup').textContent = showing ? 'Show seed phrase' : 'Hide seed phrase';
+// ---- Inactivity auto-lock (spec §5) ----
+// Device-scoped preference in localStorage (minutes; 0 = Never) — NOT in the
+// vault, so it is readable without an unlock and never follows a keystore
+// file to another device. The ?autolockSecs= override exists for drivers and
+// is honored ONLY in mock mode: on a live deployment a crafted link must not
+// silently disable (or stretch) auto-lock.
+const AUTOLOCK_KEY = 'diginaut.autolock';
+const AUTOLOCK_DEFAULT_MIN = 5;
+function autolockDelayMs() {
+  if (appConfig.mock) {
+    const secs = Number(new URLSearchParams(location.search).get('autolockSecs'));
+    if (Number.isFinite(secs) && secs > 0) return secs * 1000;
+  }
+  let mins = AUTOLOCK_DEFAULT_MIN;
+  try {
+    const stored = Number(localStorage.getItem(AUTOLOCK_KEY));
+    if (Number.isFinite(stored) && stored >= 0) mins = stored;
+  } catch { /* private mode → default */ }
+  return mins * 60_000; // 0 = Never
+}
+let autolockTimer = null;
+function armAutolock() {
+  clearTimeout(autolockTimer);
+  if (vault.status !== 'unlocked') return; // the timer only runs while unlocked
+  const ms = autolockDelayMs();
+  if (!ms) return; // Never
+  // re-check on fire: the vault may have been erased/removed since arming
+  autolockTimer = setTimeout(() => { if (vault.status === 'unlocked') lockWallet(); }, ms);
+}
+// Activity = pointerdown/keydown anywhere, throttled to one re-arm a second —
+// typing must not schedule hundreds of timers.
+let lastActivityArm = 0;
+function noteActivity() {
+  if (Date.now() - lastActivityArm < 1000) return;
+  lastActivityArm = Date.now();
+  armAutolock();
+}
+document.addEventListener('pointerdown', noteActivity, true);
+document.addEventListener('keydown', noteActivity, true);
+$('w-autolock').addEventListener('change', () => {
+  try { localStorage.setItem(AUTOLOCK_KEY, $('w-autolock').value); } catch { /* stays a session preference */ }
+  armAutolock();
 });
+
+// ---- Password re-auth (spec §5) ----
+// One small prompt reused by every sensitive action: seed reveal, backup
+// re-entry, and keystore export. Remove-wallet uses its own type-the-name
+// ceremony instead. Resolves the TYPED password (truthy) only after
+// verifyPassword — a decrypt probe against storage, no state change — and
+// false on cancel; boolean callers and the export (which derives the file's
+// key from the password) share the same gate.
+let reauthResolve = null;
+function requireReauth(hint) {
+  return new Promise((resolve) => {
+    reauthResolve = resolve;
+    $('reauth-hint').textContent = hint;
+    $('reauth-pass').value = '';
+    $('reauth-err').textContent = '';
+    $('reauth-modal').classList.add('open');
+    $('reauth-pass').focus();
+  });
+}
+function settleReauth(ok) {
+  const pass = ok && $('reauth-pass').value; // never empty: createVault enforces ≥8 chars
+  $('reauth-modal').classList.remove('open');
+  $('reauth-pass').value = '';
+  reauthResolve?.(pass);
+  reauthResolve = null;
+}
+$('reauth-go').addEventListener('click', (e) =>
+  busy(e.target, 'reauth-err', async () => {
+    if (!(await vault.verifyPassword($('reauth-pass').value))) throw new Error('wrong password');
+    settleReauth(true);
+  }));
+$('reauth-cancel').addEventListener('click', () => settleReauth(false));
+$('reauth-modal').addEventListener('click', (e) => { if (e.target === $('reauth-modal')) settleReauth(false); });
+$('reauth-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('reauth-go').click(); });
+
+// ---- Seed reveal ceremony + backup quiz (spec §2/§5) ----
+// While blurred the grids hold DECOY words (random BIP39, re-rolled per open)
+// so the blur cannot be peeked through; "Tap to reveal" swaps in the real
+// words. Real words exist in the DOM only while a reveal step is open.
+function randomBip39Words(n, exclude = new Set()) {
+  const out = [];
+  while (out.length < n) {
+    const w = wordlist[crypto.getRandomValues(new Uint32Array(1))[0] % wordlist.length];
+    if (!exclude.has(w) && !out.includes(w)) out.push(w);
+  }
+  return out;
+}
+function shuffle(arr) { // Fisher–Yates over a copy
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+// newline-joined so the grid's textContent stays space-separable words —
+// drivers capture the mnemonic with textContent.trim().split(/\s+/)
+const wordGridHtml = (words) => words.map((w) => `<li>${esc(w)}</li>`).join('\n');
+
+let ceremony = null; // { id, words, quiz } while the backup flow is open
+
+function renderBackupGrid(revealed) {
+  $('w-backup-words').innerHTML = wordGridHtml(revealed ? ceremony.words : randomBip39Words(ceremony.words.length));
+  $('w-backup-reveal').classList.toggle('blurred', !revealed);
+}
+/** Open the reveal → quiz flow over the (already open) wallet. */
+function beginBackupCeremony(id, mnemonic) {
+  ceremony = { id, words: mnemonic.trim().split(/\s+/), quiz: null };
+  renderBackupGrid(false);
+  setConnectMode('backup');
+  $('w-connect-modal').classList.add('open');
+}
+$('w-backup-show').addEventListener('click', () => { renderBackupGrid(true); armSeedHide(); });
+$('w-backup-continue').addEventListener('click', () => { buildQuiz(); setConnectMode('quiz'); });
+
+// Quiz: 3 slots at distinct random indices (ascending); chips are ONLY the 3
+// removed words + 6 random decoys — never the full seed in legible plaintext.
+// Every attempt re-randomizes indices and re-rolls decoys (unlimited retries).
+function buildQuiz() {
+  const { words } = ceremony;
+  const idxs = shuffle([...words.keys()]).slice(0, 3).sort((a, b) => a - b);
+  const chips = shuffle([...idxs.map((i) => words[i]), ...randomBip39Words(6, new Set(words))]);
+  ceremony.quiz = { idxs, chips, filled: [null, null, null] }; // filled = chip indices (words can repeat)
+  renderQuiz();
+}
+function renderQuiz() {
+  const q = ceremony.quiz;
+  $('w-quiz-slots').innerHTML = q.idxs.map((wi, s) => {
+    const chip = q.filled[s];
+    return `<button type="button" class="quiz-slot${chip == null ? '' : ' filled'}" data-slot="${s}">` +
+      `<span class="qn">Word #${wi + 1}</span><span class="mono">${chip == null ? '·' : esc(q.chips[chip])}</span></button>`;
+  }).join('');
+  $('w-quiz-chips').innerHTML = q.chips.map((w, i) =>
+    `<button type="button" class="quiz-chip secondary" data-chip="${i}"${q.filled.includes(i) ? ' disabled' : ''}>${esc(w)}</button>`).join('');
+}
+$('w-quiz-chips').addEventListener('click', (e) => {
+  const i = e.target?.dataset?.chip;
+  if (i == null || !ceremony?.quiz) return;
+  const q = ceremony.quiz;
+  const slot = q.filled.indexOf(null); // chips fill the next empty slot
+  if (slot === -1 || q.filled.includes(Number(i))) return;
+  q.filled[slot] = Number(i);
+  renderQuiz();
+});
+$('w-quiz-slots').addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-slot]');
+  if (!btn || !ceremony?.quiz) return;
+  const q = ceremony.quiz;
+  if (q.filled[btn.dataset.slot] == null) return;
+  q.filled[btn.dataset.slot] = null; // click a filled slot to clear it
+  renderQuiz();
+});
+$('w-quiz-verify').addEventListener('click', (e) =>
+  busy(e.target, 'w-quiz-err', async () => {
+    const q = ceremony.quiz;
+    if (q.filled.some((c) => c == null)) throw new Error('fill in all three words first');
+    if (!q.idxs.every((wi, s) => q.chips[q.filled[s]] === ceremony.words[wi])) {
+      buildQuiz(); // fresh indices, fresh decoys, cleared slots
+      throw new Error('Not quite — check your written copy and try again.');
+    }
+    await vault.setBackedUp(ceremony.id); // cleared ONLY by this quiz pass
+    renderBackupCta();
+    setConnectMode('backup-done'); // success beat; Done closes
+  }));
+
+// ---- Backup-status surfaces (spec §3) ----
+// The active wallet's backedUp flag drives the header badge, the net-modal
+// button and the balance-gated strip; all re-render on wallet switch
+// (openWallet) and on quiz pass. The flag is cleared ONLY by a quiz pass.
+function renderBackupCta() {
+  // keyed to the DISPLAYED wallet (wallet.id), not vault activeId: a cross-tab
+  // setActive must not borrow another wallet's flag for the shown address
+  const m = vault.meta();
+  const active = m?.wallets.find((w) => w.id === wallet.id);
+  const nag = Boolean(active && !active.backedUp);
+  $('w-backup-now').style.display = nag ? 'block' : 'none';
+  $('w-backup-badge').style.display = nag ? 'inline-block' : 'none';
+  renderBackupStrip();
+}
+
+/** Every backup re-entry surface (badge, strip, receive guard, net-modal
+ * button) funnels here — re-auth gated like any other seed access (§5). */
+async function reenterBackupCeremony() {
+  if (!wallet.id) return;
+  if (!(await requireReauth('Confirm your password to back up this wallet.'))) return;
+  $('net-modal').classList.remove('open');
+  beginBackupCeremony(wallet.id, vault.getMnemonic(wallet.id));
+}
+$('w-backup-now').addEventListener('click', reenterBackupCeremony);
+$('w-backup-badge').addEventListener('click', reenterBackupCeremony);
+
+// Balance-gated warning strip: the active wallet is not backed up AND holds
+// anything the indexer can see (confirmed DGB, spendable DD, or a locked
+// position). Dismiss is per wallet, per page load — the nag comes back next
+// session by design. A no-indexer deployment never learns the balance, so
+// the receive interception below is the only funds-arriving guard there.
+const stripDismissed = new Set(); // wallet ids dismissed this session
+function renderBackupStrip() {
+  const m = vault.status === 'unlocked' ? vault.meta() : null;
+  const active = m?.wallets.find((w) => w.id === wallet.id); // the wallet on display
+  const funds = (lastConfirmedDgb ?? 0) > 0 || lastDdUsd > 0 || openPositions.size > 0;
+  const nag = Boolean(active && !active.backedUp && funds && !stripDismissed.has(active.id));
+  $('w-backup-strip').style.display = nag ? 'block' : 'none';
+}
+$('w-backup-strip-go').addEventListener('click', reenterBackupCeremony);
+$('w-backup-strip-dismiss').addEventListener('click', () => {
+  stripDismissed.add(wallet.id);
+  renderBackupStrip();
+});
+
+// Receive interception (BlueWallet pattern, spec §3): opening Receive on an
+// un-backed-up wallet shows a warning step first — EVERY open until the quiz
+// passes; "Continue anyway" is good for that one open. Both entry points
+// (act-receive and the no-indexer card) come through this gate.
+function openReceiveModal() {
+  // the guard must judge the wallet whose ADDRESS is shown (wallet.id) — a
+  // cross-tab setActive to a backed-up wallet must not skip the interception
+  // for this tab's still-displayed, un-backed-up address (spec §3)
+  const m = vault.meta();
+  const active = m?.wallets.find((w) => w.id === wallet.id);
+  const guard = Boolean(active && !active.backedUp);
+  $('w-receive-guard').style.display = guard ? 'block' : 'none';
+  $('w-receive-body').style.display = guard ? 'none' : 'block';
+  openModal('receive-modal');
+}
+$('w-receive-anyway').addEventListener('click', () => {
+  $('w-receive-guard').style.display = 'none';
+  $('w-receive-body').style.display = 'block';
+});
+$('w-receive-backup').addEventListener('click', () => {
+  $('receive-modal').classList.remove('open');
+  reenterBackupCeremony();
+});
+
+// Show seed phrase (net-modal): re-auth, then the same blur + decoy ceremony.
+// After the tap, w-seed-words holds the REAL mnemonic as plain text.
+function renderSeedGrid(revealed) {
+  const words = wallet.mnemonic.trim().split(/\s+/);
+  $('w-seed-words').innerHTML = wordGridHtml(revealed ? words : randomBip39Words(words.length));
+  $('w-seed-reveal').classList.toggle('blurred', !revealed);
+}
+function hideSeed() {
+  clearTimeout(seedHideTimer);
+  $('w-seed').style.display = 'none';
+  $('w-seed-words').innerHTML = ''; // never leave a seed in the DOM
+  $('w-backup').textContent = 'Show seed phrase';
+}
+$('w-backup').addEventListener('click', async () => {
+  if ($('w-seed').style.display !== 'none') return hideSeed();
+  if (!(await requireReauth("Confirm your password to reveal this wallet's seed phrase."))) return;
+  renderSeedGrid(false); // blurred decoys until the tap
+  $('w-seed').style.display = 'block';
+  $('w-backup').textContent = 'Hide seed phrase';
+});
+$('w-seed-show').addEventListener('click', () => { renderSeedGrid(true); armSeedHide(); });
+
+// A revealed seed auto-hides after 60 s, and switching tabs hides it at once
+// (spec §5): both grids — w-seed-words AND the backup ceremony's words — are
+// wiped and re-blurred (fresh decoys), so a walked-away-from screen or a
+// backgrounded tab never keeps a legible seed.
+let seedHideTimer = null;
+function armSeedHide() {
+  clearTimeout(seedHideTimer);
+  seedHideTimer = setTimeout(wipeRevealedSeeds, 60_000);
+}
+function wipeRevealedSeeds() {
+  clearTimeout(seedHideTimer);
+  if ($('w-seed').style.display !== 'none') hideSeed();
+  if (connectMode === 'backup' && ceremony) renderBackupGrid(false); // decoys + blur back on
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) wipeRevealedSeeds(); });
+
+// ---- Wallet switcher (spec §7) ----
+// Names + backup flags come from the CLEARTEXT vault meta; the address is
+// derived lazily and only for the ACTIVE wallet — deriving every wallet's
+// would drag every mnemonic through seed derivation just for a list row.
+let managingId = null; // wallet id with the manage row (rename/remove) expanded
+let removingId = null; // wallet id the remove ceremony is aimed at
+
+function openWalletModal(note) {
+  managingId = null;
+  $('w-wallet-note').textContent = note ?? '';
+  $('w-wallet-note').style.display = note ? 'block' : 'none';
+  $('w-wallet-err').textContent = '';
+  showRemoveView(null);
+  renderWalletList();
+  $('wallet-modal').classList.add('open');
+}
+function closeWalletModal() {
+  $('wallet-modal').classList.remove('open');
+}
+
+function renderWalletList() {
+  const m = vault.meta();
+  if (!m) { $('w-wallet-list').innerHTML = ''; return; } // vault gone — modal is closing anyway
+  $('w-wallet-list').innerHTML = m.wallets.map((w) => {
+    const active = w.id === m.activeId;
+    const dot = w.backedUp ? '' : ' <span class="wal-dot" title="Not backed up"></span>';
+    const sub = active ? `<div class="wal-sub mono">${esc($('w-chip-addr').textContent)}</div>` : '';
+    return `<div class="wal-row">` +
+      `<button type="button" class="wal-pick" data-switch="${esc(w.id)}">` +
+      `<span><span class="wal-name">${esc(w.name)}</span>${dot}${sub}</span>` +
+      (active ? '<span class="wal-check">✓</span>' : '') +
+      `</button>` +
+      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove">⋯</button>` +
+      `</div>` +
+      (managingId === w.id ? walletEditHtml(w) : '');
+  }).join('');
+}
+
+function walletEditHtml(w) {
+  return `<div class="wal-edit">` +
+    `<input id="w-rename-input" autocomplete="off" value="${esc(w.name)}" />` +
+    `<div class="grid">` +
+    `<button type="button" id="w-rename-go" class="secondary" data-rename="${esc(w.id)}">Rename</button>` +
+    `<button type="button" id="w-remove-open" class="danger" data-remove="${esc(w.id)}">Remove…</button>` +
+    `</div>` +
+    // deliberately SECONDARY messaging (§4): the file is a convenience copy
+    `<button type="button" id="w-export-go" class="secondary" data-export="${esc(w.id)}">Export backup file</button>` +
+    `<p class="hint" style="margin:6px 0 0">An encrypted copy of this wallet. It only opens with your password — it is NOT a replacement for the seed phrase.</p>` +
+    `</div>`;
+}
+
+// Hand the envelope to the browser as a download (Blob URL, §4 filename).
+// Revoke on a timeout — revoking synchronously can abort the save.
+function downloadKeystoreFile(envelope) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = keystore.keystoreFileName(envelope.name, new Date(envelope.exportedAt));
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+$('w-wallet-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-switch],[data-manage],[data-rename],[data-export],[data-remove]');
+  if (!btn) return;
+  $('w-wallet-err').textContent = '';
+  try {
+    if (btn.dataset.switch) {
+      if (btn.dataset.switch === wallet.id) return closeWalletModal(); // already open
+      await vault.setActive(btn.dataset.switch); // persisted so unlock reopens it
+      switchToWallet(btn.dataset.switch); // the full state reset closes this modal
+    } else if (btn.dataset.manage) {
+      managingId = managingId === btn.dataset.manage ? null : btn.dataset.manage;
+      renderWalletList();
+    } else if (btn.dataset.rename) {
+      await vault.renameWallet(btn.dataset.rename, $('w-rename-input').value); // duplicate guard inside
+      managingId = null;
+      renderWalletList();
+    } else if (btn.dataset.export) {
+      // export requires typing the password (§4/§5) — it re-proves the user
+      // can open what they save, and the file's fresh KDF runs on that string
+      const pass = await requireReauth('Confirm your password to export an encrypted copy of this wallet.');
+      if (!pass) return;
+      const w = vault.meta().wallets.find((x) => x.id === btn.dataset.export);
+      downloadKeystoreFile(await keystore.buildKeystoreFile({
+        name: w.name,
+        network: chainState.netKnown ? chainState.netName : null,
+        mnemonic: vault.getMnemonic(w.id), // export does NOT set backedUp (§4)
+        password: pass,
+      }));
+      managingId = null;
+      openWalletModal(`Saved ${keystore.keystoreFileName(w.name)} — it only opens with your password.`);
+    } else if (btn.dataset.remove) {
+      showRemoveView(btn.dataset.remove);
+    }
+  } catch (err) {
+    $('w-wallet-err').textContent = surfaceError(err); // duplicate name, tab conflict, …
+  }
+});
+
+// Add wallet: the connect modal in choice mode while the app stays OPEN —
+// password fields stay hidden (the vault exists), create/restore/import ride
+// the unlocked session key (§2 modal-mode decoupling).
+$('w-add-wallet').addEventListener('click', () => {
+  closeWalletModal();
+  openConnectModal();
+});
+
+/** Swap the switcher between its list and the remove ceremony (id=null → list). */
+function showRemoveView(id) {
+  removingId = id;
+  $('w-wallet-main').style.display = id ? 'none' : 'block';
+  $('w-remove-view').style.display = id ? 'block' : 'none';
+  if (!id) return;
+  const m = vault.meta();
+  const w = m.wallets.find((x) => x.id === id);
+  $('w-remove-target').textContent = w.name;
+  // the balance is only known for the ACTIVE wallet — that's the one the
+  // indexer poll watches; anything else is honestly "not checked"
+  const held = [];
+  if (id === m.activeId && lastConfirmedDgb != null) {
+    if (lastConfirmedDgb > 0) held.push(`${fmtDGB(lastConfirmedDgb)} DGB`);
+    if (lastDdUsd > 0) held.push(`${fmtUSD(lastDdUsd)} DigiDollar`);
+    if (openPositions.size > 0) held.push(`${openPositions.size} locked position${openPositions.size === 1 ? '' : 's'}`);
+  }
+  const lines = [];
+  if (held.length) lines.push(`This wallet holds ${held.join(', ')}.`);
+  else if (id === m.activeId) {
+    lines.push(lastConfirmedDgb != null
+      ? 'This wallet holds no funds the indexer can see.'
+      : 'Its balance could not be checked.'); // no indexer on this deployment
+  } else lines.push('Its balance was not checked — only the active wallet is watched.');
+  lines.push(w.backedUp
+    ? 'You verified its seed phrase backup — that phrase can restore it later.'
+    : 'This wallet is NOT backed up — removing it without the seed phrase means the funds are unrecoverable.');
+  if (m.wallets.length === 1) lines.push('It is the last wallet on this device: removing it erases the vault entirely.');
+  $('w-remove-warnings').innerHTML = lines.map((l) => `<li>${esc(l)}</li>`).join('');
+  $('w-remove-name').value = '';
+  $('w-remove-go').disabled = true;
+  $('w-remove-err').textContent = '';
+}
+
+// the confirm button arms only on an exact (trimmed) name match
+$('w-remove-name').addEventListener('input', () => {
+  const w = vault.meta()?.wallets.find((x) => x.id === removingId);
+  $('w-remove-go').disabled = !w || $('w-remove-name').value.trim() !== w.name;
+});
+$('w-remove-name').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('w-remove-go').disabled) $('w-remove-go').click(); });
+$('w-remove-cancel').addEventListener('click', () => showRemoveView(null));
+
+$('w-remove-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-remove-err', async () => {
+    const id = removingId;
+    await vault.removeWallet(id); // last wallet → deletes the vault record (§5)
+    showRemoveView(null);
+    if (vault.status === 'none') {
+      // nothing left on this device — back to the guest hero
+      wallet.id = null; wallet.mnemonic = null; wallet.seed = null;
+      resetWalletState();
+      show('none');
+    } else if (id === wallet.id) {
+      // removed the wallet being viewed: the vault handed active to the
+      // adjacent one; re-run the switch path so the open view never keeps
+      // showing a removed wallet (§5)
+      switchToWallet(vault.meta().activeId);
+    } else {
+      renderWalletList(); // stay in the list, minus one row
+    }
+  }));
 
 // ---- Balance & history (#5): every query goes through the indexer seam ----
 const fmtSats = (sats) => fmtDGB(Number(sats) / 1e8);
@@ -746,8 +1451,10 @@ async function refreshMoney() {
     renderHistory();
     enrichVisible();
     const ddCents = perAddr.reduce((s, r) => s + r.ddCents, 0n);
-    $('w-dd-balance').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    lastDdUsd = Number(ddCents) / 100;
+    $('w-dd-balance').textContent = lastDdUsd.toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
+    renderBackupStrip(); // balance-gated (§3): fresh funds may summon the backup nag
     // a transient indexer hiccup shouldn't leave a stale error after recovery
     if ($('w-open-err').textContent.startsWith('indexer:')) $('w-open-err').textContent = '';
     const firstShow = $('w-money').style.display === 'none';
@@ -879,6 +1586,7 @@ async function enrichVisible() {
 
 // fiat equivalents (hero + asset row) from the latest oracle price
 let lastConfirmedDgb = null;
+let lastDdUsd = 0; // spendable DD of the active wallet — remove-ceremony warning
 function renderFiat() {
   const has = lastPriceUsd != null && lastConfirmedDgb != null;
   $('w-balance-usd').textContent = has ? '≈ ' + fmtUSD(lastConfirmedDgb * lastPriceUsd) : '';
@@ -1621,8 +2329,9 @@ function startMoneyPolling() {
 
 async function bootWallet() {
   try {
-    const blob = await loadKeystore();
-    show(blob ? 'locked' : 'none');
+    // 'locked' covers both a v2 vault and a not-yet-migrated v1 record — the
+    // unlock path migrates transparently on the first successful password.
+    show(await vault.load() === 'none' ? 'none' : 'locked');
   } catch (e) {
     $('w-loading').textContent = 'wallet storage unavailable: ' + e.message;
   }
@@ -1652,6 +2361,13 @@ async function boot() {
   // release gate (#17) removed the feature flag per ADR-0002.
   initMintTiers();
   enhanceSelect('send-asset');
+  // reflect the stored auto-lock choice (only ladder values — a garbage/stale
+  // entry falls back to the markup's 5-minute default)
+  try {
+    const v = localStorage.getItem(AUTOLOCK_KEY);
+    if (v !== null && [...$('w-autolock').options].some((o) => o.value === v)) $('w-autolock').value = v;
+  } catch { /* private mode → default */ }
+  enhanceSelect('w-autolock');
   loadPriceChart();
   setInterval(loadPriceChart, 60_000);
   try {

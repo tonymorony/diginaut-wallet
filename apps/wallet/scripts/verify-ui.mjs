@@ -95,6 +95,12 @@ check((await evaluate(text('w-none-err'))).includes('match'), 'PROBE: mismatched
 await setVal('w-create-pass2', 'correct horse battery');
 await click('w-create');
 await waitFor(visible('w-open'), 'unlocked state after create');
+// the backup ceremony overlays the already-open wallet (spec §2); skipping via
+// "Remind me later" (id w-backup-done kept stable) leaves the badge nagging
+await waitFor(visible('w-backup-view'), 'backup ceremony overlays the open wallet');
+await click('w-backup-done');
+await waitFor(`!document.getElementById('w-connect-modal').classList.contains('open')`, 'ceremony dismissed');
+check(await evaluate(visible('w-backup-badge')), '"Not backed up" badge shown after skipping the backup ceremony');
 const addr0 = await evaluate(text('w-address'));
 const path0 = await evaluate(text('w-path'));
 check(/^dgbt1p[a-z0-9]{50,}$/.test(addr0), `create → client-side receive address shown: ${addr0} (${path0})`);
@@ -144,15 +150,29 @@ await evaluate(`document.getElementById('send-modal').classList.remove('open')`)
 // reveals the "Copy payment request" button; clearing it reverts to bare address.
 await click('act-receive');
 await waitFor(`document.getElementById('receive-modal').classList.contains('open')`, 'receive modal open');
+// backup interception (spec §3): an un-backed-up wallet warns before showing
+// the address, every open until the quiz passes; Continue anyway is one open
+check(await evaluate(visible('w-receive-guard')) && !(await evaluate(visible('w-receive-body'))),
+  'receive intercepted: back-up warning shown before the address (not backed up)');
+await click('w-receive-anyway');
+await waitFor(visible('w-receive-body'), 'receive view after "Continue anyway"');
 await setVal('w-req-amount', '12.5');
 check(await evaluate(visible('w-copy-uri')), 'requesting an amount reveals the "Copy payment request" (URI) button');
 await setVal('w-req-amount', '');
 check(!(await evaluate(visible('w-copy-uri'))), 'clearing the amount reverts to bare-address QR (URI button hidden)');
 await evaluate(`document.getElementById('receive-modal').classList.remove('open')`);
 
-// -- 3. seed backup view (optional, reveals 12 words)
+// -- 3. seed reveal: re-auth gated (spec §5), blurred decoys until tapped
 await click('w-backup');
-const seed = (await evaluate(text('w-seed-words'))).trim();
+await waitFor(`document.getElementById('reauth-modal').classList.contains('open')`, 're-auth prompt');
+await setVal('reauth-pass', 'correct horse battery');
+await click('reauth-go');
+await waitFor(visible('w-seed'), 'seed view after re-auth');
+check(await evaluate(`document.getElementById('w-seed-reveal').classList.contains('blurred')`),
+  'seed grid stays blurred (decoy words) until tapped');
+await click('w-seed-show');
+// after the tap, w-seed-words holds the REAL words (numbers are CSS counters)
+const seed = (await evaluate(text('w-seed-words'))).trim().split(/\s+/).join(' ');
 check(seed.split(' ').length === 12, 'seed backup reveals a 12-word phrase');
 await shot('03-seed-backup.png');
 await click('w-backup');
@@ -186,8 +206,13 @@ await cdp('Page.navigate', { url: APP }, sessionId);
 await waitFor(visible('w-locked'), 'locked after reload');
 check(true, 'page reload → wallet persisted, locked (keys not kept)');
 
-// -- 8. erase + restore from seed round-trip
+// -- 8. erase (type-ERASE ceremony, spec §5) + restore from seed round-trip
 await evaluate(`{ const l = document.getElementById('w-forget'); l.click(); }`);
+await waitFor(visible('w-erase-view'), 'erase ceremony shown');
+check(await evaluate(`document.getElementById('w-erase-go').disabled`),
+  'erase ceremony: the button arms only on a typed ERASE');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
 await waitFor(visible('w-none'), 'no-wallet after erase');
 await click('w-show-restore');
 
@@ -203,6 +228,8 @@ await setVal('w-restore-seed', '  ' + seed.toUpperCase() + '  '); // sloppy past
 await click('w-restore-go');
 await waitFor(visible('w-open'), 'unlocked after restore');
 check((await evaluate(text('w-address'))) === addr0, 'restore from seed (sloppy paste) → identical address 0: round-trip proven');
+// typing the words proves possession (spec §2): no ceremony, no badge
+check(!(await evaluate(visible('w-backup-badge'))), 'restore-from-seed marks the wallet backed up — no badge');
 await shot('05-restored.png');
 
 console.log('\nDone.');
