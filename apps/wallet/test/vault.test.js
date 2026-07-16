@@ -29,7 +29,9 @@ function memStorage() {
       db.set('vault', next);
       return clone(next);
     },
-    async deleteVaultRecord() {
+    async deleteVaultRecord(baseRev) {
+      const cur = db.get('vault');
+      if ((cur?.rev ?? 0) !== baseRev) throw new VaultConflictError();
       db.delete('vault');
     },
     async deleteKeystore() {
@@ -262,6 +264,59 @@ test('two tabs: the stale write throws VaultConflictError and loses nothing', as
   // and the stored ciphertext holds exactly A's wallets — nothing lost, nothing stale
   const { obj } = await decryptJson(store.db.get('vault'), PW);
   assert.deepEqual(Object.values(obj.mnemonics).sort(), [M1, M2].sort());
+});
+
+test('two tabs: a stale last-wallet removal aborts instead of wiping the vault', async () => {
+  const store = memStorage();
+  const a = createVaultManager(store);
+  const b = createVaultManager(store);
+  const id1 = await a.createVault(PW, { name: 'Wallet 1', mnemonic: M1 });
+  await b.unlock(PW);
+
+  await a.addWallet({ name: 'Restored', mnemonic: M2 }); // rev 1 → 2, only in the ciphertext
+  // b still believes id1 is the LAST wallet — its vault-record delete must
+  // CAS-abort, not blind-wipe the record now holding A's fresh mnemonic
+  await assert.rejects(() => b.removeWallet(id1), VaultConflictError);
+  assert.equal(store.db.has('vault'), true);
+  const { obj } = await decryptJson(store.db.get('vault'), PW);
+  assert.ok(Object.values(obj.mnemonics).includes(M2), 'the concurrently added mnemonic survives');
+
+  // the conflict refreshed b: a retry now sees two wallets and removes just one
+  await b.removeWallet(id1);
+  assert.deepEqual(b.meta().wallets.map((w) => w.name), ['Restored']);
+});
+
+test('commit CAS-checks the rev the mutation was computed from, even if a cross-tab refresh lands mid-encrypt', async () => {
+  const store = memStorage();
+  const a = createVaultManager(store);
+  const b = createVaultManager(store);
+  const id1 = await a.createVault(PW, { name: 'Wallet 1', mnemonic: M1 });
+  await b.unlock(PW);
+
+  // Freeze A inside commit's encrypt await, let B write and A's refresh()
+  // (the BroadcastChannel path) run to completion, then resume: the write must
+  // CAS against the rev A's rename was computed from (1), not the refreshed
+  // one (2) — a late base-rev read would silently drop B's new mnemonic.
+  const subtle = globalThis.crypto.subtle;
+  const origEncrypt = subtle.encrypt;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  subtle.encrypt = async function (...args) { await gate; return origEncrypt.apply(this, args); };
+  try {
+    const staleCommit = a.renameWallet(id1, 'Renamed'); // suspends in encrypt
+    subtle.encrypt = origEncrypt; // gate only A's in-flight call
+    await b.addWallet({ name: 'From tab B', mnemonic: M3 }); // rev 1 → 2
+    await a.refresh(); // A adopts rev 2 while its commit is still suspended
+    release();
+    await assert.rejects(() => staleCommit, VaultConflictError);
+  } finally {
+    subtle.encrypt = origEncrypt;
+  }
+  // nothing lost: B's fresh mnemonic is still in the stored ciphertext,
+  // and A's stale rename never landed
+  const { obj } = await decryptJson(store.db.get('vault'), PW);
+  assert.ok(Object.values(obj.mnemonics).includes(M3));
+  assert.equal(a.meta().wallets.find((w) => w.id === id1).name, 'Wallet 1');
 });
 
 // FROZEN v1 fixture captured from keystore.js output on 2026-07-15 — do NOT

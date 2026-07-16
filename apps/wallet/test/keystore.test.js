@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   encryptMnemonic, decryptMnemonic,
+  encryptJson, encryptJsonWithKey, decryptJsonWithKey,
   buildKeystoreFile, parseKeystoreFile, decryptKeystoreFile, keystoreFileName,
 } from '../public/keystore.js';
 
@@ -36,6 +37,20 @@ test('two encryptions of the same mnemonic differ (fresh salt + IV)', async () =
   const a = await encryptMnemonic(MNEMONIC, 'pw');
   const b = await encryptMnemonic(MNEMONIC, 'pw');
   assert.notEqual(JSON.stringify(a), JSON.stringify(b));
+});
+
+test('encryptJsonWithKey echoes the record kdf it was given — never the current constant', async () => {
+  const { blob, key } = await encryptJson({ hello: 1 }, 'pw');
+  // a vault written before a future PBKDF2 iteration bump: the stored kdf
+  // (salt AND iterations) is what the held key was derived with, and a
+  // re-encryption that stamped the new constant instead would make every
+  // later password unlock derive a different key — permanent lockout
+  const olderKdf = { ...blob.kdf, iterations: 310_000 };
+  const out = await encryptJsonWithKey({ hello: 2 }, key, olderKdf);
+  assert.equal(out.kdf.iterations, 310_000);
+  assert.equal(out.kdf.salt, blob.kdf.salt);
+  assert.equal(out.kdf.name, blob.kdf.name);
+  assert.deepEqual(await decryptJsonWithKey(out, key), { hello: 2 });
 });
 
 // ---- Keystore file envelope (spec §4) ----

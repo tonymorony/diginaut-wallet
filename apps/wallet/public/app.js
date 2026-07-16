@@ -352,7 +352,9 @@ const wallet = {
 // browser storage. One master password for every wallet on this device.
 const vault = createVaultManager(keystore);
 
+let shownState = 'loading'; // what the app currently renders — cross-tab sync diffs against it
 function show(state) {
+  shownState = state;
   $('w-loading').style.display = state === 'loading' ? 'block' : 'none';
   $('w-open').style.display = state === 'open' ? 'grid' : 'none';
   // EVM-style corner control: Connect when idle, address chip when connected
@@ -514,6 +516,15 @@ $('w-chip').addEventListener('click', (e) => {
   if (e.target.closest('#w-disconnect')) return;
   openWalletModal();
 });
+// the chip is a role="button" span (a real <button> can't nest Disconnect), so
+// Enter/Space must open the switcher for keyboard/AT users too — it is the
+// ONLY entry point to add/switch/rename/export/remove (spec §7)
+$('w-chip').addEventListener('keydown', (e) => {
+  if (e.target !== $('w-chip')) return; // the inner Disconnect button handles its own keys
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  e.preventDefault(); // Space must not scroll the page
+  openWalletModal();
+});
 $('w-modal-close').addEventListener('click', closeConnectModal);
 $('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) closeConnectModal(); });
 $('w-disconnect').addEventListener('click', () => lockWallet());
@@ -605,6 +616,10 @@ function resetWalletState() {
   hideSeed(); // an open reveal must not float over the next view (§5)
   closeConnectModal(); // nor a mid-ceremony backup view — words wiped with it
   closeWalletModal(); // nor the switcher (lock teardown, §5)
+  // nor a pending re-auth prompt: its promise must settle (false) so the
+  // awaiting flow dies here instead of resuming against a torn-down wallet,
+  // and the password box must not float over the locked screen (§5)
+  settleReauth(false);
   clearTimeout(autolockTimer); // openWallet re-arms it on switch/unlock
 }
 
@@ -626,6 +641,43 @@ function switchToWallet(id) {
   resetWalletState();
   openWallet(id, vault.getMnemonic(id));
 }
+
+// ---- Cross-tab sync (spec §1) ----
+// The vault manager refreshes its own record on BroadcastChannel writes, but
+// the UI must follow: an erased vault relocks this tab (dropping the seed from
+// the page), a cross-tab switch/remove re-opens the wallet the vault now says
+// is active, and meta-driven surfaces (switcher list, backup badge, locked
+// names) re-render. Also runs after a VaultConflictError — the manager
+// refreshed before rethrowing, so the same reconciliation applies.
+function reconcileVaultUi() {
+  const st = vault.status;
+  if (st === 'unlocked') {
+    const m = vault.meta();
+    if (wallet.id && m.activeId !== wallet.id) {
+      // another tab switched away from (or removed) the wallet on display —
+      // the shown address and its guard state must come from the same wallet
+      switchToWallet(m.activeId);
+    } else {
+      renderBackupCta(); // badge/strip may have changed (quiz pass elsewhere)
+      if ($('wallet-modal').classList.contains('open')) renderWalletList();
+    }
+    return;
+  }
+  // dropped out of unlocked: the vault was erased or re-created under a new
+  // salt in another tab. The in-memory seed is torn down like a lock.
+  if (wallet.seed || wallet.id) {
+    wallet.id = null;
+    wallet.mnemonic = null;
+    wallet.seed = null;
+    resetWalletState();
+  }
+  const target = st === 'none' ? 'none' : 'locked';
+  if (shownState !== target) show(target);
+  else if (target === 'locked' && connectMode === 'unlock') renderLockedNames(); // names may have changed
+}
+keystore.onVaultChanged(() => {
+  vault.refresh().then(reconcileVaultUi).catch(() => {});
+});
 
 // Locked screen: every wallet's name from the cleartext meta and ONE password
 // field (spec §7). A not-yet-migrated v1 record has no names → line hidden.
@@ -663,6 +715,18 @@ async function createWalletEntry({ name, mnemonic, backedUp = false }) {
   return { id, existed: false };
 }
 
+// Error → user copy at the UI boundary. A lost CAS race must never leak the
+// internal VaultConflictError message (spec §1): show the mandated copy and
+// re-drive the UI — the manager already re-synced from storage before
+// rethrowing, so reconcile renders what the other tab wrote.
+function surfaceError(e) {
+  if (e instanceof keystore.VaultConflictError) {
+    reconcileVaultUi();
+    return 'This wallet was changed in another tab — reloading.';
+  }
+  return e.message;
+}
+
 async function busy(btn, errId, fn) {
   const el = $(errId);
   el.textContent = '';
@@ -670,7 +734,7 @@ async function busy(btn, errId, fn) {
   try {
     await fn();
   } catch (e) {
-    el.textContent = e.message;
+    el.textContent = surfaceError(e);
   } finally {
     btn.disabled = false;
   }
@@ -1008,8 +1072,10 @@ $('w-quiz-verify').addEventListener('click', (e) =>
 // button and the balance-gated strip; all re-render on wallet switch
 // (openWallet) and on quiz pass. The flag is cleared ONLY by a quiz pass.
 function renderBackupCta() {
+  // keyed to the DISPLAYED wallet (wallet.id), not vault activeId: a cross-tab
+  // setActive must not borrow another wallet's flag for the shown address
   const m = vault.meta();
-  const active = m?.wallets.find((w) => w.id === m.activeId);
+  const active = m?.wallets.find((w) => w.id === wallet.id);
   const nag = Boolean(active && !active.backedUp);
   $('w-backup-now').style.display = nag ? 'block' : 'none';
   $('w-backup-badge').style.display = nag ? 'inline-block' : 'none';
@@ -1035,7 +1101,7 @@ $('w-backup-badge').addEventListener('click', reenterBackupCeremony);
 const stripDismissed = new Set(); // wallet ids dismissed this session
 function renderBackupStrip() {
   const m = vault.status === 'unlocked' ? vault.meta() : null;
-  const active = m?.wallets.find((w) => w.id === m.activeId);
+  const active = m?.wallets.find((w) => w.id === wallet.id); // the wallet on display
   const funds = (lastConfirmedDgb ?? 0) > 0 || lastDdUsd > 0 || openPositions.size > 0;
   const nag = Boolean(active && !active.backedUp && funds && !stripDismissed.has(active.id));
   $('w-backup-strip').style.display = nag ? 'block' : 'none';
@@ -1051,8 +1117,11 @@ $('w-backup-strip-dismiss').addEventListener('click', () => {
 // passes; "Continue anyway" is good for that one open. Both entry points
 // (act-receive and the no-indexer card) come through this gate.
 function openReceiveModal() {
+  // the guard must judge the wallet whose ADDRESS is shown (wallet.id) — a
+  // cross-tab setActive to a backed-up wallet must not skip the interception
+  // for this tab's still-displayed, un-backed-up address (spec §3)
   const m = vault.meta();
-  const active = m?.wallets.find((w) => w.id === m.activeId);
+  const active = m?.wallets.find((w) => w.id === wallet.id);
   const guard = Boolean(active && !active.backedUp);
   $('w-receive-guard').style.display = guard ? 'block' : 'none';
   $('w-receive-body').style.display = guard ? 'none' : 'block';
@@ -1201,7 +1270,7 @@ $('w-wallet-list').addEventListener('click', async (e) => {
       showRemoveView(btn.dataset.remove);
     }
   } catch (err) {
-    $('w-wallet-err').textContent = err.message; // duplicate name, tab conflict, …
+    $('w-wallet-err').textContent = surfaceError(err); // duplicate name, tab conflict, …
   }
 });
 

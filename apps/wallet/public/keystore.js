@@ -80,14 +80,18 @@ export async function decryptJson(blob, password) {
   return { obj: JSON.parse(str), key };
 }
 
-/** Re-encrypt under an already-derived session key (fresh IV, same salt).
- * saltB64 MUST be the salt the key was derived from — it is only echoed into
- * the kdf block so future password unlocks re-derive the same key. */
-export async function encryptJsonWithKey(obj, key, saltB64) {
+/** Re-encrypt under an already-derived session key (fresh IV, same KDF).
+ * kdf MUST be the stored record's kdf block — the salt AND iteration count the
+ * held key was derived from are echoed verbatim so future password unlocks
+ * re-derive the same key. Stamping the current PBKDF2_ITERATIONS constant here
+ * instead would brick every pre-existing vault the day the constant is raised:
+ * the first mutation would advertise iterations the ciphertext's key was never
+ * derived with, and every later unlock would fail with the correct password. */
+export async function encryptJsonWithKey(obj, key, kdf) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, key, utf8.encode(JSON.stringify(obj)));
   return {
-    kdf: { name: 'PBKDF2-SHA256', iterations: PBKDF2_ITERATIONS, salt: saltB64 },
+    kdf: { name: kdf.name, iterations: kdf.iterations, salt: kdf.salt },
     cipher: { name: 'AES-256-GCM', iv: toB64(iv), data: toB64(ciphertext) },
   };
 }
@@ -261,9 +265,16 @@ export async function saveVaultRecord(record, baseRev) {
   return saved;
 }
 
-/** Delete the vault record (removing the last wallet). */
-export async function deleteVaultRecord() {
-  await withStore('readwrite', (store) => requestDone(store.delete(VAULT_ID)));
+/** Delete the vault record (removing the last wallet). CAS-guarded like
+ * saveVaultRecord: re-reads the stored rev inside the same readwrite
+ * transaction and throws VaultConflictError if it moved past baseRev — a blind
+ * delete could wipe a wallet another tab just added to the vault. */
+export async function deleteVaultRecord(baseRev) {
+  await withStore('readwrite', async (store) => {
+    const current = await requestDone(store.get(VAULT_ID));
+    if ((current?.rev ?? 0) !== baseRev) throw new VaultConflictError();
+    await requestDone(store.delete(VAULT_ID));
+  });
   broadcastVaultChange({ type: 'delete' });
 }
 

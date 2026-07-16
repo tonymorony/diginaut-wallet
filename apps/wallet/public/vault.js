@@ -88,9 +88,15 @@ export function createVaultManager(storage) {
    * gone for good; the caller must surface it, never silently retry. */
   async function commit(nextMeta, nextSecrets) {
     assertUnlocked();
-    const { kdf, cipher } = await encryptJsonWithKey(nextSecrets, key, record.kdf.salt);
+    // Snapshot the CAS base BEFORE any await: a cross-tab refresh() can
+    // reassign `record` while encrypt is suspended, and a base rev read after
+    // the await would CAS against the ADVANCED rev — turning a genuine
+    // conflict into a silent last-writer-wins overwrite of the other tab's
+    // freshly written mnemonics.
+    const { rev: baseRev, kdf: baseKdf } = record;
+    const { kdf, cipher } = await encryptJsonWithKey(nextSecrets, key, baseKdf);
     try {
-      record = await storage.saveVaultRecord({ v: 2, kdf, cipher, meta: nextMeta }, record.rev);
+      record = await storage.saveVaultRecord({ v: 2, kdf, cipher, meta: nextMeta }, baseRev);
       secrets = nextSecrets;
     } catch (err) {
       if (err instanceof VaultConflictError) await refresh();
@@ -218,7 +224,15 @@ export function createVaultManager(storage) {
     const wallets = record.meta.wallets;
     const remaining = wallets.filter((w) => w.id !== id);
     if (remaining.length === 0) {
-      await storage.deleteVaultRecord();
+      // rev-CAS delete (same contract as commit): if another tab added a
+      // wallet since this tab last synced, "last wallet" is a stale premise
+      // and a blind delete would destroy that tab's mnemonic for good.
+      try {
+        await storage.deleteVaultRecord(record.rev);
+      } catch (err) {
+        if (err instanceof VaultConflictError) await refresh();
+        throw err;
+      }
       record = null;
       lock();
       return;

@@ -319,7 +319,9 @@
         <!-- backup-status chip (spec §3): shown while the ACTIVE wallet has no
              verified backup; click re-enters the backup ceremony -->
         <button id="w-backup-badge" style="display:none" title="Back up this wallet's seed phrase">Not backed up</button>
-        <span id="w-chip" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
+        <!-- role/tabindex, not a <button>: it nests the real Disconnect button,
+             and a button inside a button is invalid HTML (browsers re-parent it) -->
+        <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
         <button id="net-btn" title="Network status"><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
