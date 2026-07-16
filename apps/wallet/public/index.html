@@ -115,6 +115,17 @@
     #w-chip .mono { font-size: 12px; color: var(--gray-700); white-space: nowrap; word-break: normal; }
     .topbar { flex-wrap: wrap; }
     #w-chip .chip-btn { border-radius: 999px; padding: 7px 12px; }
+    /* backup-status chip (spec §3): red "Not backed up" next to the address
+       chip, cleared only by a quiz pass. Click re-enters the backup ceremony. */
+    #w-backup-badge { width: auto; margin: 0; padding: 8px 12px; font-size: 12px; white-space: nowrap;
+      background: var(--bad-bg); color: var(--bad); border-radius: 999px; }
+    #w-backup-badge:hover { background: var(--primary-300); }
+    /* balance-gated warning strip (spec §3): funds but no backup, under the header */
+    .backup-strip { max-width: 520px; margin: 0 auto; padding: 12px 20px 0; }
+    .backup-strip-inner { display: flex; align-items: center; gap: 10px; background: var(--warn-bg);
+      color: var(--warn); border-radius: var(--radius-s); padding: 10px 14px; font-size: 12.5px; font-weight: 600; }
+    .backup-strip-inner span { flex: 1 1 auto; }
+    .backup-strip-inner button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; flex: none; }
     /* header Network button: quiet chip with an aggregate status dot */
     #net-btn { display: inline-flex; align-items: center; gap: 7px; margin: 0; width: auto;
       background: #fff; color: var(--gray-700); border-radius: 999px; padding: 9px 14px; font-size: 13px;
@@ -167,7 +178,7 @@
     #wallet-open-card, #w-open { display: grid; gap: 14px; }
     /* adaptive: single phone-like column by default, two columns on desktop */
     @media (min-width: 960px) {
-      header, main { max-width: 1000px; }
+      header, main, .backup-strip { max-width: 1000px; }
       .money-grid { grid-template-columns: 1.08fr .92fr; align-items: start; }
     }
     /* tier slider (mint modal): 7 discrete stops over the lock tiers */
@@ -305,12 +316,25 @@
       <div class="corner">
         <!-- network identity pill (#54): text/level set at runtime from the node's chain -->
         <span id="net-pill" class="net-pill" hidden></span>
+        <!-- backup-status chip (spec §3): shown while the ACTIVE wallet has no
+             verified backup; click re-enters the backup ceremony -->
+        <button id="w-backup-badge" style="display:none" title="Back up this wallet's seed phrase">Not backed up</button>
         <span id="w-chip" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
         <button id="net-btn" title="Network status"><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
     </div>
   </header>
+
+  <!-- balance-gated backup warning (spec §3): the active wallet holds funds
+       but has no verified backup. Dismiss hides it for this session only. -->
+  <div class="backup-strip" id="w-backup-strip" style="display:none">
+    <div class="backup-strip-inner">
+      <span>This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.</span>
+      <button id="w-backup-strip-go" type="button">Back up now</button>
+      <button id="w-backup-strip-dismiss" type="button" class="secondary" title="Dismiss for this session" aria-label="Dismiss for this session">✕</button>
+    </div>
+  </div>
 
   <main>
     <!-- boot placeholder (drivers key on w-loading via show()) -->
@@ -657,6 +681,16 @@
     <div id="receive-modal" class="modal-backdrop">
       <div class="modal">
         <div class="modal-head"><h3>Receive</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <!-- backup interception (spec §3, BlueWallet pattern): shown on EVERY
+             open until this wallet passes the quiz. "Continue anyway" swaps in
+             the normal receive view for that open only. -->
+        <div id="w-receive-guard" style="display:none">
+          <p class="warn-text" style="margin:14px 0 4px;font-weight:600">Back up before receiving funds</p>
+          <p class="hint" style="margin-top:0">This wallet's seed phrase is not backed up. If this browser data is lost before you write the words down, any funds you receive are gone.</p>
+          <button id="w-receive-backup">Back up now</button>
+          <button id="w-receive-anyway" class="secondary">Continue anyway</button>
+        </div>
+        <div id="w-receive-body">
         <div class="qr" id="w-qr" aria-label="Receive address QR code"></div>
         <div class="row" style="border:0"><span class="k">DGB address <span class="mono" id="w-path"></span></span><span></span></div>
         <div class="out mono" style="margin-top:0" id="w-address"></div>
@@ -679,6 +713,7 @@
         <div class="out mono" style="margin-top:0" id="w-dd-address"></div>
         <div class="grid" style="margin-top:0">
           <button id="w-copy-dd" class="secondary">Copy DigiDollar address</button>
+        </div>
         </div>
       </div>
     </div>
@@ -801,7 +836,7 @@
           <p>You’re about to use the DigiDollar mainnet wallet with <strong>real funds</strong>.</p>
           <ul>
             <li>Beta software, “as is”, no warranty; may contain bugs that lose funds.</li>
-            <li>Keys live only in this browser; no backup — clear browser data / lose device = funds gone.</li>
+            <li>Keys live only in this browser. Back up each wallet's seed phrase (Network → Back up now) — clearing browser data or losing this device without a backup means the funds are gone.</li>
             <li>During beta, transactions are capped at $500 each.</li>
             <li>You bear all risk. Authors accept no liability.</li>
           </ul>
@@ -822,7 +857,7 @@
           <p>Diginaut is provided <strong>for demonstration and educational purposes only</strong>. It is not a commercial product or a custodial service.</p>
           <p>The software is provided <strong>“as is”, with no warranty of any kind</strong>, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.</p>
           <p><strong>You bear all risk.</strong> This includes, without limitation, loss of funds arising from bugs, mistakes, misconfiguration, key loss, or network failures. The authors accept no liability for any loss or damage.</p>
-          <p>Your keys are generated in your browser and never leave it. <strong>If you lose your keys or recovery phrase, no one — including the authors — can recover your funds.</strong></p>
+          <p>Your keys are generated in your browser and never leave it. <strong>If you lose your keys or seed phrase, no one — including the authors — can recover your funds.</strong></p>
           <p>Nothing here is financial, legal, or tax advice. See the <a href="https://github.com/tonymorony/diginaut-wallet/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">MIT license</a> for the full terms.</p>
         </div>
       </div>

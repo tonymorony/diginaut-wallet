@@ -360,6 +360,9 @@ function show(state) {
   $('hero-guest').style.display = state === 'none' || state === 'locked' ? 'block' : 'none';
   $('w-connect').style.display = open || state === 'loading' ? 'none' : 'inline-block';
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
+  // backup-status surfaces belong to an OPEN wallet; renderBackupCta shows
+  // them again (or not) once openWallet knows the active wallet's flag
+  if (!open) { $('w-backup-badge').style.display = 'none'; $('w-backup-strip').style.display = 'none'; }
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
   // no indexer on this deployment: the money grid never loads, so say why (#61).
@@ -485,8 +488,9 @@ for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'dis
 }
 $('footer-disclaimer').addEventListener('click', () => openModal('disclaimer-modal'));
 $('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
-$('act-receive').addEventListener('click', () => openModal('receive-modal'));
-$('w-no-indexer-receive').addEventListener('click', () => openModal('receive-modal'));
+// both receive entry points go through the backup interception gate (spec §3)
+$('act-receive').addEventListener('click', openReceiveModal);
+$('w-no-indexer-receive').addEventListener('click', openReceiveModal);
 $('act-mint').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('dd-mint-open').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('net-btn').addEventListener('click', () => openModal('net-modal'));
@@ -597,6 +601,7 @@ function resetWalletState() {
   // the next wallet's balances are unknown until its first refresh — a stale
   // figure must not leak into fiat rows or the remove-ceremony warning
   lastConfirmedDgb = null; lastDdUsd = 0; openPositions = new Map();
+  renderBackupStrip(); // funds unknown again — the outgoing wallet's nag must not carry over
   hideSeed(); // an open reveal must not float over the next view (§5)
   closeConnectModal(); // nor a mid-ceremony backup view — words wiped with it
   closeWalletModal(); // nor the switcher (lock teardown, §5)
@@ -998,17 +1003,68 @@ $('w-quiz-verify').addEventListener('click', (e) =>
     setConnectMode('backup-done'); // success beat; Done closes
   }));
 
-// Back up now (net-modal): re-enter the same ceremony for the active wallet,
-// gated by password re-auth. Hidden once the active wallet is backed up.
+// ---- Backup-status surfaces (spec §3) ----
+// The active wallet's backedUp flag drives the header badge, the net-modal
+// button and the balance-gated strip; all re-render on wallet switch
+// (openWallet) and on quiz pass. The flag is cleared ONLY by a quiz pass.
 function renderBackupCta() {
   const m = vault.meta();
   const active = m?.wallets.find((w) => w.id === m.activeId);
-  $('w-backup-now').style.display = active && !active.backedUp ? 'block' : 'none';
+  const nag = Boolean(active && !active.backedUp);
+  $('w-backup-now').style.display = nag ? 'block' : 'none';
+  $('w-backup-badge').style.display = nag ? 'inline-block' : 'none';
+  renderBackupStrip();
 }
-$('w-backup-now').addEventListener('click', async () => {
+
+/** Every backup re-entry surface (badge, strip, receive guard, net-modal
+ * button) funnels here — re-auth gated like any other seed access (§5). */
+async function reenterBackupCeremony() {
+  if (!wallet.id) return;
   if (!(await requireReauth('Confirm your password to back up this wallet.'))) return;
   $('net-modal').classList.remove('open');
   beginBackupCeremony(wallet.id, vault.getMnemonic(wallet.id));
+}
+$('w-backup-now').addEventListener('click', reenterBackupCeremony);
+$('w-backup-badge').addEventListener('click', reenterBackupCeremony);
+
+// Balance-gated warning strip: the active wallet is not backed up AND holds
+// anything the indexer can see (confirmed DGB, spendable DD, or a locked
+// position). Dismiss is per wallet, per page load — the nag comes back next
+// session by design. A no-indexer deployment never learns the balance, so
+// the receive interception below is the only funds-arriving guard there.
+const stripDismissed = new Set(); // wallet ids dismissed this session
+function renderBackupStrip() {
+  const m = vault.status === 'unlocked' ? vault.meta() : null;
+  const active = m?.wallets.find((w) => w.id === m.activeId);
+  const funds = (lastConfirmedDgb ?? 0) > 0 || lastDdUsd > 0 || openPositions.size > 0;
+  const nag = Boolean(active && !active.backedUp && funds && !stripDismissed.has(active.id));
+  $('w-backup-strip').style.display = nag ? 'block' : 'none';
+}
+$('w-backup-strip-go').addEventListener('click', reenterBackupCeremony);
+$('w-backup-strip-dismiss').addEventListener('click', () => {
+  stripDismissed.add(wallet.id);
+  renderBackupStrip();
+});
+
+// Receive interception (BlueWallet pattern, spec §3): opening Receive on an
+// un-backed-up wallet shows a warning step first — EVERY open until the quiz
+// passes; "Continue anyway" is good for that one open. Both entry points
+// (act-receive and the no-indexer card) come through this gate.
+function openReceiveModal() {
+  const m = vault.meta();
+  const active = m?.wallets.find((w) => w.id === m.activeId);
+  const guard = Boolean(active && !active.backedUp);
+  $('w-receive-guard').style.display = guard ? 'block' : 'none';
+  $('w-receive-body').style.display = guard ? 'none' : 'block';
+  openModal('receive-modal');
+}
+$('w-receive-anyway').addEventListener('click', () => {
+  $('w-receive-guard').style.display = 'none';
+  $('w-receive-body').style.display = 'block';
+});
+$('w-receive-backup').addEventListener('click', () => {
+  $('receive-modal').classList.remove('open');
+  reenterBackupCeremony();
 });
 
 // Show seed phrase (net-modal): re-auth, then the same blur + decoy ceremony.
@@ -1321,6 +1377,7 @@ async function refreshMoney() {
     lastDdUsd = Number(ddCents) / 100;
     $('w-dd-balance').textContent = lastDdUsd.toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
+    renderBackupStrip(); // balance-gated (§3): fresh funds may summon the backup nag
     // a transient indexer hiccup shouldn't leave a stale error after recovery
     if ($('w-open-err').textContent.startsWith('indexer:')) $('w-open-err').textContent = '';
     const firstShow = $('w-money').style.display === 'none';
