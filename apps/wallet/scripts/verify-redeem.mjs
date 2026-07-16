@@ -70,6 +70,7 @@ await setVal('w-create-pass', 'redeem flow pass');
 await setVal('w-create-pass2', 'redeem flow pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 const addr0 = await evaluate(text('w-address'));
 const miner = await nodeRpc('getnewaddress', [], 'stand');
 await nodeRpc('sendtoaddress', [addr0, 8_000], 'stand');

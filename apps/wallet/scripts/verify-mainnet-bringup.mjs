@@ -124,6 +124,7 @@ await setVal('w-create-pass', 'correct horse battery');
 await setVal('w-create-pass2', 'correct horse battery');
 await click('w-create');
 await waitFor(visible('w-open'), 'unlocked after create');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 const placeholder = await evaluate(text('w-address'));
 check(!/1[a-z0-9]{20,}/.test(placeholder), `no address rendered for a guessed network: "${placeholder}"`);
 check(await evaluate(`document.getElementById('w-copy').disabled`), 'copy is disabled — nothing address-like to copy');
@@ -158,6 +159,10 @@ check((await evaluate(text('w-no-indexer'))).includes('indexer'), 'no-indexer pa
 check(await evaluate(`document.getElementById('loading-veil').style.display === 'none'`), 'no eternal loading veil without an indexer');
 await click('w-no-indexer-receive');
 await waitFor(`document.getElementById('receive-modal').classList.contains('open')`, 'receive modal opens from the panel');
+// the no-indexer entry point passes the backup interception too (spec §3)
+await waitFor(visible('w-receive-guard'), 'backup warning intercepts the un-backed-up receive');
+await click('w-receive-anyway');
+await waitFor(visible('w-receive-body'), 'receive view after "Continue anyway"');
 check((await evaluate(text('w-address'))).startsWith('dgb1p'), 'receive modal shows the mainnet address');
 
 await cdp('Target.closeTarget', { targetId });

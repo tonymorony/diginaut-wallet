@@ -86,9 +86,17 @@ await setVal('w-create-pass', 'public smoke pass');
 await setVal('w-create-pass2', 'public smoke pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'wallet created');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 check(await evaluate(`document.getElementById('w-mint').style.display !== 'none'`), 'stablecoin flows on by default (no flag)');
+// seed capture is re-auth gated now (spec §5): password → tap to reveal
 await click('w-backup');
-const seedA = await evaluate(text('w-seed-words'));
+await waitFor(`document.getElementById('reauth-modal').classList.contains('open')`, 're-auth prompt');
+await setVal('reauth-pass', 'public smoke pass');
+await click('reauth-go');
+await waitFor(`document.getElementById('w-seed').style.display !== 'none'`, 'seed view after re-auth');
+await click('w-seed-show'); // un-blur: swaps the decoys for the REAL words
+await waitFor(`${text('w-seed-words')}.trim().split(/\\s+/).length === 12`, 'seed phrase shown');
+const seedA = (await evaluate(text('w-seed-words'))).trim().split(/\s+/).join(' ');
 await click('w-backup'); // hide again
 check(seedA.split(' ').length === 12, 'wallet A seed captured for the restore leg');
 
@@ -146,6 +154,10 @@ check(true, "wallet A reflects the transfer: \$75.00 spendable");
 await click('w-lock');
 await waitFor(`document.getElementById('w-locked').style.display !== 'none'`, 'locked');
 await evaluate(`document.getElementById('w-forget').click()`);
+// erase is a ceremony now (spec §5): type ERASE to arm, then confirm
+await waitFor(`document.getElementById('w-erase-view').style.display !== 'none'`, 'erase ceremony');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
 await waitFor(`document.getElementById('w-none').style.display !== 'none'`, 'erased');
 await click('w-show-restore');
 await setVal('w-restore-seed', MNEMONIC_B);

@@ -54,7 +54,12 @@ check(/MAIN/.test(banner) && /TEST/.test(banner), 'banner names both chains (exp
 check(await evaluate(`document.getElementById('net-banner').classList.contains('danger')`), 'banner is danger-red');
 check(await evaluate(`document.getElementById('modeBadge').textContent === 'CROSS-WIRED'`), 'mode badge says CROSS-WIRED');
 check(await evaluate(`document.getElementById('w-loading').textContent.includes('wallet disabled')`), 'wallet boot is blocked with an explanation');
-check(!(await evaluate(`document.getElementById('w-none').style.display !== 'none'`)), 'create-wallet flow never appears');
+// w-none now lives inside the (closed) connect modal — §2 modal-mode
+// decoupling — so assert the flow is unreachable: modal shut, no connect chrome
+check(!(await evaluate(`document.getElementById('w-connect-modal').classList.contains('open')`))
+  && await evaluate(`document.getElementById('w-connect').style.display === 'none'`)
+  && await evaluate(`document.getElementById('hero-guest').style.display === 'none'`),
+  'create-wallet flow never appears');
 
 // the server side of the same coin: every RPC is refused
 const rpcRes = await fetch(APP + '/api/rpc', {

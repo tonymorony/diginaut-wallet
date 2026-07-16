@@ -74,6 +74,7 @@ await setVal('w-create-pass', 'send flow pass');
 await setVal('w-create-pass2', 'send flow pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 const addr0 = await evaluate(text('w-address'));
 
 // Fund directly from the stand wallet (the faucet path is #7's verify; its

@@ -71,6 +71,7 @@ await setVal('w-create-pass', 'balance flow pass');
 await setVal('w-create-pass2', 'balance flow pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'unlocked');
+await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
 
 // empty wallet: money section appears via polling with zero balance
 await waitFor(`document.getElementById('w-money').style.display !== 'none'`, 'money section shown');

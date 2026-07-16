@@ -111,7 +111,10 @@ const ackBody = (await evaluate(`document.querySelector('#mainnet-ack-modal .mod
 check(/Real money ahead/.test(ackBody), 'interstitial title: "Real money ahead"');
 check(/real funds/.test(ackBody) && /no warranty/.test(ackBody), 'copy: real funds + no warranty');
 check(/\$500/.test(ackBody), 'copy: the $500/tx cap is stated');
-check(/no backup/.test(ackBody) && /all risk/.test(ackBody), 'copy: no backup + user bears all risk');
+// copy pass (spec §6): the bullet now points at the backup flow instead of
+// declaring "no backup" — the warning it must carry is unchanged
+check(/without a backup/.test(ackBody) && /funds are gone/.test(ackBody) && /all risk/.test(ackBody),
+  'copy: funds gone without a backup + user bears all risk');
 check(!(await evaluate(`document.querySelector('#mainnet-ack-modal [data-close]')`)), 'no close button — the two choices are the only way out');
 await shot('95-mainnet-interstitial.png');
 
