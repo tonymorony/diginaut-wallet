@@ -484,9 +484,17 @@ function closeConnectModal() {
 // ---- v3 action modals: Send / Receive / Mint / Network ----
 const openModal = (id) => $(id).classList.add('open');
 document.querySelectorAll('[data-close]').forEach((b) =>
-  b.addEventListener('click', () => b.closest('.modal-backdrop').classList.remove('open')));
+  b.addEventListener('click', () => {
+    const modal = b.closest('.modal-backdrop');
+    modal.classList.remove('open');
+    if (modal.id === 'net-modal') hideSeed(); // a revealed seed must not outlive the modal (§5)
+  }));
 for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal', 'wallet-modal']) {
-  $(id).addEventListener('click', (e) => { if (e.target === $(id)) $(id).classList.remove('open'); });
+  $(id).addEventListener('click', (e) => {
+    if (e.target !== $(id)) return;
+    $(id).classList.remove('open');
+    if (id === 'net-modal') hideSeed(); // same rule on backdrop-click close
+  });
 }
 $('footer-disclaimer').addEventListener('click', () => openModal('disclaimer-modal'));
 $('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });

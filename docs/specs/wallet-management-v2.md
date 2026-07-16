@@ -233,8 +233,9 @@ No timer-based reminder modals (rejected: no honest scheduler in a browser).
 
 - Disclaimer modal bullet "Keys live only in this browser; no backup — clear browser data /
   lose device = funds gone." becomes: "Keys live only in this browser. Back up each wallet's
-  seed phrase (Settings → Back up) — clearing browser data or losing this device without a
-  backup means the funds are gone."
+  seed phrase (Network → Back up now) — clearing browser data or losing this device without
+  a backup means the funds are gone." (The backup control lives in the Network modal; there
+  is no "Settings" menu.)
 - All new warning copy is plain, non-jargon, and consistent in tone with the beta posture UI.
 
 ## 7. Multi-wallet UI (#94)
