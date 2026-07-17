@@ -138,6 +138,10 @@
     footer.site .version-line { margin: 6px 0 0; font-size: 11px; color: var(--gray-400); }
     footer.site button.linklike { display: inline; width: auto; margin: 0; padding: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; }
     footer.site button.linklike:hover { background: none; color: var(--accent-2); }
+    /* low-emphasis inline link-button — the receive compat toggle (#103) must
+       not compete with the primary taproot address it sits under */
+    button.textlink { display: inline; width: auto; margin: 10px 0 0; padding: 0; background: none; color: var(--muted); font: 500 12.5px/1.4 Inter, -apple-system, sans-serif; text-decoration: underline; cursor: pointer; }
+    button.textlink:hover { background: none; color: var(--text); }
     .modal .disclaimer-body p { margin: 0 0 12px; color: var(--gray-700); }
     .modal .disclaimer-body p:last-child { margin-bottom: 0; }
     .modal .disclaimer-body strong { color: var(--text); }
@@ -206,6 +210,7 @@
     .modal-backdrop.success .tx-success { display: block; }
     #send-modal.success .send-forms, #send-modal.success label[for="send-asset"], #send-modal.success .dd { display: none; }
     #mint-modal.success #w-mint { display: none; }
+    #consolidate-modal.success #w-consolidate { display: none; }
     .tx-success .tx-check { color: var(--good); }
     .tx-success .tx-title { margin: 10px 0 2px; font-size: 18px; font-weight: 600; }
     .tx-success .tx-link { display: inline-block; margin: 2px 0 4px; }
@@ -426,6 +431,8 @@
         </div>
         <div class="hint" id="w-rd-out"></div>
         <div class="err" id="w-rd-err"></div>
+        <!-- revealed by busy() only on a fragmentation error (#103 decision 2) -->
+        <button id="w-rd-err-consolidate" class="secondary" style="display:none">Consolidate coins</button>
         <button id="dd-mint-open" class="secondary">Mint DigiDollar</button>
       </section>
 
@@ -645,6 +652,8 @@
             </div>
             <div class="hint" id="w-send-out"></div>
             <div class="err" id="w-send-err"></div>
+            <!-- revealed by busy() only on a fragmentation error (#103 decision 2) -->
+            <button id="w-send-err-consolidate" class="secondary" style="display:none">Consolidate coins</button>
           </div>
           <!-- Transfer DigiDollar (#15): ships together with Mint and Redeem (ADR-0002) -->
           <div id="w-transfer">
@@ -666,6 +675,8 @@
             </div>
             <div class="hint" id="w-tr-out"></div>
             <div class="err" id="w-tr-err"></div>
+            <!-- revealed by busy() only on a fragmentation error (#103 decision 2) -->
+            <button id="w-tr-err-consolidate" class="secondary" style="display:none">Consolidate coins</button>
           </div>
         </div>
         <!-- shown instead of the form once a tx is broadcast -->
@@ -707,6 +718,22 @@
         <input id="w-req-amount" inputmode="decimal" autocomplete="off" placeholder="e.g. 12.5" />
         <div class="grid" style="margin-top:0">
           <button id="w-copy-uri" class="secondary" style="display:none">Copy payment request</button>
+        </div>
+        <!-- Compatibility twin (#103 decision 1): some senders (older wallets,
+             exchanges) cannot pay taproot dgb1p… addresses. The low-emphasis
+             link reveals the SAME key's P2WPKH twin (dgb1q…, same derivation
+             index — already watched alongside its P2TR, #38), so funds sent to
+             either land in the same balance. Hidden again on every open:
+             the receive view stays taproot-first. -->
+        <button id="w-compat-toggle" class="textlink" type="button">Sender can’t pay this address?</button>
+        <div id="w-compat-section" style="display:none">
+          <p class="hint" style="margin-top:8px">Older wallets and some exchanges cannot send to taproot (dgb1p…) addresses. This is the same wallet key in the older witness-v0 form — funds sent here appear in the same balance.</p>
+          <div class="qr" id="w-compat-qr" aria-label="Compatibility address QR code"></div>
+          <div class="out mono" style="margin-top:0" id="w-compat-address"></div>
+          <div class="grid" style="margin-top:0">
+            <button id="w-compat-copy" class="secondary">Copy compatibility address</button>
+            <button id="w-compat-copy-uri" class="secondary" style="display:none">Copy payment request</button>
+          </div>
         </div>
         <!-- Same taproot key, DigiDollar base58check form (DD…/TD…/RD…). Core and
              mobile wallets can only send DigiDollar to THIS form, not to dgb1p…. -->
@@ -753,6 +780,8 @@
           </div>
           <div class="hint" id="w-mint-out"></div>
           <div class="err" id="w-mint-err"></div>
+          <!-- revealed by busy() only on a fragmentation error (#103 decision 2) -->
+          <button id="w-mint-err-consolidate" class="secondary" style="display:none">Consolidate coins</button>
         </div>
         <!-- shown instead of the form once the mint is broadcast -->
         <div class="tx-success">
@@ -807,6 +836,41 @@
             <option value="30">30 minutes</option>
             <option value="0">Never</option>
           </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Guided consolidation modal (#103 decision 2): opened ONLY from a
+         "Consolidate coins" offer next to a fragmentation error — never
+         automatically. One reviewed, client-signed self-spend of every
+         confirmed DGB coin (P2WPKH twins included) to the current taproot
+         receive address. Sits AFTER the action modals in the DOM so it stacks
+         over the modal whose error offered it (equal z-index → DOM order), but
+         BEFORE reauth/mainnet-ack, which must stay on top of everything. -->
+    <div id="consolidate-modal" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head"><h3>Consolidate coins</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div id="w-consolidate">
+          <p class="hint" style="margin-top:0">Your balance is spread across several coins, and the action you tried needs one coin big enough on its own. This merges every confirmed DGB coin into a single coin at your current receive address — only the network fee is spent, the funds stay yours.</p>
+          <div id="w-cons-confirm" style="display:none">
+            <div class="row"><span class="k">Coins merged</span><span class="v" id="w-cons-c-count"></span></div>
+            <div class="row"><span class="k">Consolidated amount</span><span class="v"><span id="w-cons-c-amount"></span> DGB</span></div>
+            <div class="row"><span class="k">To (your address)</span><span class="v mono" id="w-cons-c-to" style="word-break:break-all"></span></div>
+            <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-cons-c-fee"></span> DGB</span></div>
+            <div class="grid">
+              <button id="w-cons-go">Confirm &amp; consolidate</button>
+              <button id="w-cons-cancel" class="secondary" data-close>Cancel</button>
+            </div>
+          </div>
+          <div class="err" id="w-cons-err"></div>
+        </div>
+        <!-- shown instead of the form once the consolidation is broadcast -->
+        <div class="tx-success">
+          <svg class="tx-check" width="44" height="44" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="tx-title"></div>
+          <a class="tx-link mono" target="_blank" rel="noopener"></a>
+          <p class="hint tx-note" style="margin-top:2px"></p>
+          <button data-close>Done</button>
         </div>
       </div>
     </div>

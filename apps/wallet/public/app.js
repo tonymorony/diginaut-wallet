@@ -380,7 +380,7 @@ function show(state) {
     // while open it is driven solely by the ceremony/add-wallet flows (§2)
     setConnectMode(state === 'locked' ? 'unlock' : 'choice');
     // action modals must not survive a lock/disconnect
-    for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'wallet-modal']) $(id).classList.remove('open');
+    for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'wallet-modal', 'consolidate-modal']) $(id).classList.remove('open');
   }
   dockPriceBlock(open);
   // loading veil covers the gap between unlock and the first indexer answer
@@ -489,7 +489,7 @@ document.querySelectorAll('[data-close]').forEach((b) =>
     modal.classList.remove('open');
     if (modal.id === 'net-modal') hideSeed(); // a revealed seed must not outlive the modal (§5)
   }));
-for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal', 'wallet-modal']) {
+for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal', 'wallet-modal', 'consolidate-modal']) {
   $(id).addEventListener('click', (e) => {
     if (e.target !== $(id)) return;
     $(id).classList.remove('open');
@@ -541,20 +541,26 @@ function renderAddress() {
   // Never show an address for a guessed network: on a mainnet deployment with
   // an unreachable node the default would be testnet-encoded — confusing at
   // best. loadStatus retries until the node names its chain, then re-renders.
-  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet'), $('w-copy-dd')];
+  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet'), $('w-copy-dd'), $('w-compat-copy')];
   if (!chainState.netKnown) {
     $('w-path').textContent = '';
     $('w-address').textContent = 'waiting for the node to report a supported network…';
     $('w-dd-address').textContent = '';
+    $('w-compat-address').textContent = '';
     $('w-chip-addr').textContent = '…';
     $('w-qr').innerHTML = '';
+    $('w-compat-qr').innerHTML = '';
     for (const b of addressActions) b.disabled = true; // nothing here to copy/claim
     return;
   }
   for (const b of addressActions) b.disabled = false;
-  const { path, address } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
+  const { path, address, p2wpkhAddress } = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
   $('w-path').textContent = path;
   $('w-address').textContent = address;
+  // The SAME key's P2WPKH twin (dgb1q…, same index) for senders that cannot
+  // pay taproot (#103 decision 1). Already watched for balance/history (#38),
+  // so funds arriving here show up like any other coin.
+  $('w-compat-address').textContent = p2wpkhAddress;
   // Same taproot key in DigiDollar base58check form — the ONLY encoding Core /
   // mobile wallets accept as a DigiDollar recipient (their senddigidollar checks
   // the DD…/TD…/RD… prefix). decodeDDAddress(address) yields the shared key.
@@ -568,6 +574,14 @@ function renderAddress() {
 // mobile scan prefills address + amount. A bech32 address alone is uppercased to
 // hit the QR alphanumeric mode (sparser, easier to scan); a URI has a query
 // string with chars outside that charset, so it must be encoded in byte mode.
+function drawAddressQr(el, address, requestSats) {
+  const qr = qrcode(0, 'M');
+  if (requestSats > 0n) qr.addData(encodeBip21({ address, amountSats: requestSats }), 'Byte');
+  else qr.addData(address.toUpperCase(), 'Alphanumeric');
+  qr.make();
+  el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+}
+
 function updateReceiveQr() {
   if (!chainState.netKnown) return;
   const address = $('w-address').textContent;
@@ -577,14 +591,26 @@ function updateReceiveQr() {
     if (raw) requestSats = dgbToSats(raw);
   } catch { requestSats = 0n; } // partial/invalid input → fall back to bare address
   const useUri = requestSats > 0n;
-
-  const qr = qrcode(0, 'M');
-  if (useUri) qr.addData(encodeBip21({ address, amountSats: requestSats }), 'Byte');
-  else qr.addData(address.toUpperCase(), 'Alphanumeric');
-  qr.make();
-  $('w-qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  drawAddressQr($('w-qr'), address, requestSats);
   $('w-copy-uri').style.display = useUri ? '' : 'none';
+  // the compat view mirrors the same request on the P2WPKH twin (#103): the
+  // BIP21 amount applies to whichever address the sender is shown
+  if ($('w-compat-section').style.display !== 'none') {
+    drawAddressQr($('w-compat-qr'), $('w-compat-address').textContent, requestSats);
+    $('w-compat-copy-uri').style.display = useUri ? '' : 'none';
+  }
 }
+
+// Receive compat toggle (#103 decision 1): the receive view is taproot-first —
+// the twin stays behind this low-emphasis link and re-hides on every open.
+function setCompatShown(show) {
+  $('w-compat-section').style.display = show ? 'block' : 'none';
+  $('w-compat-toggle').textContent = show ? 'Hide compatibility address' : 'Sender can’t pay this address?';
+  if (show) updateReceiveQr(); // the twin QR renders lazily, only when revealed
+}
+$('w-compat-toggle').addEventListener('click', () => {
+  setCompatShown($('w-compat-section').style.display === 'none');
+});
 
 function openWallet(id, mnemonic) {
   wallet.id = id;
@@ -608,6 +634,7 @@ function resetWalletState() {
   resetMint(); // pendingMint holds the funding UTXO's private key — same
   resetTransfer(); // pendingTransfer holds DD + fee UTXO keys — same
   resetRedeem(); // pendingRedeem holds burn + fee UTXO keys — same
+  resetConsolidate(); // pendingConsolidate holds every spendable coin's key — same
   $('w-send-out').textContent = '';
   $('w-mint-out').textContent = '';
   $('w-tr-out').textContent = '';
@@ -738,11 +765,18 @@ function surfaceError(e) {
 async function busy(btn, errId, fn) {
   const el = $(errId);
   el.textContent = '';
+  // A fragmentation error (consolidatable flag) reveals the "Consolidate
+  // coins" offer that sits under this error area, when one exists (#103
+  // decision 2). Any other outcome — success or a different error — hides it,
+  // so a stale offer never outlives the error it belongs to.
+  const offer = $(errId + '-consolidate');
+  if (offer) offer.style.display = 'none';
   btn.disabled = true;
   try {
     await fn();
   } catch (e) {
     el.textContent = surfaceError(e);
+    if (offer && e.consolidatable) offer.style.display = 'block';
   } finally {
     btn.disabled = false;
   }
@@ -889,6 +923,13 @@ $('w-req-amount').addEventListener('input', updateReceiveQr);
 $('w-copy-uri').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () =>
     navigator.clipboard.writeText(encodeBip21({ address: $('w-address').textContent, amountSats: dgbToSats($('w-req-amount').value) }))));
+// compat twin copy buttons (#103 decision 1) — the payment request carries the
+// twin address, so the BIP21 amount applies to the address actually shown
+$('w-compat-copy').addEventListener('click', async (e) =>
+  busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-compat-address').textContent)));
+$('w-compat-copy-uri').addEventListener('click', async (e) =>
+  busy(e.target, 'w-open-err', () =>
+    navigator.clipboard.writeText(encodeBip21({ address: $('w-compat-address').textContent, amountSats: dgbToSats($('w-req-amount').value) }))));
 $('w-faucet').addEventListener('click', (e) =>
   busy(e.target, 'w-open-err', async () => {
     $('w-faucet-out').textContent = 'Requesting…';
@@ -1133,6 +1174,7 @@ function openReceiveModal() {
   const guard = Boolean(active && !active.backedUp);
   $('w-receive-guard').style.display = guard ? 'block' : 'none';
   $('w-receive-body').style.display = guard ? 'none' : 'block';
+  setCompatShown(false); // taproot-first on every open (#103 decision 1)
   openModal('receive-modal');
 }
 $('w-receive-anyway').addEventListener('click', () => {
@@ -1970,6 +2012,85 @@ $('w-send-go').addEventListener('click', (e) =>
     refreshMoney();
   }));
 
+// ---- Guided consolidation (#103 decision 2) ----
+// When a plan fails only because the balance is FRAGMENTED — it covers the
+// amount, but no single qualifying coin does — the error area offers
+// "Consolidate coins": ONE self-spend of every confirmed DGB coin (P2WPKH
+// twins included, #38/decision 3) to the CURRENT taproot receive address, so
+// the retry finds one big P2TR coin. NEVER automatic: the user reviews the
+// coin count and fee in this modal and confirms, like any other spend.
+
+/** An error the Consolidate offer can actually fix. busy() reads the flag. */
+function fragmentationError(msg) {
+  const e = new Error(msg);
+  e.consolidatable = true;
+  return e;
+}
+
+let pendingConsolidate = null; // { plan, toAddress } — plan.inputs hold per-UTXO keys
+
+function resetConsolidate() {
+  pendingConsolidate = null;
+  $('consolidate-modal').classList.remove('open');
+}
+
+async function openConsolidateModal() {
+  // normal gating (#103): a locked wallet has no keys to plan with, and an
+  // open connect/backup ceremony keeps its modal in front — never plan under it
+  if (!wallet.seed || $('w-connect-modal').classList.contains('open')) return;
+  pendingConsolidate = null;
+  $('consolidate-modal').classList.remove('success');
+  $('w-cons-err').textContent = '';
+  $('w-cons-confirm').style.display = 'none';
+  openModal('consolidate-modal');
+  try {
+    if (!appConfig.indexer || !chainState.netKnown) throw new Error('balance is unavailable right now');
+    const toAddress = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
+    // confirmed, non-DD coins only — the same set Send-max drains. planMaxSpend
+    // prices the one-output tx: amount = Σ(inputs) − fee, zero change. No $500
+    // beta cap here: a self-spend moves nothing out of the wallet — capping it
+    // would strand any balance above the cap fragmented forever.
+    const spendable = (await spendableUtxos()).filter((u) => u.height > 0 && u.valueSats > 0n);
+    if (spendable.length < 2) {
+      throw new Error(spendable.length === 1
+        ? 'you already have a single confirmed coin — consolidating would only pay a fee'
+        : 'no confirmed coins to consolidate');
+    }
+    const plan = planMaxSpend({ utxos: spendable, recipientScriptHex: scriptPubKeyFromAddress(toAddress) });
+    pendingConsolidate = { plan, toAddress };
+    $('w-cons-c-count').textContent = String(plan.inputs.length);
+    $('w-cons-c-amount').textContent = satsToDgb(plan.amountSats);
+    $('w-cons-c-to').textContent = toAddress;
+    $('w-cons-c-fee').textContent = satsToDgb(plan.feeSats);
+    $('w-cons-confirm').style.display = 'block';
+  } catch (e) {
+    $('w-cons-err').textContent = surfaceError(e);
+  }
+}
+for (const id of ['w-send-err-consolidate', 'w-mint-err-consolidate', 'w-tr-err-consolidate', 'w-rd-err-consolidate']) {
+  $(id).addEventListener('click', openConsolidateModal);
+}
+
+$('w-cons-go').addEventListener('click', (e) =>
+  busy(e.target, 'w-cons-err', async () => {
+    if (!wallet.seed) throw new Error('wallet is locked');
+    if (!pendingConsolidate) throw new Error('nothing planned — close and reopen this dialog');
+    const { plan, toAddress } = pendingConsolidate;
+    const script = scriptPubKeyFromAddress(toAddress);
+    const { hex } = buildSignedSpendTx({
+      utxos: plan.inputs,
+      recipientScriptHex: script,
+      amountSats: plan.amountSats,
+      changeScriptHex: script, // zero change by construction (max plan) — same address either way
+      feeSats: plan.feeSats,
+    });
+    const txid = await broadcastTx(hex);
+    pendingConsolidate = null;
+    showTxSuccess('consolidate-modal', txid, 'Consolidation sent',
+      'Once the next block confirms it, retry the action that failed — your DGB will be one coin.');
+    refreshMoney();
+  }));
+
 // ---- Mint DigiDollar (#14): plan → confirmation screen → sign → broadcast ----
 // Feature-flagged (ADR-0002). Distinct, actionable errors for the three ways
 // this can be impossible: softfork inactive, stale oracle quote, and not
@@ -2085,9 +2206,11 @@ $('w-mint-review').addEventListener('click', (e) =>
     const utxo = utxos.filter((u) => u.type !== 'p2wpkh' && u.valueSats >= needSats)
       .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
     if (!utxo) {
-      throw new Error(totalSats >= needSats
-        ? `your balance covers it, but no single coin is large enough (a mint spends one coin). Send ${fmtSats(needSats)} DGB to your own address to consolidate, then retry.`
-        : `insufficient funds: this mint needs ${fmtSats(needSats)} DGB (collateral + fee), you have ${fmtSats(totalSats)} DGB`);
+      // fragmented (not insufficient) funds are fixable by the guided
+      // consolidation — the flag reveals the "Consolidate coins" offer (#103)
+      throw totalSats >= needSats
+        ? fragmentationError(`your balance covers it, but no single coin is large enough (a mint spends one coin). Send ${fmtSats(needSats)} DGB to your own address to consolidate, then retry.`)
+        : new Error(`insufficient funds: this mint needs ${fmtSats(needSats)} DGB (collateral + fee), you have ${fmtSats(totalSats)} DGB`);
     }
     const { blocks: tipHeight } = await rpc('getblockchaininfo');
     const unlockHeight = tipHeight + 1 + MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS + tier.lockBlocks;
@@ -2201,7 +2324,12 @@ $('w-tr-review').addEventListener('click', (e) =>
       .filter((u) => u.type !== 'p2wpkh' && u.privKeyHex === ddUtxo.privKeyHex && u.valueSats >= TRANSFER_FEE_SATS)
       .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
     if (!feeUtxo) {
-      throw new Error(`no DGB for the fee on the address holding this DigiDollar — send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to ${ddUtxo.address}, then retry`);
+      const msg = `no DGB for the fee on the address holding this DigiDollar — send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to ${ddUtxo.address}, then retry`;
+      // consolidation lands every DGB coin on the CURRENT receive address as
+      // P2TR — offer it only when that is where the fee is missing (a fee-only
+      // p2wpkh twin balance there is the common post-mint case, #103)
+      const cur = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
+      throw ddUtxo.address === cur ? fragmentationError(msg) : new Error(msg);
     }
     pendingTransfer = { ddUtxo, feeUtxo, cents, outputKeyHex: decoded.outputKeyHex, address };
     $('w-tr-c-to').textContent = address;
@@ -2281,7 +2409,11 @@ $('w-positions').addEventListener('click', (e) => {
       .filter((u) => u.type !== 'p2wpkh' && u.privKeyHex === burn[0].privKeyHex && u.valueSats >= REDEEM_FEE_SATS)
       .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
     if (!feeUtxo) {
-      throw new Error(`no DGB for the fee on the position's address — send at least ${fmtSats(REDEEM_FEE_SATS)} DGB to ${p.address}, then retry`);
+      const msg = `no DGB for the fee on the position's address — send at least ${fmtSats(REDEEM_FEE_SATS)} DGB to ${p.address}, then retry`;
+      // same rule as the transfer fee gate: consolidation only helps when the
+      // position sits on the CURRENT receive address (where the merged coin lands)
+      const cur = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
+      throw p.address === cur ? fragmentationError(msg) : new Error(msg);
     }
     pendingRedeem = { position: p, ddUtxos: burn, feeUtxo };
     $('w-rd-c-txid').textContent = p.txid.slice(0, 12) + '…';
