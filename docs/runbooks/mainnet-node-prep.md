@@ -84,6 +84,19 @@ of sitting in one.
 
 - RPC warms up first: `getblockchaininfo` returns error -28 "Loading blocks…"
   for ~10 min after start (dbcache=2500 reload) — wait, don't restart.
+- **Post-DD-activation boots take 40–60+ min MORE**: after "Starting network
+  threads…" the v9.26.4 init runs `OracleBundleManager::LoadPricesFromChain`,
+  scanning the last **172,800 blocks** for oracle prices (one log line:
+  "Oracle: Scanning last 172800 blocks…", then SILENCE until "Done loading").
+  During the scan RPC stays -28 and NO peers connect — the node looks wedged
+  but is not. **NEVER restart during this phase — a restart resets the scan
+  to zero** (hit twice in production on activation day 2026-07-17; the
+  "wedge" was this scan both times).
+- Invalid third-party blocks are fine: activation day saw a rogue miner
+  broadcast DD blocks without MuSig2 oracle bundles; `bad-oracle-missing`
+  ConnectBlock errors in the log mean the node REJECTED them, as did the
+  whole network (explorer height keeps advancing without those hashes).
+  Rejection errors + advancing network ≠ our node forked.
 - `digibyte-cli getblockchaininfo` → chain "main", IBD false, height advancing
 - `digibyte-cli --version` → 9.26.4
 - As `diginaut` via curl: a whitelisted method answers; `getblock` → forbidden
