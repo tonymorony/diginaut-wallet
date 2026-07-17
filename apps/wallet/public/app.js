@@ -2045,16 +2045,23 @@ async function openConsolidateModal() {
   openModal('consolidate-modal');
   try {
     if (!appConfig.indexer || !chainState.netKnown) throw new Error('balance is unavailable right now');
-    const toAddress = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
+    const current = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index });
+    const toAddress = current.address;
     // confirmed, non-DD coins only — the same set Send-max drains. planMaxSpend
     // prices the one-output tx: amount = Σ(inputs) − fee, zero change. No $500
     // beta cap here: a self-spend moves nothing out of the wallet — capping it
     // would strand any balance above the cap fragmented forever.
     const spendable = (await spendableUtxos()).filter((u) => u.height > 0 && u.valueSats > 0n);
-    if (spendable.length < 2) {
-      throw new Error(spendable.length === 1
-        ? 'you already have a single confirmed coin — consolidating would only pay a fee'
-        : 'no confirmed coins to consolidate');
+    if (spendable.length === 0) throw new Error('no confirmed coins to consolidate');
+    // ONE coin is not always pointless: a sole P2WPKH twin (the common
+    // post-mint case — mint change lands as v0) still needs consolidating,
+    // because the self-spend converts it to key-path P2TR on the current
+    // address, which the mint/transfer/redeem builders require. Same for a
+    // sole P2TR coin on an OLD address: the fee gates want it on the current
+    // one. Only a single P2TR coin ALREADY on the current address gains
+    // nothing — a self-spend there would change nothing but pay a fee.
+    if (spendable.length === 1 && spendable[0].type !== 'p2wpkh' && spendable[0].privKeyHex === current.privKeyHex) {
+      throw new Error('your DGB is already a single coin on your current address — consolidating would only pay a fee');
     }
     const plan = planMaxSpend({ utxos: spendable, recipientScriptHex: scriptPubKeyFromAddress(toAddress) });
     pendingConsolidate = { plan, toAddress };

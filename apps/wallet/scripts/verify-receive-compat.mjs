@@ -15,8 +15,16 @@
 //      taproot address with the fee shown; Confirm signs + broadcasts. The
 //      built tx is asserted structurally (2 segwit inputs = both funding
 //      txids, exactly one output = the wallet's own P2TR script, no change).
-//      The transfer fee-missing variant is driven too (DD on the current
-//      address, DGB only on the twin → offer shown).
+//      The transfer fee-missing variant is driven THROUGH execution too (DD
+//      on the current address, DGB only on the SINGLE twin coin — the
+//      headline post-mint case): its offer must not dead-end on a "single
+//      coin" guard, because consolidating one P2WPKH twin converts it to the
+//      key-path P2TR the transfer/redeem fee gates require. The built 1-in/
+//      1-out tx is asserted structurally. Finally the corrected guard is
+//      pinned: a single P2TR coin ALREADY on the current address (the one
+//      genuinely pointless case) still gets the fee-only refusal.
+//      (The redeem variant shares the exact same fee gate + offer wiring but
+//      cannot be driven here: the fake indexer serves no positions.)
 // Mock limits (say so honestly): the mock node accepts sendrawtransaction
 // with a FAKE txid and the fake indexer never updates, so the consolidation
 // cannot be observed confirming here — the tx SHAPE and the full confirm
@@ -175,6 +183,51 @@ await click('w-tr-review');
 await waitFor(`${text('w-tr-err')}.includes('no DGB for the fee')`, 'transfer fee-missing error');
 await waitFor(visible('w-tr-err-consolidate'), 'transfer error also offers Consolidate coins');
 check(true, 'fee-missing-on-current-address transfer error reveals the same guided consolidation');
+
+// ---- Click THROUGH the transfer offer: the sole spendable coin is the single
+// P2WPKH twin (txidB) — consolidating it is USEFUL (p2wpkh → key-path P2TR on
+// the current address, which the transfer fee gate requires), so the modal
+// must plan a 1-input self-spend, not dead-end on a single-coin guard.
+await click('w-tr-err-consolidate');
+await waitFor(`document.getElementById('consolidate-modal').classList.contains('open')`, 'consolidate modal open (transfer variant)');
+await waitFor(visible('w-cons-confirm'), 'single-twin consolidation IS planned — no dead-end');
+check((await evaluate(text('w-cons-err'))) === '', 'no guard error for the sole twin coin');
+check((await evaluate(text('w-cons-c-count'))) === '1', 'plan spends the ONE twin coin');
+check((await evaluate(text('w-cons-c-to'))) === addr0, 'destination is the current taproot address — the type conversion is the point');
+// fee model: 42 (overhead) + 272 (P2WPKH in) + 172 (P2TR out) = 486 wu
+// → 122 vB → 12,200 sats at the 100k sats/kvB relay rate
+check((await evaluate(text('w-cons-c-fee'))) === '0.000122', 'fee priced for the single v0 input: 0.000122 DGB');
+check((await evaluate(text('w-cons-c-amount'))) === '39,999.999878', 'amount = twin balance − fee (nothing left behind)');
+await click('w-cons-go');
+await waitFor(`document.getElementById('consolidate-modal').classList.contains('success')`, 'single-twin consolidation broadcast');
+const hex2 = await evaluate(`window.__sentHexes[1]`);
+check(typeof hex2 === 'string' && hex2.startsWith('02000000' + '0001' + '01'),
+  'twin-only tx: version-2 segwit with exactly ONE input');
+check(hex2.includes(rev(txidB)) && !hex2.includes(rev(txidA)),
+  'that input IS the P2WPKH twin coin');
+// 1 input × 82 chars after the 14-char version+marker+count prefix → the
+// output-count varint sits at offset 96
+check(hex2.slice(96, 98) === '01', 'one output — a pure self-spend, no change');
+check(hex2.split('22' + script).length === 2,
+  'output pays the current taproot script — the twin was converted p2wpkh → p2tr');
+
+// ---- Corrected guard: a single P2TR coin ALREADY on the current address is
+// the one case where a self-spend genuinely buys nothing — the modal must
+// still refuse with the fee-only explanation (and never show a confirm).
+await evaluate(`document.getElementById('consolidate-modal').classList.remove('open')`);
+const txidC = 'dd'.repeat(31) + '04';
+await fund(expectedTwin, { utxos: [] }); // twin coin "spent"
+await fund(addr0, { // one small P2TR coin (< the 0.12 DGB DD fee) + the same DD
+  utxos: [{ txid: txidC, vout: 0, valueSats: '1000000', height: 103 }],
+  ddCents: '500', ddUtxos: [{ txid: 'cc'.repeat(31) + '03', vout: 1, cents: '500', height: 102 }],
+});
+await click('w-tr-review'); // busy() clears the error area synchronously, so the waits below see the NEW round
+await waitFor(`${text('w-tr-err')}.includes('no DGB for the fee')`, 'fee-missing error again (coin too small)');
+await waitFor(visible('w-tr-err-consolidate'), 'offer shown again');
+await click('w-tr-err-consolidate');
+await waitFor(`${text('w-cons-err')}.includes('only pay a fee')`, 'single current-address P2TR coin → fee-only refusal');
+check(!(await evaluate(visible('w-cons-confirm'))), 'no confirm ceremony for the pointless case');
+check((await evaluate(`window.__sentHexes.length`)) === 2, 'and nothing was broadcast for it');
 
 console.log('\nDone.');
 b.close();
