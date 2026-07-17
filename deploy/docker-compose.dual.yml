@@ -41,6 +41,13 @@ services:
       DGB_HRP: dgb # mainnet bech32 HRP — fixed, not configurable, so it cannot cross-wire
       ELECTRUM_HOST: electrumx-main
       ELECTRUM_PORT: 50001
+      # TEMPORARY fallback while electrumx-main does its multi-day genesis
+      # sync: uncomment to serve balances/UTXOs/history from DigiScope (the
+      # DigiByte Android wallet's production backend) instead of our own
+      # ElectrumX. Enabling this TRUSTS A THIRD PARTY for everything the
+      # wallet DISPLAYS — broadcasts still go through our own node. Remove
+      # again the moment electrumx-main has caught up. See apps/indexer/digiscope.js.
+      # DIGISCOPE_URL: https://api.digiscope.me/api
     depends_on: [electrumx-main]
     restart: unless-stopped
 

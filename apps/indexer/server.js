@@ -4,12 +4,16 @@
 // behind this API — the M3 DigiDollar-positions scanner lands here too.
 //
 // Privacy (AC): queries are per-address only; xpubs never reach this service.
+//
+// FALLBACK (temporary): DIGISCOPE_URL swaps the Electrum backend for the
+// third-party DigiScope HTTP API — display data only, see digiscope.js.
 
 import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { decodeWitnessAddress, parseDDVersion, parseMintMetadata, parseTransferMetadata, parseRedeemMetadata, ddTokenOutputKey, LOCK_TIERS } from 'digidollar-js';
+import { createDigiScopeBackend } from './digiscope.js';
 
 export function configFromEnv() {
   return {
@@ -19,6 +23,10 @@ export function configFromEnv() {
       host: process.env.ELECTRUM_HOST || '127.0.0.1',
       port: Number(process.env.ELECTRUM_PORT) || 50001,
     },
+    // TEMPORARY STOPGAP (see digiscope.js): when set, ALL routes are answered
+    // from DigiScope's third-party HTTP API instead of our own ElectrumX —
+    // display data only; broadcasts still go through our own node.
+    digiscopeUrl: process.env.DIGISCOPE_URL || '',
   };
 }
 
@@ -177,8 +185,10 @@ function ddAmountsByVout(tx) {
   return new Map(ddVouts.map((o, i) => [o.n, amounts[i]]).filter(([, cents]) => cents !== undefined));
 }
 
-/** Resolve the address's zero-value UTXOs to DD cents via their creating txs. */
-async function scanDDUtxos(withElectrum, unspent) {
+/** Resolve the address's zero-value UTXOs to DD cents via their creating txs.
+ *  Exported for the DigiScope fallback backend, which feeds it the same
+ *  Electrum-verbose tx shape rebuilt from raw hex (digiscope.js). */
+export async function scanDDUtxos(withElectrum, unspent) {
   const out = [];
   const txCache = new Map();
   for (const u of unspent.filter((x) => x.value === 0)) {
@@ -209,7 +219,7 @@ function spkAddress(spk) {
 // Core reports values as float DGB; sats is the integer we settle in.
 const valueToSats = (v) => BigInt(Math.round(v * 1e8));
 
-async function enrichTx(withElectrum, txid) {
+export async function enrichTx(withElectrum, txid) {
   const tx = await withElectrum('blockchain.transaction.get', [txid, true]);
   const type = parseDDVersion(tx.version).type || 'dgb';
   const ddMap = ddAmountsByVout(tx); // vout.n → DD cents (null for a plain DGB tx)
@@ -259,60 +269,84 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-export function startServer(overrides = {}) {
-  const env = configFromEnv();
-  const config = { ...env, ...overrides, electrum: { ...env.electrum, ...(overrides.electrum || {}) } };
+// ---- Backends ----
+// Both backends serve the exact same route shapes; the route layer below is
+// the single source of truth for URL parsing and address validation.
+
+function createElectrumBackend(config) {
   const electrum = new ElectrumClient(config.electrum);
   // server.version happens inside connect() — once per CONNECTION, so a
   // dropped TCP session re-handshakes transparently on the next request (#32)
   const withElectrum = (method, params) => electrum.request(method, params);
+  return {
+    describe: `electrum ${config.electrum.host}:${config.electrum.port}, hrp ${config.hrp}`,
+    close: () => electrum.sock?.destroy(), // don't hold the event loop after close
+    async utxos(address) {
+      const unspent = await withElectrum('blockchain.scripthash.listunspent', [addressToScripthash(address, config.hrp)]);
+      return {
+        address,
+        utxos: unspent.map((u) => ({ txid: u.tx_hash, vout: u.tx_pos, valueSats: String(u.value), height: u.height })),
+      };
+    },
+    async history(address) {
+      const history = await withElectrum('blockchain.scripthash.get_history', [addressToScripthash(address, config.hrp)]);
+      return { address, history: history.map((h) => ({ txid: h.tx_hash, height: h.height })) };
+    },
+    async ddUtxos(address) {
+      const unspent = await withElectrum('blockchain.scripthash.listunspent', [addressToScripthash(address, config.hrp)]);
+      const utxos = await scanDDUtxos(withElectrum, unspent);
+      const totalCents = utxos.reduce((s, u) => s + BigInt(u.cents), 0n);
+      return { address, totalCents: String(totalCents), utxos };
+    },
+    async positions(address, programHex) {
+      const history = await withElectrum('blockchain.scripthash.get_history', [addressToScripthash(address, config.hrp)]);
+      const [positions, tip] = await Promise.all([
+        scanPositions(withElectrum, programHex, history),
+        withElectrum('blockchain.headers.subscribe', []),
+      ]);
+      return { address, tipHeight: tip.height, positions };
+    },
+    tx: (txid) => enrichTx(withElectrum, txid),
+    async health() {
+      const tip = await withElectrum('blockchain.headers.subscribe', []);
+      return { height: tip.height };
+    },
+  };
+}
+
+export function startServer(overrides = {}) {
+  const env = configFromEnv();
+  const config = { ...env, ...overrides, electrum: { ...env.electrum, ...(overrides.electrum || {}) } };
+  // TEMPORARY STOPGAP: DIGISCOPE_URL switches EVERY route to the third-party
+  // DigiScope API (display data only) while our own ElectrumX genesis-syncs.
+  const backend = config.digiscopeUrl
+    ? createDigiScopeBackend({ url: config.digiscopeUrl, hrp: config.hrp, enrich: enrichTx, scanDDUtxos })
+    : createElectrumBackend(config);
 
   const server = createServer(async (req, res) => {
     try {
       const match = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions|dd-utxos)$/);
       if (req.method === 'GET' && match) {
         const [, address, what] = match;
-        let scripthash, programHex;
+        let programHex;
         try {
-          ({ programHex } = decodeWitnessAddress(address));
-          scripthash = addressToScripthash(address, config.hrp);
+          const decoded = decodeWitnessAddress(address);
+          if (decoded.hrp !== config.hrp) throw new RangeError(`address is not for this network (want ${config.hrp})`);
+          programHex = decoded.programHex;
         } catch (e) {
           return sendJson(res, 400, { error: `invalid address: ${e.message}` });
         }
-        if (what === 'dd-utxos') {
-          const unspent = await withElectrum('blockchain.scripthash.listunspent', [scripthash]);
-          const utxos = await scanDDUtxos(withElectrum, unspent);
-          const totalCents = utxos.reduce((s, u) => s + BigInt(u.cents), 0n);
-          return sendJson(res, 200, { address, totalCents: String(totalCents), utxos });
-        }
-        if (what === 'positions') {
-          const history = await withElectrum('blockchain.scripthash.get_history', [scripthash]);
-          const [positions, tip] = await Promise.all([
-            scanPositions(withElectrum, programHex, history),
-            withElectrum('blockchain.headers.subscribe', []),
-          ]);
-          return sendJson(res, 200, { address, tipHeight: tip.height, positions });
-        }
-        if (what === 'utxos') {
-          const unspent = await withElectrum('blockchain.scripthash.listunspent', [scripthash]);
-          return sendJson(res, 200, {
-            address,
-            utxos: unspent.map((u) => ({ txid: u.tx_hash, vout: u.tx_pos, valueSats: String(u.value), height: u.height })),
-          });
-        }
-        const history = await withElectrum('blockchain.scripthash.get_history', [scripthash]);
-        return sendJson(res, 200, {
-          address,
-          history: history.map((h) => ({ txid: h.tx_hash, height: h.height })),
-        });
+        if (what === 'dd-utxos') return sendJson(res, 200, await backend.ddUtxos(address));
+        if (what === 'positions') return sendJson(res, 200, await backend.positions(address, programHex));
+        if (what === 'utxos') return sendJson(res, 200, await backend.utxos(address));
+        return sendJson(res, 200, await backend.history(address));
       }
       const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
       if (req.method === 'GET' && txMatch) {
-        return sendJson(res, 200, await enrichTx(withElectrum, txMatch[1]));
+        return sendJson(res, 200, await backend.tx(txMatch[1]));
       }
       if (req.method === 'GET' && req.url === '/api/health') {
-        const tip = await withElectrum('blockchain.headers.subscribe', []);
-        return sendJson(res, 200, { height: tip.height });
+        return sendJson(res, 200, await backend.health());
       }
       sendJson(res, 404, { error: 'not found' });
     } catch (err) {
@@ -320,9 +354,9 @@ export function startServer(overrides = {}) {
     }
   });
 
-  server.on('close', () => electrum.sock?.destroy()); // don't hold the event loop after close
+  server.on('close', () => backend.close());
   server.listen(config.port, () => {
-    console.log(`  DigiDollar indexer façade → http://localhost:${server.address().port} (electrum ${config.electrum.host}:${config.electrum.port}, hrp ${config.hrp})`);
+    console.log(`  DigiDollar indexer façade → http://localhost:${server.address().port} (${backend.describe})`);
   });
   return server;
 }
