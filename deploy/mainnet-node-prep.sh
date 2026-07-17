@@ -54,11 +54,26 @@ if "rpcwhitelistdefault=" not in ctext:
 
 # First rpcbind wins in Core: appending 0.0.0.0 ALONGSIDE an existing
 # rpcbind=127.0.0.1 leaves the node localhost-only. Comment the old line out.
+# Match on a NORMALIZED basis ('rpcbind = 127.0.0.1', 'rpcbind=127.0.0.1:14022',
+# ...) — an exact-literal match lets a variant line survive first and silently
+# reintroduce the localhost-only bug. Any other surviving rpcbind is fatal.
 if "rpcbind=0.0.0.0" not in ctext:
     lines = ctext.splitlines()
+    survivors = []
     for i, l in enumerate(lines):
-        if l.strip() == "rpcbind=127.0.0.1":
+        s = l.strip()
+        if s.startswith("#") or not s:
+            continue
+        key, sep, val = s.partition("=")
+        if key.strip() != "rpcbind" or not sep:
+            continue
+        if val.strip().startswith("127.0.0.1"):
             lines[i] = "#" + l + "  # mainnet-prep: superseded by rpcbind=0.0.0.0 (first bind wins)"
+        else:
+            survivors.append(s)
+    if survivors:
+        sys.exit("mainnet-prep: refusing to append rpcbind=0.0.0.0 — existing "
+                 f"rpcbind line(s) would win (first bind wins): {survivors}")
     ctext = "\n".join(lines) + "\n"
     with open(conf, "w") as f:
         f.write(ctext)

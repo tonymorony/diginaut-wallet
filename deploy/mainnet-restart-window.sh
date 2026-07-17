@@ -5,14 +5,23 @@ set -euo pipefail
 
 echo "== stopping v9.26.3 gracefully =="
 # NB: 'pgrep -x digibyted' also matches the TESTNET daemon (same binary name,
-# always running) — the loop would never see the mainnet stop. Poll the mainnet
-# RPC port (14022) instead; only the mainnet daemon listens there.
+# always running) — the loop would never see the mainnet stop. A bare port poll
+# on :14022 is ALSO unsafe: deploy/node-setup.sh pins the testnet rpcport to
+# 14022 by default (its [test] section, with rpcbind=0.0.0.0), so a testnet
+# node rebuilt from that installer would keep :14022 open forever and this loop
+# would falsely report "STILL RUNNING" after a clean mainnet stop.
+# An RPC probe is no good either: during a graceful stop RPC dies BEFORE the
+# dbcache=2500 flush finishes, so it would declare "stopped" while the old
+# daemon still holds the datadir lock. Key off the mainnet daemon's unique
+# cmdline instead — only the manually-started mainnet 9.26.3 runs from this
+# versioned path (testnet runs /usr/local/bin/digibyted).
+OLD_BIN=/root/digibyte-9.26.3/bin/digibyted
 /root/digibyte-9.26.3/bin/digibyte-cli stop
 for i in $(seq 1 120); do
-  ss -tln | grep -q ':14022' || break
+  pgrep -f "$OLD_BIN" >/dev/null || break
   sleep 5
 done
-if ss -tln | grep -q ':14022'; then
+if pgrep -f "$OLD_BIN" >/dev/null; then
   echo "STILL RUNNING after 10 min — do NOT force-kill; investigate."; exit 1
 fi
 echo "stopped cleanly."
