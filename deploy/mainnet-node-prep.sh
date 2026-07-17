@@ -43,7 +43,7 @@ if "rpcauth=diginaut:" not in ctext:
 if "rpcauth=electrumx:" not in ctext:
     pw, line = rpcauth("electrumx")
     cadd += [line,
-      "rpcwhitelist=electrumx:getblockchaininfo,getblockhash,getblockheader,getblock,getrawtransaction,sendrawtransaction,estimatesmartfee,getnetworkinfo,getmempoolinfo"]
+      "rpcwhitelist=electrumx:getblockchaininfo,getblockcount,getrawmempool,getblockhash,getblockheader,getblock,getrawtransaction,sendrawtransaction,estimatesmartfee,getnetworkinfo,getmempoolinfo"]
     eadd += [f"MAINNET_DAEMON_URL=http://electrumx:{urllib.parse.quote(pw, safe='')}@host.docker.internal:14022"]
 
 # Setting ANY rpcwhitelist= gives every non-whitelisted user (the owner's
