@@ -42,9 +42,12 @@ config is needed** — `digidollar=1` + sync is all; never point
    the repo):
    - `diginaut` — exactly the wallet proxy's allow-list:
      `rpcwhitelist=diginaut:getblockchaininfo,getdeploymentinfo,getoracleprice,getoracles,getdcamultiplier,getprotectionstatus,sendrawtransaction`
-   - `electrumx` — what ElectrumX's daemon interface calls (confirm against
-     the pinned ElectrumX before finalizing):
-     `rpcwhitelist=electrumx:getblockchaininfo,getblockhash,getblockheader,getblock,getrawtransaction,sendrawtransaction,estimatesmartfee,getnetworkinfo,getmempoolinfo`
+   - `electrumx` — what ElectrumX's daemon interface actually calls (CONFIRMED
+     the hard way 2026-07-17: the original guess omitted `getblockcount` — the
+     height poll — and `getrawmempool`, so ElectrumX looped on 403 "daemon
+     service refused: Forbidden" and never began its genesis sync; watch for
+     that exact log line after any whitelist change):
+     `rpcwhitelist=electrumx:getblockchaininfo,getblockcount,getrawmempool,getblockhash,getblockheader,getblock,getrawtransaction,sendrawtransaction,estimatesmartfee,getnetworkinfo,getmempoolinfo`
    - `rpcwhitelistdefault=0` is **REQUIRED**: in Core, setting ANY
      `rpcwhitelist=` flips every non-whitelisted user (the owner's `rpcuser`!)
      to an EMPTY default whitelist — without it the owner is locked out of his

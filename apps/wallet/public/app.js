@@ -1463,7 +1463,11 @@ async function refreshMoney() {
     if (firstShow) renderSparkline(lastPriceSeries); // real width only now
   } catch (e) {
     $('loading-veil').style.display = 'none';
-    $('w-open-err').textContent = 'indexer: ' + e.message;
+    // transport-level failures mean the index isn't serving yet (e.g. initial
+    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED
+    $('w-open-err').textContent = /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
+      ? 'indexer: the balance index is still syncing — balances and history will appear once it catches up (your on-chain funds are unaffected)'
+      : 'indexer: ' + e.message;
   }
 }
 
