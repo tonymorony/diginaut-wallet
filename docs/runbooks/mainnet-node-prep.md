@@ -5,6 +5,10 @@ dual-stack wallet (#64). **The restart is owner-run (HITL)** — coordinate the
 window; the node is personal infrastructure. Never touch the testnet systemd
 unit (`digibyted.service`).
 
+Executable form: `deploy/mainnet-node-prep.sh` (safe anytime, no restart) and
+`deploy/mainnet-restart-window.sh` (the restart window itself). This doc is the
+why; the scripts are the how.
+
 ## State as inspected 2026-07-14 (read-only)
 
 | Fact | Value |
@@ -28,8 +32,10 @@ config is needed** — `digidollar=1` + sync is all; never point
    to `/root/digibyte-9.26.4`. Do not reuse the testnet binary path
    (`/usr/local/bin/digibyted` belongs to the testnet unit).
 2. **systemd unit `digibyted-mainnet.service`** (distinct name!):
-   `ExecStart=/root/digibyte-9.26.4/bin/digibyted -datadir=/root/.digibyte`,
+   `ExecStart=/root/digibyte-9.26.4/bin/digibyted -datadir=/root/.digibyte -daemon=0`,
    `Restart=on-failure`, `After=network-online.target` — survives reboots.
+   `-daemon=0` is **REQUIRED**: the conf has `daemon=1`, and with `Type=simple`
+   systemd sees the fork parent exit and kills the freshly started service.
 3. **Two least-privilege RPC users** (generate with Core's
    `share/rpcauth/rpcauth.py`; the passwords land in the server-side
    `deploy/.env` as `MAINNET_RPC_*` / inside `MAINNET_DAEMON_URL` — never in
@@ -39,31 +45,57 @@ config is needed** — `digidollar=1` + sync is all; never point
    - `electrumx` — what ElectrumX's daemon interface calls (confirm against
      the pinned ElectrumX before finalizing):
      `rpcwhitelist=electrumx:getblockchaininfo,getblockhash,getblockheader,getblock,getrawtransaction,sendrawtransaction,estimatesmartfee,getnetworkinfo,getmempoolinfo`
-   - Do **not** set `rpcwhitelistdefault=1` — the owner's own `rpcuser` keeps
-     full access.
+   - `rpcwhitelistdefault=0` is **REQUIRED**: in Core, setting ANY
+     `rpcwhitelist=` flips every non-whitelisted user (the owner's `rpcuser`!)
+     to an EMPTY default whitelist — without it the owner is locked out of his
+     own node (every `digibyte-cli` call 403s). Hit in production 2026-07-17.
 4. **Container reachability** — containers cannot reach `127.0.0.1:14022`.
    Mirror the testnet arrangement (`host.docker.internal` via host-gateway):
-   add `rpcbind=0.0.0.0` (or 127.0.0.1 + the docker bridge gateway IP) and
-   `rpcallowip=172.16.0.0/12` alongside `rpcallowip=127.0.0.1`. The host
-   firewall must keep 14022 closed externally (only 22/80/443 open) — verify
+   set `rpcbind=0.0.0.0` and `rpcallowip=172.16.0.0/12` alongside
+   `rpcallowip=127.0.0.1`. **REPLACE** (comment out) the existing
+   `rpcbind=127.0.0.1` line — first `rpcbind` wins in Core, so adding
+   `0.0.0.0` alongside it leaves the node localhost-only (hit in production).
+   The host must keep 14022 closed externally (only 22/80/443 open) — verify
    before AND after the restart.
 
 ## Restart procedure
+
+Run `deploy/mainnet-restart-window.sh`. What it does, and why:
 
 ```sh
 # graceful stop — flushes chainstate; with dbcache=2500 this can take a while.
 # NEVER kill -9.
 /root/digibyte-9.26.3/bin/digibyte-cli stop
-# edit /root/.digibyte/digibyte.conf: rpcauth ×2, rpcwhitelist ×2, rpcbind/rpcallowip
-# install the systemd unit, then:
+# wait for the MAINNET daemon specifically: poll ss -tln for :14022 to vanish.
+# 'pgrep -x digibyted' also matches the always-running TESTNET daemon (same
+# binary name) — a pgrep loop never sees the mainnet stop (hit in production).
+# conf edits and unit install are done beforehand by mainnet-node-prep.sh, then:
 systemctl daemon-reload && systemctl enable --now digibyted-mainnet
 ```
 
+Long ssh sessions to dgb-server get reset — run long server operations
+detached (`nohup … >log 2>&1 &`) and poll the log with short sessions instead
+of sitting in one.
+
 ## Verify
 
+- RPC warms up first: `getblockchaininfo` returns error -28 "Loading blocks…"
+  for ~10 min after start (dbcache=2500 reload) — wait, don't restart.
 - `digibyte-cli getblockchaininfo` → chain "main", IBD false, height advancing
 - `digibyte-cli --version` → 9.26.4
 - As `diginaut` via curl: a whitelisted method answers; `getblock` → forbidden
+- If `digibyte-cli` (owner's `rpcuser`) 403s on everything → the
+  whitelist-default trap: `rpcwhitelistdefault=0` is missing (see step 3).
 - Testnet untouched: `systemctl status digibyted` still active
 - Post-activation (block 23,869,440): `getoracleprice` returns a fresh
   micro-USD price, `is_stale` false — the mainnet wallet's price source
+
+## As executed 2026-07-17
+
+| Fact | Value |
+|---|---|
+| Version / unit | **v9.26.4** running under `digibyted-mainnet.service` (`-daemon=0`) |
+| Conf | rpcauth ×2 + whitelists, `rpcwhitelistdefault=0`, `rpcbind=0.0.0.0` (old `127.0.0.1` line commented out), `rpcallowip=172.16.0.0/12` |
+| Firewall | `ufw` **inactive** — owner accepted rpcallowip-only guarding of 14022, matching the testnet node |
+| Dual stack | up (`deploy/docker-compose.dual.yml`) |
+| Bugs hit & fixed | pgrep matched testnet daemon; unit lacked `-daemon=0`; whitelist-default lockout; first-rpcbind-wins — all folded into the two `deploy/` scripts |

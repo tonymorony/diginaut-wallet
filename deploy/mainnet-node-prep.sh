@@ -46,9 +46,26 @@ if "rpcauth=electrumx:" not in ctext:
       "rpcwhitelist=electrumx:getblockchaininfo,getblockhash,getblockheader,getblock,getrawtransaction,sendrawtransaction,estimatesmartfee,getnetworkinfo,getmempoolinfo"]
     eadd += [f"MAINNET_DAEMON_URL=http://electrumx:{urllib.parse.quote(pw, safe='')}@host.docker.internal:14022"]
 
-for line in ("rpcbind=0.0.0.0", "rpcallowip=172.16.0.0/12"):
-    if line not in ctext:
-        cadd.append(line)
+# Setting ANY rpcwhitelist= gives every non-whitelisted user (the owner's
+# rpcuser!) an EMPTY default whitelist unless rpcwhitelistdefault=0 — without
+# it the owner is locked out of his own node (every call 403s).
+if "rpcwhitelistdefault=" not in ctext:
+    cadd.append("rpcwhitelistdefault=0")
+
+# First rpcbind wins in Core: appending 0.0.0.0 ALONGSIDE an existing
+# rpcbind=127.0.0.1 leaves the node localhost-only. Comment the old line out.
+if "rpcbind=0.0.0.0" not in ctext:
+    lines = ctext.splitlines()
+    for i, l in enumerate(lines):
+        if l.strip() == "rpcbind=127.0.0.1":
+            lines[i] = "#" + l + "  # mainnet-prep: superseded by rpcbind=0.0.0.0 (first bind wins)"
+    ctext = "\n".join(lines) + "\n"
+    with open(conf, "w") as f:
+        f.write(ctext)
+    cadd.append("rpcbind=0.0.0.0")
+
+if "rpcallowip=172.16.0.0/12" not in ctext:
+    cadd.append("rpcallowip=172.16.0.0/12")
 
 for line in ("TESTNET_DOMAINS=dgb.ludere.space", "MAINNET_DOMAINS=diginaut.ludere.space"):
     key = line.split("=")[0]
@@ -68,7 +85,9 @@ print(f"conf lines added: {len(cadd)}; env keys added: {len([e for e in eadd])}"
 PY
 
 echo "== 3/4 systemd unit (installed, NOT started) =="
-if [ ! -f "$UNIT" ]; then
+# -daemon=0 is REQUIRED: the conf has daemon=1, and with Type=simple systemd
+# sees the fork parent exit and kills the service. Rewrite any unit missing it.
+if [ ! -f "$UNIT" ] || ! grep -q -- '-daemon=0' "$UNIT"; then
 cat > "$UNIT" <<EOF
 [Unit]
 Description=DigiByte mainnet daemon (Diginaut backing node, #56)
@@ -76,7 +95,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/root/digibyte-${VERSION}/bin/digibyted -datadir=/root/.digibyte
+ExecStart=/root/digibyte-${VERSION}/bin/digibyted -datadir=/root/.digibyte -daemon=0
 Restart=on-failure
 RestartSec=15
 User=root
