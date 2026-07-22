@@ -23,15 +23,21 @@
     * { box-sizing: border-box; }
     body {
       margin: 0; font: 400 14px/1.55 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: var(--bg); color: var(--text); min-height: 100vh;
+      background: var(--bg); color: var(--text); min-height: 100vh; min-height: 100dvh;
       -webkit-font-smoothing: antialiased;
     }
+    /* a modal owns the scroll while open — the page behind must not move */
+    body:has(.modal-backdrop.open) { overflow: hidden; }
     /* v3: narrow single column like a phone-first crypto wallet */
     header { padding: 22px 20px 4px; max-width: 520px; margin: 0 auto; }
     .badge { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 999px; vertical-align: middle; letter-spacing: .02em; }
     .badge.mock { background: var(--warn-bg); color: var(--warn); }
     .badge.real { background: var(--good-bg); color: var(--good); }
     main { max-width: 520px; margin: 0 auto; padding: 12px 20px 60px; display: grid; gap: 14px; }
+    /* every layer of the nested grid stack must be allowed to shrink below
+       min-content, or the whole money column refuses to go under ~590px and
+       phones get a horizontally panning, zoomed-out page */
+    main > *, #wallet-open-card > *, #w-open > *, .money-grid > *, .money-col > * { min-width: 0; max-width: 100%; }
     .grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
     .card { background: var(--card); border-radius: var(--radius); padding: 22px; box-shadow: 0 1px 2px rgba(21,24,30,.04); }
     .card h2 { margin: 0 0 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--gray-500); }
@@ -109,10 +115,10 @@
     a { color: var(--accent); }
     .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
     .logo { display: flex; align-items: center; gap: 8px; }
-    .corner { display: flex; align-items: center; gap: 8px; }
+    .corner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
     .chip-btn { width: auto; margin: 0; padding: 9px 14px; font-size: 13px; }
-    #w-chip { display: inline-flex; align-items: center; gap: 10px; background: #fff; border-radius: 999px; padding: 5px 6px 5px 14px; box-shadow: 0 1px 2px rgba(21,24,30,.06); }
-    #w-chip .mono { font-size: 12px; color: var(--gray-700); white-space: nowrap; word-break: normal; }
+    #w-chip { display: inline-flex; align-items: center; gap: 10px; background: #fff; border-radius: 999px; padding: 5px 6px 5px 14px; box-shadow: 0 1px 2px rgba(21,24,30,.06); min-width: 0; }
+    #w-chip .mono { font-size: 12px; color: var(--gray-700); white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: ellipsis; }
     .topbar { flex-wrap: wrap; }
     #w-chip .chip-btn { border-radius: 999px; padding: 7px 12px; }
     /* backup-status chip (spec §3): red "Not backed up" next to the address
@@ -145,7 +151,7 @@
     .modal .disclaimer-body li { margin-bottom: 6px; }
     .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(21,24,30,.45); z-index: 50; }
     .modal-backdrop.open { display: grid; place-items: center; }
-    .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
+    .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; max-height: 86dvh; overflow: auto; overscroll-behavior: contain; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
     .modal-head { display: flex; justify-content: space-between; align-items: center; }
     .modal-head h3 { margin: 0; font-size: 16px; font-weight: 600; }
     /* kit Dropdown: white r8 trigger, floating white r8 list (shadow 0 1px 5px) */
@@ -176,10 +182,26 @@
     /* ---- v3 hero: balance + action pills ---- */
     .money-grid, .money-col { display: grid; gap: 14px; align-content: start; }
     #wallet-open-card, #w-open { display: grid; gap: 14px; }
+    /* phones: 16px form fields (anything smaller makes iOS Safari zoom in on
+       focus and leave the page zoomed = janky panning), tighter chrome */
+    @media (max-width: 600px) {
+      input, select, textarea { font-size: 16px; }
+      header { padding: 16px 16px 4px; }
+      main { padding: 10px 16px 48px; }
+      .backup-strip { padding: 10px 16px 0; }
+      .card { padding: 18px 16px; }
+      .hero { padding: 26px 16px 20px; }
+      .hero .balance { font-size: 34px; }
+      .guest { padding: 24px 16px 30px; }
+      .guest img.guest-art { width: min(200px, 60%); }
+      .net-banner { padding: 7px 10px; font-size: 11px; }
+      .actions { gap: 8px; }
+      .action { font-size: 12px; padding: 12px 4px 9px; }
+    }
     /* adaptive: single phone-like column by default, two columns on desktop */
     @media (min-width: 960px) {
       header, main, .backup-strip { max-width: 1000px; }
-      .money-grid { grid-template-columns: 1.08fr .92fr; align-items: start; }
+      .money-grid { grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); align-items: start; }
     }
     /* tier slider (mint modal): 7 discrete stops over the lock tiers */
     .tier-picker { position: relative; background: var(--gray-100); border-radius: var(--radius-s); padding: 14px 16px 10px; }

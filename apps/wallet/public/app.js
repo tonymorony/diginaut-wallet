@@ -235,9 +235,24 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 // The network pill must survive scroll (#54): once the topbar scrolls away it
-// floats to a fixed corner just below the sticky banner.
+// floats to a fixed corner just below the sticky banner. Two subtleties, both
+// mobile-borne: the threshold is the header's real bottom edge (a fixed 64px
+// fired while the topbar was still on screen), and it has hysteresis — the
+// float removes the pill from the header flow, which can shrink the header by
+// a wrapped row, and a single shared threshold then oscillates every frame.
 window.addEventListener('scroll', () => {
-  $('net-pill').classList.toggle('floating', window.scrollY > 64);
+  const pill = $('net-pill');
+  const hdr = document.querySelector('header');
+  const hdrBottom = hdr.offsetTop + hdr.offsetHeight;
+  const floating = pill.classList.contains('floating');
+  const on = floating ? window.scrollY > Math.max(hdrBottom - 80, 8) : window.scrollY > hdrBottom;
+  if (on && !floating) {
+    const banner = $('net-banner'); // sits below the sticky banner, whatever its wrapped height
+    pill.style.top = (banner.hidden ? 8 : banner.offsetHeight + 8) + 'px';
+  } else if (!on) {
+    pill.style.top = '';
+  }
+  pill.classList.toggle('floating', on);
 }, { passive: true });
 
 async function loadStatus() {
