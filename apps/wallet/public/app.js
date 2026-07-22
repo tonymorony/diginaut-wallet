@@ -246,10 +246,10 @@ window.addEventListener('scroll', () => {
   const hdrBottom = hdr.offsetTop + hdr.offsetHeight;
   const floating = pill.classList.contains('floating');
   const on = floating ? window.scrollY > Math.max(hdrBottom - 80, 8) : window.scrollY > hdrBottom;
-  if (on && !floating) {
-    const banner = $('net-banner'); // sits below the sticky banner, whatever its wrapped height
+  if (on) {
+    const banner = $('net-banner'); // sits below the sticky banner, whatever its wrapped height right now
     pill.style.top = (banner.hidden ? 8 : banner.offsetHeight + 8) + 'px';
-  } else if (!on) {
+  } else {
     pill.style.top = '';
   }
   pill.classList.toggle('floating', on);

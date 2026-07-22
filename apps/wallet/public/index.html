@@ -185,7 +185,10 @@
     /* phones: 16px form fields (anything smaller makes iOS Safari zoom in on
        focus and leave the page zoomed = janky panning), tighter chrome */
     @media (max-width: 600px) {
-      input, select, textarea { font-size: 16px; }
+      /* the .mono variants need their own rule — .mono's 12.5px outranks a
+         bare element selector, and the seed/address fields are the ones iOS
+         focus-zooms on most */
+      input, select, textarea, input.mono, textarea.mono { font-size: 16px; }
       header { padding: 16px 16px 4px; }
       main { padding: 10px 16px 48px; }
       .backup-strip { padding: 10px 16px 0; }
