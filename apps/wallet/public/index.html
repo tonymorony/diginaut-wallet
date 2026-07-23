@@ -279,9 +279,7 @@
     /* asset rows */
     .asset { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--gray-100); }
     .asset:last-child { border-bottom: 0; }
-    .asset-ic { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
-      font-weight: 700; font-size: 15px; flex: none; background: var(--accent); color: #fff; }
-    .asset-ic.dd { background: var(--accent-5); color: var(--accent); }
+    .asset-ic { width: 36px; height: 36px; border-radius: 50%; flex: none; display: block; }
     .asset-name { font-weight: 600; }
     .asset-sub { font-size: 12px; color: var(--muted); }
     .asset-amt { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
@@ -431,12 +429,12 @@
       <section class="card">
         <h2>Assets</h2>
         <div class="asset">
-          <div class="asset-ic">Ð</div>
+          <img class="asset-ic" src="/asset-dgb.png" alt="" aria-hidden="true" />
           <div><div class="asset-name">DigiByte</div><div class="asset-sub">DGB</div></div>
           <div class="asset-amt"><div class="a1"><span id="as-dgb">—</span> DGB</div><div class="a2" id="as-dgb-usd"></div></div>
         </div>
         <div class="asset">
-          <div class="asset-ic dd">$</div>
+          <img class="asset-ic" src="/asset-dd.png" alt="" aria-hidden="true" />
           <div><div class="asset-name">DigiDollar</div><div class="asset-sub">spendable</div></div>
           <div class="asset-amt"><div class="a1">$<span id="w-dd-balance">0.00</span></div><div class="a2">USD-pegged</div></div>
         </div>
