@@ -1,9 +1,13 @@
 # Dual-network routing (#64): testnet domains → the base (testnet) wallet,
 # mainnet domains → wallet-main. Comma-separated lists, one certificate each.
+# Access logs (JSON, one line per request) go to the container's stderr →
+# `docker logs deploy-caddy-1`; the usage-monitoring runbook greps them.
 {$TESTNET_DOMAINS} {
 	reverse_proxy wallet:8791
+	log
 }
 
 {$MAINNET_DOMAINS} {
 	reverse_proxy wallet-main:8791
+	log
 }
