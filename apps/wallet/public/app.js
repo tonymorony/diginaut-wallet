@@ -586,13 +586,15 @@ function renderAddress() {
 
 // Receive QR + payment-request copy (#71). Bare address by default; when the
 // user requests a specific amount, both switch to a BIP21 `digibyte:` URI so a
-// mobile scan prefills address + amount. A bech32 address alone is uppercased to
-// hit the QR alphanumeric mode (sparser, easier to scan); a URI has a query
-// string with chars outside that charset, so it must be encoded in byte mode.
+// mobile scan prefills address + amount. The address is encoded VERBATIM in
+// byte mode — the uppercase/alphanumeric-mode trick makes a sparser QR, but
+// BIP-173's "decoders must accept upper" is fiction in the wild: ecosystem
+// wallets reject all-caps bech32, and the scan then reads as "invalid
+// address" even though the same address pasted as text works (#103 spirit:
+// interop beats elegance).
 function drawAddressQr(el, address, requestSats) {
   const qr = qrcode(0, 'M');
-  if (requestSats > 0n) qr.addData(encodeBip21({ address, amountSats: requestSats }), 'Byte');
-  else qr.addData(address.toUpperCase(), 'Alphanumeric');
+  qr.addData(requestSats > 0n ? encodeBip21({ address, amountSats: requestSats }) : address, 'Byte');
   qr.make();
   el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
 }
