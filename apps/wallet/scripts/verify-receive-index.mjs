@@ -22,7 +22,11 @@ const APP_PORT = Number(process.env.APP_PORT) || 8898;
 const PASS = 'receive index driver';
 // BIP39 vector #3 — restored verbatim in part B, so both halves share a chain
 const MNEMONIC = 'letter advice cage absurd amount doctor acoustic avoid letter advice cage above';
-const HANDOUT = 3; // clicks past the gap-free window (watched = 0…2 at index 0)
+// Past the gap-free window (watched = 0…2 at index 0) AND past the first scan
+// batch (RECEIVE_SCAN_BATCH = 5), so part B's scan can only succeed by
+// continuing into a second batch — the loop's gap accumulation has to work.
+const HANDOUT = 6;
+const DEEP = 13; // second funded index, five unused indices below it (7…12)
 
 const idx = spawn('node', [`${ROOT}scripts/fake-indexer.mjs`], {
   env: { ...process.env, PORT: String(IDX_PORT), TIP: '100000' }, stdio: 'ignore',
@@ -145,15 +149,37 @@ await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,23
 check(true, `and the funds are in the balance again: ${await balance()} DGB`);
 await b.shot('111-receive-index-rediscovered.png');
 
-// a gap must not stop the scan short of a funded index further down
+// ---- C. a run of unused indices must not stop the scan short ----
+// Walk to a deeper index and fund THAT, leaving 7…12 unused. Then erase and
+// restore again: only a scan that keeps walking past a gap can find index 13.
+// (Funding it and watching the balance would prove nothing — watchedDerivations
+// is cumulative from 0, so the open wallet already covers it. The rediscovery
+// is the whole point, so the driver has to force one.)
 const deep = await evaluate(`(async () => {
   const el = document.getElementById('w-address');
-  for (let i = 0; i < 6; i++) { document.getElementById('w-next').click(); await new Promise((r) => setTimeout(r, 50)); }
+  for (let i = 0; i < ${DEEP - HANDOUT}; i++) { document.getElementById('w-next').click(); await new Promise((r) => setTimeout(r, 60)); }
   return el.textContent;
 })()`);
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/${DEEP}')`, `walked to index ${DEEP}`);
 await fund(deep, '5000000000', 'b'.repeat(64));
-await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,284')`, 'deep index counted', 30_000);
-check(true, `an index ${HANDOUT + 6} deep is watched too: ${await balance()} DGB`);
+
+await evaluate(`document.getElementById('w-forget').click()`);
+await waitFor(visible('w-erase-view'), 'erase ceremony (second)');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
+await waitFor(visible('w-none'), 'vault erased (second)');
+await click('w-show-restore');
+await setVal('w-restore-seed', MNEMONIC);
+await setVal('w-create-pass', 'a third password for the third vault');
+await setVal('w-create-pass2', 'a third password for the third vault');
+await click('w-restore-go');
+await waitFor(visible('w-open'), 'restored wallet open (second)');
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/${DEEP}')`,
+  'scan crosses the unused run', 30_000);
+check(true, `the scan walked past unused ${HANDOUT + 1}…${DEEP - 1} to the funded index ${DEEP}`);
+await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,284')`, 'both funded indices counted', 30_000);
+check(true, `and both funded indices are in the balance: ${await balance()} DGB`);
+await b.shot('112-receive-index-gap-crossed.png');
 
 console.log(process.exitCode ? '\nRED' : '\nall green');
 process.exit(process.exitCode || 0);
