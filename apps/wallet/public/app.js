@@ -564,6 +564,12 @@ $('w-modal-close').addEventListener('click', closeConnectModal);
 $('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) closeConnectModal(); });
 $('w-disconnect').addEventListener('click', () => lockWallet());
 
+// Every script form this wallet will pay, by decodeAddress's `type` label.
+// Deliberately an allow-list: witnessType() falls through to `witness_v<n>` for
+// anything it does not recognise, and a future witness version is a script the
+// user's coins would land in with no way back out.
+const PAYABLE_ADDRESS_TYPES = new Set(['p2wpkh', 'p2wsh', 'p2tr', 'p2pkh', 'p2sh']);
+
 function renderAddress() {
   // Never show an address for a guessed network: on a mainnet deployment with
   // an unreachable node the default would be testnet-encoded — confusing at
@@ -2195,6 +2201,15 @@ $('w-send-review').addEventListener('click', (e) =>
     }
     if (!decoded.networks.includes(chainState.netName)) {
       throw new Error(`address is not for this network (need a ${chainState.netName} address)`);
+    }
+    // Allow-list the script type instead of paying whatever decodeAddress
+    // produced. The decoder rejects out-of-range witness versions now, but this
+    // side must not depend on that: `type` was previously computed and never
+    // read, so a decoder that ever admits a new form would silently become a
+    // scriptPubKey the user pays. Anything not on this list is a bug, not a
+    // recipient.
+    if (!PAYABLE_ADDRESS_TYPES.has(decoded.type)) {
+      throw new Error(`unsupported address type (${decoded.type}) — refusing to pay it`);
     }
     const recipientScriptHex = decoded.scriptPubKeyHex;
     let amountSats, plan;

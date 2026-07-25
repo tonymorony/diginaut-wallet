@@ -177,3 +177,64 @@ test('decodeAddress / decodeLegacyAddress reject whitespace', () => {
   assert.throws(() => decodeAddress(' DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc'), /whitespace/);
   assert.throws(() => decodeLegacyAddress('DDBUdbqZjUgVKkQX5ju6KmrUKZZzPu2aZc\n'), /whitespace/);
 });
+
+// ── BIP-173/BIP-350 invalid-address vectors ─────────────────────────────────
+// These exist because the decoder used to validate the checksum, the mixed-case
+// rule and the 2..40 program length — and nothing else. witnessScriptHex derives
+// the opcode arithmetically (0x50 + version), so a version the decoder admitted
+// became a scriptPubKey the wallet would pay: version 26 → 0x6a = OP_RETURN, a
+// standard NULL_DATA output that relays, confirms, and destroys the money.
+
+test('rejects witness versions above 16 (0x50 + v is not an OP_n)', () => {
+  // hand-built dgb1 bech32m string whose data[0] = 26; checksum is valid
+  const v26 = 'dgb164w46h2at4w46h2at4w46h2at4w46h2atqv6zw5';
+  assert.throws(() => decodeWitnessAddress(v26), /witness version out of range/);
+  // and it must not survive the friendlier top-level decoder either
+  assert.throws(() => decodeAddress(v26), /not a valid DigiByte address/);
+  // the specific catastrophe: never hand back an OP_RETURN script
+  let script = null;
+  try { script = scriptPubKeyFromAddress(v26); } catch { /* expected */ }
+  assert.equal(script, null, 'a v26 address must never yield a scriptPubKey');
+});
+
+test('rejects witness v0 programs that are not 20 or 32 bytes (BIP-173)', () => {
+  // a 24-byte v0 program, built with our own encoder (which allows any 2..40 —
+  // the asymmetry this test pins is that the DECODER must be stricter)
+  const v0odd = encodeWitnessAddress('dgb', 0, 'ab'.repeat(24));
+  assert.throws(() => decodeWitnessAddress(v0odd), /program must be 20 or 32 bytes/);
+  assert.throws(() => decodeAddress(v0odd), /not a valid DigiByte address/);
+});
+
+test('rejects a bech32 string over the 90-character limit', () => {
+  // a max-length program under a dgb hrp is only 75 chars, so the limit bites
+  // via a long hrp — which is exactly how BIP-173 frames it
+  const tooLong = encodeWitnessAddress('x'.repeat(40), 1, 'ab'.repeat(32));
+  assert.ok(tooLong.length > 90, `expected >90 chars, got ${tooLong.length}`);
+  assert.throws(() => decodeWitnessAddress(tooLong), /too long/);
+});
+
+test('a well-formed witness v1 program that is not 32 bytes decodes but is NOT payable', () => {
+  // BIP-350's own valid vector carries a 40-byte v1 program. BIP-341 defines
+  // only the 32-byte form, so this is a future-segwit output: the decoder is
+  // right to accept it, and the send flow's allow-list is what must refuse it.
+  const d = decodeAddress(BIP350_ADDR);
+  assert.equal(d.type, 'witness_v1');
+  assert.equal(d.scriptPubKeyHex.slice(0, 2), '51'); // OP_1, not OP_RETURN
+  const PAYABLE = new Set(['p2wpkh', 'p2wsh', 'p2tr', 'p2pkh', 'p2sh']); // mirrors app.js
+  assert.ok(!PAYABLE.has(d.type), 'app.js must refuse to pay an unrecognised witness form');
+});
+
+test('every legitimate form still decodes — the guards cost nothing real', () => {
+  for (const [label, addr] of [
+    ['mainnet p2tr', encodeWitnessAddress('dgb', 1, BIP350_KEY)],
+    ['testnet p2tr', encodeWitnessAddress('dgbt', 1, BIP350_KEY)],
+    ['regtest p2tr', encodeWitnessAddress('dgbrt', 1, BIP350_KEY)],
+    ['mainnet p2wpkh', encodeWitnessAddress('dgb', 0, 'ab'.repeat(20))],
+    ['mainnet p2wsh', encodeWitnessAddress('dgb', 0, 'ab'.repeat(32))],
+    ['bip350 bc p2tr (32-byte)', encodeWitnessAddress('bc', 1, BIP350_KEY)],
+  ]) {
+    const d = decodeWitnessAddress(addr);
+    assert.ok(d.programHex.length >= 40, `${label} decoded`);
+    assert.ok(['p2tr', 'p2wpkh', 'p2wsh'].includes(decodeAddress(addr).type), `${label} typed`);
+  }
+});
