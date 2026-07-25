@@ -16,6 +16,7 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { friendlyDDError, MINT_FREEZE_EXPLANATION } from '/dderrors.js';
+import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -562,6 +563,12 @@ $('w-chip').addEventListener('keydown', (e) => {
 $('w-modal-close').addEventListener('click', closeConnectModal);
 $('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) closeConnectModal(); });
 $('w-disconnect').addEventListener('click', () => lockWallet());
+
+// Every script form this wallet will pay, by decodeAddress's `type` label.
+// Deliberately an allow-list: witnessType() falls through to `witness_v<n>` for
+// anything it does not recognise, and a future witness version is a script the
+// user's coins would land in with no way back out.
+const PAYABLE_ADDRESS_TYPES = new Set(['p2wpkh', 'p2wsh', 'p2tr', 'p2pkh', 'p2sh']);
 
 function renderAddress() {
   // Never show an address for a guessed network: on a mainnet deployment with
@@ -1188,19 +1195,14 @@ $('w-faucet').addEventListener('click', (e) =>
 // file to another device. The ?autolockSecs= override exists for drivers and
 // is honored ONLY in mock mode: on a live deployment a crafted link must not
 // silently disable (or stretch) auto-lock.
-const AUTOLOCK_KEY = 'diginaut.autolock';
-const AUTOLOCK_DEFAULT_MIN = 5;
 function autolockDelayMs() {
   if (appConfig.mock) {
     const secs = Number(new URLSearchParams(location.search).get('autolockSecs'));
     if (Number.isFinite(secs) && secs > 0) return secs * 1000;
   }
-  let mins = AUTOLOCK_DEFAULT_MIN;
-  try {
-    const stored = Number(localStorage.getItem(AUTOLOCK_KEY));
-    if (Number.isFinite(stored) && stored >= 0) mins = stored;
-  } catch { /* private mode → default */ }
-  return mins * 60_000; // 0 = Never
+  let raw = null;
+  try { raw = localStorage.getItem(AUTOLOCK_KEY); } catch { /* private mode → default */ }
+  return autolockMinutes(raw) * 60_000; // 0 = Never
 }
 let autolockTimer = null;
 function armAutolock() {
@@ -2200,6 +2202,15 @@ $('w-send-review').addEventListener('click', (e) =>
     if (!decoded.networks.includes(chainState.netName)) {
       throw new Error(`address is not for this network (need a ${chainState.netName} address)`);
     }
+    // Allow-list the script type instead of paying whatever decodeAddress
+    // produced. The decoder rejects out-of-range witness versions now, but this
+    // side must not depend on that: `type` was previously computed and never
+    // read, so a decoder that ever admits a new form would silently become a
+    // scriptPubKey the user pays. Anything not on this list is a bug, not a
+    // recipient.
+    if (!PAYABLE_ADDRESS_TYPES.has(decoded.type)) {
+      throw new Error(`unsupported address type (${decoded.type}) — refusing to pay it`);
+    }
     const recipientScriptHex = decoded.scriptPubKeyHex;
     let amountSats, plan;
     if (sendMaxArmed) {
@@ -2762,11 +2773,15 @@ async function boot() {
   // release gate (#17) removed the feature flag per ADR-0002.
   initMintTiers();
   enhanceSelect('send-asset');
-  // reflect the stored auto-lock choice (only ladder values — a garbage/stale
-  // entry falls back to the markup's 5-minute default)
+  // Reflect the auto-lock choice, and reflect it from the SAME source the timer
+  // reads: showing the markup's selected option while autolockDelayMs() had
+  // resolved something else is how "5 minutes" stayed on screen for users whose
+  // lock never armed. A garbage/stale entry falls back to the real default.
   try {
     const v = localStorage.getItem(AUTOLOCK_KEY);
-    if (v !== null && [...$('w-autolock').options].some((o) => o.value === v)) $('w-autolock').value = v;
+    const ladder = [...$('w-autolock').options].map((o) => o.value);
+    const choice = ladder.includes(v) ? v : String(autolockMinutes(v) ?? AUTOLOCK_DEFAULT_MIN);
+    if (ladder.includes(choice)) $('w-autolock').value = choice;
   } catch { /* private mode → default */ }
   enhanceSelect('w-autolock');
   loadPriceChart();

@@ -79,20 +79,38 @@ export function scriptPubKeyFromAddress(addr) {
   return decodeAddress(addr).scriptPubKeyHex;
 }
 
-/** Decode a segwit address → { hrp, version, programHex }. Throws on bad checksum. */
+/**
+ * Decode a segwit address → { hrp, version, programHex }. Throws on bad checksum.
+ *
+ * Every BIP-173/BIP-350 decoder rule is enforced here, not just the checksum,
+ * because witnessScriptHex() below turns the version into an opcode
+ * arithmetically (0x50 + version). A version this function lets through is a
+ * scriptPubKey the wallet will pay: version 26 becomes 0x6a = OP_RETURN, which
+ * relays and confirms as a standard NULL_DATA output and destroys the money.
+ * encodeWitnessAddress has always had the version bound; the decoder lacking it
+ * was an asymmetry, not a choice.
+ */
 export function decodeWitnessAddress(addr) {
   const lower = addr.toLowerCase();
   if (addr !== lower && addr !== addr.toUpperCase()) throw new RangeError('mixed-case address');
+  if (lower.length > 90) throw new RangeError('bech32 string too long'); // BIP-173 hard limit
   const sep = lower.lastIndexOf('1');
   if (sep < 1 || sep + 7 > lower.length) throw new RangeError('malformed bech32 string');
   const hrp = lower.slice(0, sep);
   const data = [...lower.slice(sep + 1)].map((c) => CHARSET.indexOf(c));
   if (data.includes(-1)) throw new RangeError('invalid bech32 character');
   const version = data[0];
+  // the charset carries 0…31, but only 0…16 have an OP_n; 17+ would silently
+  // become some other opcode entirely
+  if (version > 16) throw new RangeError(`witness version out of range: ${version}`);
   const spec = version === 0 ? BECH32_CONST : BECH32M_CONST;
   if (polymod([...hrpExpand(hrp), ...data]) !== spec) throw new RangeError('bad bech32 checksum');
   const program = Uint8Array.from(convertBits(data.slice(1, -6), 5, 8, false));
   if (program.length < 2 || program.length > 40) throw new RangeError('program length out of range');
+  // v0 is exactly P2WPKH (20) or P2WSH (32) — any other length is anyone-can-spend
+  if (version === 0 && program.length !== 20 && program.length !== 32) {
+    throw new RangeError(`witness v0 program must be 20 or 32 bytes, got ${program.length}`);
+  }
   return { hrp, version, programHex: bytesToHex(program) };
 }
 
