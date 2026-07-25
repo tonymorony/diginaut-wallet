@@ -8,7 +8,7 @@
 # line of this repo changing. To move to a newer Node 22:
 #   docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' node:22-alpine
 # then bump the digest here, run the unit suites + the CDP drivers, and deploy.
-FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+FROM node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66
 
 WORKDIR /repo
 # Workspace manifests first so `npm ci` layers cache across code edits.
