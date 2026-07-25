@@ -510,17 +510,24 @@ function closeConnectModal() {
 
 // ---- v3 action modals: Send / Receive / Mint / Network ----
 const openModal = (id) => $(id).classList.add('open');
+// Closing a modal abandons whatever draft it held. Anything armed out-of-band
+// from the visible fields — "Max", a pending signed draft — has to go with it,
+// or it silently applies to the next thing the user does.
+function onModalClosed(id) {
+  if (id === 'net-modal') hideSeed(); // a revealed seed must not outlive the modal (§5)
+  if (id === 'send-modal') resetSend();
+}
 document.querySelectorAll('[data-close]').forEach((b) =>
   b.addEventListener('click', () => {
     const modal = b.closest('.modal-backdrop');
     modal.classList.remove('open');
-    if (modal.id === 'net-modal') hideSeed(); // a revealed seed must not outlive the modal (§5)
+    onModalClosed(modal.id);
   }));
 for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'disclaimer-modal', 'wallet-modal', 'consolidate-modal']) {
   $(id).addEventListener('click', (e) => {
     if (e.target !== $(id)) return;
     $(id).classList.remove('open');
-    if (id === 'net-modal') hideSeed(); // same rule on backdrop-click close
+    onModalClosed(id);
   });
 }
 $('footer-disclaimer').addEventListener('click', () => openModal('disclaimer-modal'));
@@ -2053,6 +2060,14 @@ function resetSend() {
   pendingSend = null;
   $('w-send-confirm').style.display = 'none';
   $('w-send-review').disabled = false;
+  // "Max" is armed out-of-band from the field it filled, so it has to be
+  // disarmed by every path that abandons a draft — cancel, modal close, lock,
+  // and WALLET SWITCH (resetWalletState calls this). Left armed, the next
+  // Review re-plans a full drain against whatever wallet is open by then,
+  // silently turning "send 10" into "send everything I now hold".
+  sendMaxArmed = false;
+  $('w-send-amount').value = '';
+  updateSendEq();
 }
 
 // A pasted/scanned BIP21 `digibyte:` URI in the recipient field is unpacked into
@@ -2066,9 +2081,17 @@ function absorbSendUri() {
   if (!parsed) return;
   if (parsed.address !== $('w-send-to').value.trim()) $('w-send-to').value = parsed.address;
   if (parsed.amountSats != null && parsed.amountSats > 0n && !$('w-send-amount').value.trim()) {
+    // BIP21 amounts are DGB by definition, and sendCcy is STICKY — it survives
+    // from an earlier USD send in the same session. Writing a DGB figure while
+    // the field is read as USD (sendAmountSats) meant a `?amount=200` request
+    // was reviewed as $200: at $0.01/DGB that is 75x what the payee asked for.
+    // Switch the field to the currency the number is actually in.
+    if (sendCcy === 'USD') setSendCcy('DGB');
     // satsToDgbString (not the locale-formatted satsToDgb): no thousands commas,
     // so the value stays parseable by dgbToSats at review for amounts ≥ 1000 DGB.
     $('w-send-amount').value = satsToDgbString(parsed.amountSats);
+    sendMaxArmed = false; // a requested amount is not a drain
+    updateSendEq();       // the ≈-line is the only on-screen cue; it must not lag
   }
   const ctx = [parsed.label && `Label: ${parsed.label}`, parsed.message && `Message: ${parsed.message}`]
     .filter(Boolean).join(' · ');
@@ -2265,10 +2288,8 @@ $('w-send-go').addEventListener('click', (e) =>
       feeSats: plan.feeSats,
     });
     const txid = await broadcastTx(hex);
-    resetSend();
-    sendMaxArmed = false;
+    resetSend(); // clears the amount, disarms Max, refreshes the ≈-line
     $('w-send-to').value = '';
-    $('w-send-amount').value = '';
     $('w-send-amount-eq').style.display = 'none';
     $('w-send-uri-ctx').style.display = 'none';
     $('w-send-out').textContent = `Sent — tx ${txid.slice(0, 16)}…`;

@@ -34,7 +34,7 @@ node --version
 
 # Drivers that stand up everything they need. The rest want a wallet server on
 # 8791 and a fake indexer on 8799 (see each driver's header).
-SELF_CONTAINED=(verify-autolock-default verify-crosswire verify-wallet-mgmt verify-receive-index verify-receive-ui)
+SELF_CONTAINED=(verify-autolock-default verify-crosswire verify-wallet-mgmt verify-receive-index verify-receive-ui verify-send-amount)
 NEEDS_STACK=(verify-ui verify-receive-compat)
 
 reap() {
