@@ -1,0 +1,78 @@
+# The repo's first CI. Until now every green result — unit suites and the
+# headless-Chrome drivers alike — came from someone running them locally and
+# reporting the number, which is exactly the kind of assurance that quietly
+# stops happening.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit + pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      # npm ci (not install) is the point: it installs the lockfile exactly and
+      # fails if a manifest has drifted from it.
+      - run: npm ci
+
+      - name: unit suites
+        run: npm test
+
+      # The crypto packages are served into the page with the seed in scope, so
+      # a pin eroding is a security regression, not a chore.
+      - name: pins intact
+        run: node scripts/check-pins.mjs
+
+      - name: lockfile is in sync with the manifests
+        run: |
+          npm install --package-lock-only
+          git diff --exit-code package-lock.json \
+            || { echo "package-lock.json is stale — run npm install --package-lock-only and commit it"; exit 1; }
+
+      - name: audit
+        run: npm audit --audit-level=high
+
+  drivers:
+    name: browser drivers
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+
+      # google-chrome-stable ships on the ubuntu-latest runner image; using it
+      # directly keeps a third-party action out of the supply chain of a wallet.
+      - name: chrome present
+        run: google-chrome --version
+
+      # scripts/run-drivers.sh owns the ritual these need: a fresh profile per
+      # driver, and no survivors between runs.
+      - name: run drivers
+        run: ./scripts/run-drivers.sh
+
+      - name: driver logs on failure
+        if: failure()
+        run: |
+          for f in /tmp/chrome-ci.log /tmp/wallet-ci.log /tmp/fake-indexer-ci.log; do
+            echo "── $f"; tail -40 "$f" 2>/dev/null || echo "(none)"
+          done
