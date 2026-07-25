@@ -16,6 +16,7 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { friendlyDDError, MINT_FREEZE_EXPLANATION } from '/dderrors.js';
+import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -1188,19 +1189,14 @@ $('w-faucet').addEventListener('click', (e) =>
 // file to another device. The ?autolockSecs= override exists for drivers and
 // is honored ONLY in mock mode: on a live deployment a crafted link must not
 // silently disable (or stretch) auto-lock.
-const AUTOLOCK_KEY = 'diginaut.autolock';
-const AUTOLOCK_DEFAULT_MIN = 5;
 function autolockDelayMs() {
   if (appConfig.mock) {
     const secs = Number(new URLSearchParams(location.search).get('autolockSecs'));
     if (Number.isFinite(secs) && secs > 0) return secs * 1000;
   }
-  let mins = AUTOLOCK_DEFAULT_MIN;
-  try {
-    const stored = Number(localStorage.getItem(AUTOLOCK_KEY));
-    if (Number.isFinite(stored) && stored >= 0) mins = stored;
-  } catch { /* private mode → default */ }
-  return mins * 60_000; // 0 = Never
+  let raw = null;
+  try { raw = localStorage.getItem(AUTOLOCK_KEY); } catch { /* private mode → default */ }
+  return autolockMinutes(raw) * 60_000; // 0 = Never
 }
 let autolockTimer = null;
 function armAutolock() {
@@ -2762,11 +2758,15 @@ async function boot() {
   // release gate (#17) removed the feature flag per ADR-0002.
   initMintTiers();
   enhanceSelect('send-asset');
-  // reflect the stored auto-lock choice (only ladder values — a garbage/stale
-  // entry falls back to the markup's 5-minute default)
+  // Reflect the auto-lock choice, and reflect it from the SAME source the timer
+  // reads: showing the markup's selected option while autolockDelayMs() had
+  // resolved something else is how "5 minutes" stayed on screen for users whose
+  // lock never armed. A garbage/stale entry falls back to the real default.
   try {
     const v = localStorage.getItem(AUTOLOCK_KEY);
-    if (v !== null && [...$('w-autolock').options].some((o) => o.value === v)) $('w-autolock').value = v;
+    const ladder = [...$('w-autolock').options].map((o) => o.value);
+    const choice = ladder.includes(v) ? v : String(autolockMinutes(v) ?? AUTOLOCK_DEFAULT_MIN);
+    if (ladder.includes(choice)) $('w-autolock').value = choice;
   } catch { /* private mode → default */ }
   enhanceSelect('w-autolock');
   loadPriceChart();
