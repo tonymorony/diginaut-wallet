@@ -370,6 +370,9 @@ const vault = createVaultManager(keystore);
 let shownState = 'loading'; // what the app currently renders — cross-tab sync diffs against it
 function show(state) {
   shownState = state;
+  // the boot card is the whole wrapper: leaving it in the main grid while
+  // empty would add a stray row gap under the header
+  $('wallet-card').style.display = state === 'loading' ? 'block' : 'none';
   $('w-loading').style.display = state === 'loading' ? 'block' : 'none';
   $('w-open').style.display = state === 'open' ? 'grid' : 'none';
   // EVM-style corner control: Connect when idle, address chip when connected
@@ -417,7 +420,13 @@ function dockPriceBlock(open) {
   }
   // guests never see the market chart; the standalone card only serves the
   // connected-but-no-indexer edge case
-  $('price-card').style.display = open && !appConfig.indexer ? 'block' : 'none';
+  const card = $('price-card');
+  const visible = open && !appConfig.indexer;
+  const wasHidden = card.style.display === 'none';
+  card.style.display = visible ? 'block' : 'none';
+  // the card boots hidden, so its first chart was measured at zero width —
+  // draw it again the moment it actually has a box
+  if (visible && wasHidden) renderSparkline(lastPriceSeries);
 }
 
 // swap a modal's form for the success view once the tx is broadcast
@@ -2487,13 +2496,22 @@ function startMoneyPolling() {
   moneyTimer = setInterval(refreshMoney, 8000);
 }
 
+// The boot card doubles as the fatal-boot surface. A dead boot is not a wait,
+// so the clip goes and only the reason stays — a looping animation over a
+// wallet that will never open is a lie. (The reason stays inside #w-loading:
+// verify-crosswire.mjs reads it off the card.)
+function bootStuck(msg) {
+  $('w-loading-msg').textContent = msg;
+  $('w-loading').querySelector('.loading-clip')?.remove();
+}
+
 async function bootWallet() {
   try {
     // 'locked' covers both a v2 vault and a not-yet-migrated v1 record — the
     // unlock path migrates transparently on the first successful password.
     show(await vault.load() === 'none' ? 'none' : 'locked');
   } catch (e) {
-    $('w-loading').textContent = 'wallet storage unavailable: ' + e.message;
+    bootStuck('wallet storage unavailable: ' + e.message);
   }
 }
 
@@ -2509,7 +2527,7 @@ function renderCrossWire(cfg) {
   const badge = $('modeBadge');
   badge.className = 'badge mock';
   badge.textContent = 'CROSS-WIRED';
-  $('w-loading').textContent = 'wallet disabled: the server refuses to serve a mismatched network';
+  bootStuck('wallet disabled: the server refuses to serve a mismatched network');
   show('loading');
   return true;
 }
