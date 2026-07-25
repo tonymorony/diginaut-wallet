@@ -420,7 +420,13 @@ function dockPriceBlock(open) {
   }
   // guests never see the market chart; the standalone card only serves the
   // connected-but-no-indexer edge case
-  $('price-card').style.display = open && !appConfig.indexer ? 'block' : 'none';
+  const card = $('price-card');
+  const visible = open && !appConfig.indexer;
+  const wasHidden = card.style.display === 'none';
+  card.style.display = visible ? 'block' : 'none';
+  // the card boots hidden, so its first chart was measured at zero width —
+  // draw it again the moment it actually has a box
+  if (visible && wasHidden) renderSparkline(lastPriceSeries);
 }
 
 // swap a modal's form for the success view once the tx is broadcast

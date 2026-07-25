@@ -481,8 +481,11 @@
     </div>
 
     <!-- DGB price (public: standalone card while no wallet; the same block
-         docks into the hero card when connected — moved by show()) -->
-    <section class="card" id="price-card">
+         docks into the hero card when connected — moved by show()).
+         Hidden until show() rules on it: dockPriceBlock keeps this card for
+         the connected-but-no-indexer case only, so a visible-by-default card
+         would flash an empty "DGB price —" through the whole boot wait. -->
+    <section class="card" id="price-card" style="display:none">
       <div id="price-slot-guest">
         <div id="price-block">
           <div class="price-head">
