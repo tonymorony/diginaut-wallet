@@ -5,10 +5,18 @@
 # Pinned by DIGEST, not by tag: this image runs the process that signs
 # transactions and serves the crypto libraries into the page, and `up --build`
 # on a floating tag can change the Node runtime under it without a single
-# line of this repo changing. To move to a newer Node 22:
-#   docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' node:22-alpine
-# then bump the digest here, run the unit suites + the CDP drivers, and deploy.
-FROM node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66
+# line of this repo changing.
+#
+# Stay on an LTS line, and keep this in step with .nvmrc — CI runs the suites on
+# .nvmrc, so a Dockerfile ahead of it means production runs a Node that nothing
+# ever tested. That is exactly what happened in #120, which took this image to
+# node:26 (the Current line, not LTS) while .nvmrc still said 22.
+#
+# To move within the line:
+#   docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' node:24-alpine
+# then bump the digest here, bump .nvmrc to match, run the unit suites + the CDP
+# drivers, and deploy.
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
 
 WORKDIR /repo
 # Workspace manifests first so `npm ci` layers cache across code edits.
