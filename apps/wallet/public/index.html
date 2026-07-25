@@ -264,6 +264,9 @@
     .guest h1 { margin: 14px 0 4px; font-size: 22px; font-weight: 600; letter-spacing: -.02em; }
     .guest p { margin: 0 auto; max-width: 320px; color: var(--muted); font-size: 13.5px; }
     .guest button { max-width: 260px; }
+    /* the waiting clip — one look for both waits: boot (#w-loading) and the
+       post-unlock sync veil (#loading-veil) */
+    .loading-clip { width: min(300px, 80%); border-radius: 12px; }
     /* price chart */
     .price-head { display: flex; justify-content: space-between; align-items: baseline; }
     .price-now { font-size: 22px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
@@ -370,9 +373,13 @@
   </div>
 
   <main>
-    <!-- boot placeholder (drivers key on w-loading via show()) -->
-    <div id="wallet-card" style="display:none">
-      <div id="w-loading">Loading wallet…</div>
+    <!-- boot placeholder (drivers key on w-loading via show()); visible from
+         the first paint — show() hides it once the wallet state is known -->
+    <div id="wallet-card">
+      <section class="card guest" id="w-loading">
+        <video src="/loading.mp4" autoplay loop muted playsinline aria-hidden="true" class="loading-clip"></video>
+        <p class="hint" id="w-loading-msg" role="status" style="margin-top:10px">Loading wallet…</p>
+      </section>
       <div id="w-disconnected" style="display:none"></div>
     </div>
 
@@ -388,8 +395,8 @@
     <div id="wallet-open-card" style="display:none">
     <!-- shown between unlock and the first indexer answer -->
     <section class="card guest" id="loading-veil" style="display:none">
-      <video src="/loading.mp4" autoplay loop muted playsinline style="width:min(300px,80%);border-radius:12px"></video>
-      <p class="hint" style="margin-top:10px">Syncing your wallet…</p>
+      <video src="/loading.mp4" autoplay loop muted playsinline aria-hidden="true" class="loading-clip"></video>
+      <p class="hint" role="status" style="margin-top:10px">Syncing your wallet…</p>
     </section>
     <div id="w-open" style="display:none">
     <!-- connected-but-no-indexer deployments (#61): balances/history/sending
