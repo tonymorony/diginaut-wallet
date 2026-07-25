@@ -108,6 +108,34 @@ test('planMaxSpend throws on an empty coin set', () => {
   assert.throws(() => planMaxSpend({ utxos: [] }), /no spendable coins/);
 });
 
+// ---- input-count varint: 1 byte → 3 bytes at 253 inputs ----
+// serializeTx writes the real count varint, so the fee model has to as well.
+// Two extra non-witness bytes = 8 wu = 2 vB = 200 sats at the default rate —
+// which is exactly enough to put a big consolidation or a send-max under the
+// min-relay fee and have the node refuse it. Nothing else in this suite goes
+// past 3 inputs, which is why it survived this long. The 252 assertions are
+// here on purpose: they must pass BEFORE and after, pinning the correction to
+// the boundary so an over-correction that overcharges ordinary wallets fails.
+const manyUtxos = (n) => Array.from({ length: n }, (_, i) => utxo(1_000_000n, i));
+
+test('planMaxSpend prices the 3-byte input-count varint at 253 inputs', () => {
+  // 252: 42 + 252·230 + 172 = 58_174 wu → ceil/4 = 14_544 vB → 1_454_400 sats
+  assert.equal(planMaxSpend({ utxos: manyUtxos(252) }).feeSats, 1_454_400n);
+  // 253: 42 + 8 + 253·230 + 172 = 58_412 wu → ceil/4 = 14_603 vB → 1_460_300 sats
+  assert.equal(planMaxSpend({ utxos: manyUtxos(253) }).feeSats, 1_460_300n);
+});
+
+test('planSpend prices the 3-byte input-count varint at 253 inputs', () => {
+  // The amount is chosen so largest-first stops at exactly 253 equal coins:
+  // 252 coins leave −458_700 after amount+fee, 253 leave +535_400.
+  // 42 + 8 + 253·230 + 172 (recipient) + 172 (change) = 58_584 wu
+  //   → ceil/4 = 14_646 vB → 1_464_600 sats
+  const plan = planSpend({ utxos: manyUtxos(300), amountSats: 251_000_000n });
+  assert.equal(plan.inputs.length, 253);
+  assert.equal(plan.feeSats, 1_464_600n);
+  assert.equal(plan.changeSats, 253_000_000n - 251_000_000n - 1_464_600n);
+});
+
 test('planSpend prices a legacy P2PKH recipient output smaller than P2TR (#68)', () => {
   // Recipient P2PKH script (25 B) → output wu (9+25)·4 = 136, vs 172 for P2TR.
   // 42 + 230 + 136 (recipient) + 172 (P2TR change) = 580 wu → ceil(580/4)=145 vB

@@ -3,7 +3,8 @@
 //   vout[0] collateral P2TR (NUMS + MAST)   — requiredCollateralSats
 //   vout[1] DD token P2TR (owner, key-path) — 0 value
 //   vout[2] OP_RETURN mint metadata          — 0 value
-//   vout[3] change P2TR (owner, key-path)
+//   vout[3] change P2WPKH (owner) — omitted when the change is dust (folded
+//           into the fee); consensus classifies mint outputs by shape, not index
 // Unlock height rule observed on regtest and in consensus/digidollar.h:
 //   unlockHeight = nextHeight + MINT_LOCK_CONFIRMATION_BUFFER(100) + tier.lockBlocks
 
@@ -21,6 +22,16 @@ const CURVE_N = Point.CURVE().n;
 
 export const MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS = 100;
 export const MIN_DD_TX_FEE_SATS = 10_000_000n; // 0.1 DGB (Core txbuilder.cpp)
+// $1.00. Same value on every network (DD_TX_LIMITS.*.minOutputCents), from
+// consensus/digidollar.h:73 `minOutputAmount = 100`.
+export const MIN_DD_OUTPUT_CENTS = 100n;
+// Change below this goes to the fee instead of becoming an output. 0.001 DGB is
+// the relay-fee unit — negligible value, and guaranteed dust under any DGB dust
+// policy, so an output that size gets the whole transaction rejected. Every
+// builder in this file applies it: the DD ones were emitting the dust output
+// that plain spends have folded since #6, which is a DigiDollar that cannot
+// move rather than a spend that merely costs a little more.
+const CHANGE_FOLD_SATS = 100_000n;
 
 const hexToBytes = (hex) => Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)));
 const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -182,6 +193,18 @@ export function buildTransferOutputs({
     outputs.push({ valueSats: 0n, script: p2trScript(ddTokenOutputKey(changeOwnerKeyHex)) });
     amountsCents.push(ddChangeCents);
   }
+  // Consensus checks EVERY canonical-P2TR output of a transfer against the $1
+  // minimum, not just the ones the sender thinks of as payments — the loop at
+  // digidollar/validation.cpp:1743 rejects with "transfer-dd-amount-below-minimum".
+  // The DD CHANGE output is one of those, and it was the one nobody validated:
+  // spend $10.00 from a $10.50 coin and the 50c change makes the whole transfer
+  // unbroadcastable. Checked here, where the outputs and the OP_RETURN amounts
+  // are built together, so no DD output can reach the signer unvalidated.
+  for (const c of amountsCents) {
+    if (c < MIN_DD_OUTPUT_CENTS) {
+      throw new RangeError(`consensus forbids DigiDollar outputs below $1.00 — this transfer would create one of $${(Number(c) / 100).toFixed(2)}`);
+    }
+  }
   if (dgbChangeSats > 0n) {
     outputs.push({ valueSats: dgbChangeSats, script: hexToBytes(dgbChangeScriptHex) });
   }
@@ -193,7 +216,9 @@ export function buildTransferOutputs({
  * Build and sign a complete DigiDollar transfer transaction, client-side.
  * Both UTXOs must be key-path-only P2TR of `privKeyHex` (the sender owner key):
  * the DD token UTXO (on-chain value 0) and a DGB UTXO that pays the fee.
- * Returns { hex, ddChangeCents, dgbChangeSats }.
+ * DGB change below CHANGE_FOLD_SATS is folded into the fee rather than emitted
+ * as a dust output that would get the whole transfer rejected.
+ * Returns { hex, ddChangeCents, dgbChangeSats } — dgbChangeSats is 0n when folded.
  */
 export function buildSignedTransferTx({
   ddUtxo, // { txidHex, vout, ddCents: bigint } — the DD token output being spent (value 0)
@@ -207,8 +232,9 @@ export function buildSignedTransferTx({
   const sentCents = recipients.reduce((s, r) => s + r.cents, 0n);
   const ddChangeCents = ddUtxo.ddCents - sentCents;
   if (ddChangeCents < 0n) throw new RangeError('DD input smaller than the amount being sent');
-  const dgbChangeSats = feeUtxo.valueSats - feeSats;
+  let dgbChangeSats = feeUtxo.valueSats - feeSats;
   if (dgbChangeSats < 0n) throw new RangeError('fee UTXO too small for the fee');
+  if (dgbChangeSats < CHANGE_FOLD_SATS) dgbChangeSats = 0n; // dust change → fee
 
   const ownerKey = xOnlyPubKey(privKeyHex);
   const ownerScriptHex = bytesToHex(p2trScript(ddTokenOutputKey(ownerKey)));
@@ -256,6 +282,15 @@ export function buildRedeemOutputs({
   dgbChangeScriptHex,
 }) {
   const outputs = [{ valueSats: collateralReturnSats, script: hexToBytes(collateralReturnScriptHex) }];
+  // No MIN_DD_OUTPUT_CENTS check here, deliberately, and it is not an oversight.
+  // The redemption path does NOT call ValidateOutputAmount on its DD change: the
+  // scan at digidollar/validation.cpp:2107-2149 only enforces "at most one DD
+  // change output" and the per-output serialization bound. So Core ACCEPTS a
+  // sub-$1 redeem change, and refusing to build one would strand the position —
+  // a full redemption is all-or-nothing, so a user whose burn set cannot avoid
+  // 50c of change would have no in-wallet operation left that frees the
+  // collateral. The resulting token is awkward (a later TRANSFER of it would be
+  // rejected, per buildTransferOutputs above) but it is spendable in a burn set.
   if (ddChangeCents > 0n) {
     outputs.push({ valueSats: 0n, script: p2trScript(ddTokenOutputKey(changeOwnerKeyHex)) });
     outputs.push({ valueSats: 0n, script: hexToBytes(buildRedeemMetadata({ ddChangeCents })) });
@@ -271,7 +306,8 @@ export function buildRedeemOutputs({
  * The collateral is spent via the Normal tapscript leaf (expired CLTV + owner
  * signature — no oracle signatures involved); DD UTXOs and the fee UTXO must
  * be key-path-only P2TR of `privKeyHex`. The full collateral value returns to
- * the owner's key-path P2TR. Returns { hex, ddChangeCents, dgbChangeSats }.
+ * the owner's key-path P2TR. DGB change below CHANGE_FOLD_SATS is folded into
+ * the fee. Returns { hex, ddChangeCents, dgbChangeSats } — 0n when folded.
  */
 export function buildSignedRedeemTx({
   collateralUtxo, // { txidHex, vout, valueSats, lockHeight, ddCents } — the mint's vout[0]
@@ -285,11 +321,16 @@ export function buildSignedRedeemTx({
   const totalDDIn = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
   const ddChangeCents = totalDDIn - collateralUtxo.ddCents;
   if (ddChangeCents < 0n) throw new RangeError('DD inputs must cover the full minted amount (full redemption only)');
-  const dgbChangeSats = feeUtxo.valueSats - feeSats;
+  let dgbChangeSats = feeUtxo.valueSats - feeSats;
   if (dgbChangeSats < 0n) throw new RangeError('fee UTXO too small for the fee');
+  // Folding here can leave the redeem with no DGB change output at all. That is
+  // safe: Core's redemption check wants *some* output with nValue > 0
+  // ("bad-redeem-no-dgb-output", digidollar/validation.cpp:2154) and the
+  // collateral return at vout[0] is one.
+  if (dgbChangeSats < CHANGE_FOLD_SATS) dgbChangeSats = 0n;
 
   const ownerKey = xOnlyPubKey(privKeyHex);
-  const leafParams = { ownerKeyHex: ownerKey, lockHeight: collateralUtxo.lockHeight, ddCents: collateralUtxo.ddCents };
+  const leafParams ={ ownerKeyHex: ownerKey, lockHeight: collateralUtxo.lockHeight, ddCents: collateralUtxo.ddCents };
   const collateralScriptHex = bytesToHex(p2trScript(collateralOutputKey(leafParams)));
   const ownerScriptHex = bytesToHex(p2trScript(ddTokenOutputKey(ownerKey)));
 
@@ -334,10 +375,17 @@ export function buildSignedRedeemTx({
 // standard relay fee (no 0.1 DGB DD floor — that applies to DD txs only).
 
 export const STANDARD_FEE_RATE_SATS_PER_KVB = 100_000n; // DGB default relay fee 0.001 DGB/kvB
-const CHANGE_FOLD_SATS = 100_000n; // change smaller than this goes to the fee, not an output
 
 // BIP-141 weights for a key-path P2TR spend, in weight units (see spend.test.js).
-const TX_OVERHEAD_WU = 42n; // version+counts+locktime (10 vB ·4) + segwit marker/flag (2 wu)
+const TX_OVERHEAD_WU = 42n; // version+counts+locktime (10 vB ·4) + segwit marker/flag (2 wu),
+                            // taking both count varints as one byte — see below
+// The input-count varint is one byte only up to 252; at 253 serializeTx writes
+// the 3-byte form (varint(), line 41). Those 2 bytes are non-witness, so they
+// cost 8 wu = 2 vB = 200 sats at the default relay rate — enough to put a
+// consolidation or a send-max under the min-relay fee and have it rejected.
+// The OUTPUT count is not modelled: both planners emit at most two outputs, so
+// its varint is provably one byte and a term for it could never be exercised.
+const inputCountExtraWu = (nIn) => (nIn < 0xfd ? 0n : 8n);
 const P2TR_INPUT_WU = 230n; // outpoint+len+sequence (41 vB ·4) + witness [64B sig] (66 wu)
 // p2wpkh: 164 wu non-witness + witness ≤ 1 count + (1+72) sig (max lowS DER 71
 // + hashtype) + (1+33) pubkey = 108 wu. Budget the maximum — a 71-byte sig is
@@ -368,7 +416,8 @@ export function planSpend({ utxos, amountSats, feeRateSatsPerKvB = STANDARD_FEE_
     inputs.push(u);
     total += u.valueSats;
     inputsWu += inputWeight(u);
-    const weight = TX_OVERHEAD_WU + inputsWu + recipientOutputWu + P2TR_OUTPUT_WU;
+    // inputs.length is the count for the tx being priced: `u` was pushed above.
+    const weight = TX_OVERHEAD_WU + inputCountExtraWu(inputs.length) + inputsWu + recipientOutputWu + P2TR_OUTPUT_WU;
     // Core rounds weight→vsize FIRST (GetVirtualTransactionSize = ceil(weight/4)),
     // then prices per vbyte — rounding at the end under-pays by up to 75 sats/kvB.
     const vsize = (weight + 3n) / 4n;
@@ -398,7 +447,7 @@ export function planMaxSpend({ utxos, feeRateSatsPerKvB = STANDARD_FEE_RATE_SATS
   const inputsWu = inputs.reduce((s, u) => s + inputWeight(u), 0n);
   // Single recipient output, no change (see planSpend for the weight model).
   const recipientOutputWu = recipientScriptHex ? outputWeight(recipientScriptHex) : P2TR_OUTPUT_WU;
-  const weight = TX_OVERHEAD_WU + inputsWu + recipientOutputWu;
+  const weight = TX_OVERHEAD_WU + inputCountExtraWu(inputs.length) + inputsWu + recipientOutputWu;
   const vsize = (weight + 3n) / 4n; // ceil(weight/4), Core's GetVirtualTransactionSize
   const feeSats = (vsize * feeRateSatsPerKvB + 999n) / 1000n; // ceil, per-vbyte
   const amountSats = total - feeSats;
@@ -478,8 +527,13 @@ export function buildSignedMintTx({
   const collateralSats = requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd, dcaMultiplierBps });
   const unlockHeight = tipHeight + 1 + MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS + tier.lockBlocks;
 
-  const changeSats = utxo.valueSats - collateralSats - feeSats;
+  let changeSats = utxo.valueSats - collateralSats - feeSats;
   if (changeSats < 0n) throw new RangeError('funding UTXO too small for collateral + fee');
+  // Dust change → fee, and then no change output at all. Before this, exact
+  // funding emitted a ZERO-value P2WPKH output, which is non-standard on its
+  // own. Consensus classifies mint outputs by shape, not by index (the scan in
+  // ValidateMintTransaction), so dropping vout[3] does not disturb the layout.
+  if (changeSats < CHANGE_FOLD_SATS) changeSats = 0n;
 
   const fundingScript = p2trScript(ddTokenOutputKey(ownerKey)); // key-path-only P2TR of owner
   const inputs = [{ ...utxo, scriptPubKeyHex: bytesToHex(fundingScript), sequence: 0xfffffffd }];
@@ -487,8 +541,8 @@ export function buildSignedMintTx({
     { valueSats: collateralSats, script: p2trScript(collateralOutputKey({ ownerKeyHex: ownerKey, lockHeight: unlockHeight, ddCents })) },
     { valueSats: 0n, script: p2trScript(ddTokenOutputKey(ownerKey)) },
     { valueSats: 0n, script: hexToBytes(buildMintMetadata({ ddCents, unlockHeight, lockTier: LOCK_TIERS.indexOf(tier), ownerKeyHex: ownerKey })) },
-    { valueSats: changeSats, script: p2wpkhScript(privKeyHex) },
   ];
+  if (changeSats > 0n) outputs.push({ valueSats: changeSats, script: p2wpkhScript(privKeyHex) });
 
   const version = buildDDVersion('mint');
   const sighash = taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex: 0 });
