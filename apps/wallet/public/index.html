@@ -244,6 +244,28 @@
     .tx-success .tx-link { display: inline-block; margin: 2px 0 4px; }
     .tx-success a.tx-link:not([href]) { color: var(--muted); text-decoration: none; cursor: default; }
     /* receive QR */
+    /* receive: DGB / DigiDollar form switch — one key, two encodings */
+    .seg { display: grid; grid-auto-flow: column; gap: 4px; background: var(--gray-100); border-radius: 999px; padding: 4px; margin: 14px 0 4px; }
+    .seg-btn { width: auto; margin: 0; padding: 7px 12px; border-radius: 999px; background: none; color: var(--muted); font-size: 13px; font-weight: 600; }
+    .seg-btn:hover { background: none; color: var(--text); }
+    .seg-btn.on { background: #fff; color: var(--text); box-shadow: 0 1px 2px rgba(21,24,30,.10); }
+    /* address + inline copy: the box is the target, the icon is the affordance */
+    .addr-box { position: relative; }
+    .addr-box .out { padding-right: 46px; word-break: break-all; }
+    .icon-btn { position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; margin: 0; padding: 0; display: grid; place-items: center; border-radius: 8px; background: #fff; color: var(--gray-700); box-shadow: 0 1px 2px rgba(21,24,30,.12); }
+    .icon-btn:hover { background: #fff; color: var(--text); }
+    .icon-btn.copied { color: var(--good); }
+    .icon-btn svg { display: block; }
+    /* previously used addresses */
+    .rx-prev { margin-top: 8px; border-top: 1px solid var(--gray-100); }
+    .rx-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--gray-100); font-size: 12.5px; }
+    .rx-row:last-child { border-bottom: 0; }
+    .rx-row .rx-i { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 26px; }
+    .rx-row .rx-addr { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rx-row .rx-tag { font-size: 10px; font-weight: 600; letter-spacing: .02em; padding: 2px 8px; border-radius: 999px; background: var(--good-bg); color: var(--good); white-space: nowrap; }
+    .rx-row .rx-tag.idle { background: var(--gray-100); color: var(--muted); }
+    .rx-row .rx-tag.now { background: var(--gray-900); color: #fff; }
+    .rx-row .icon-btn { position: static; width: 26px; height: 26px; box-shadow: none; background: var(--gray-100); }
     .qr { display: grid; place-items: center; margin: 4px 0 10px; }
     .qr svg { width: 176px; height: 176px; background: #fff; border: 1px solid var(--gray-100); border-radius: 12px; padding: 10px; }
     .hero #w-faucet { margin-top: 12px; }
@@ -740,45 +762,69 @@
           <button id="w-receive-anyway" class="secondary">Continue anyway</button>
         </div>
         <div id="w-receive-body">
-        <div class="qr" id="w-qr" aria-label="Receive address QR code"></div>
-        <div class="row" style="border:0"><span class="k">DGB address <span class="mono" id="w-path"></span></span><span></span></div>
-        <div class="out mono" style="margin-top:0" id="w-address"></div>
-        <div class="grid" style="margin-top:0">
+        <!-- One key, two encodings (#72): the tabs switch the FORM the payer's
+             wallet needs, not the address. Both panes render the same
+             derivation, which is why the path, "Next address" and the
+             previous-address list below are shared by them. -->
+        <div class="seg" role="tablist" aria-label="Address form">
+          <button type="button" class="seg-btn on" id="rx-tab-dgb" role="tab" aria-selected="true" aria-controls="rx-pane-dgb">DGB</button>
+          <button type="button" class="seg-btn" id="rx-tab-dd" role="tab" aria-selected="false" aria-controls="rx-pane-dd">DigiDollar</button>
+        </div>
+
+        <div id="rx-pane-dgb" role="tabpanel" aria-labelledby="rx-tab-dgb">
+          <div class="qr" id="w-qr" aria-label="Receive address QR code"></div>
+          <div class="addr-box">
+            <div class="out mono" style="margin-top:0" id="w-address"></div>
+            <button type="button" class="icon-btn" id="w-copy-icon" data-copy="w-address" title="Copy address" aria-label="Copy address"></button>
+          </div>
           <button id="w-copy">Copy address</button>
-          <button id="w-next" class="secondary">Next address</button>
-        </div>
-        <!-- Optional BIP21 request amount (#71): when set, the QR and the button
-             below switch to a digibyte:…?amount= URI that mobile wallets scan and
-             prefill. The bare-address copy above stays available. -->
-        <label for="w-req-amount" style="margin-top:12px">Request a specific amount (DGB, optional)</label>
-        <input id="w-req-amount" inputmode="decimal" autocomplete="off" placeholder="e.g. 12.5" />
-        <div class="grid" style="margin-top:0">
-          <button id="w-copy-uri" class="secondary" style="display:none">Copy payment request</button>
-        </div>
-        <!-- Compatibility twin (#103 decision 1): some senders (older wallets,
-             exchanges) cannot pay taproot dgb1p… addresses. The low-emphasis
-             link reveals the SAME key's P2WPKH twin (dgb1q…, same derivation
-             index — already watched alongside its P2TR, #38), so funds sent to
-             either land in the same balance. Hidden again on every open:
-             the receive view stays taproot-first. -->
-        <button id="w-compat-toggle" class="textlink" type="button">Sender can’t pay this address?</button>
-        <div id="w-compat-section" style="display:none">
-          <p class="hint" style="margin-top:8px">Older wallets and some exchanges cannot send to taproot (dgb1p…) addresses. This is the same wallet key in the older witness-v0 form — funds sent here appear in the same balance.</p>
-          <div class="qr" id="w-compat-qr" aria-label="Compatibility address QR code"></div>
-          <div class="out mono" style="margin-top:0" id="w-compat-address"></div>
+          <!-- Optional BIP21 request amount (#71): when set, the QR and the button
+               below switch to a digibyte:…?amount= URI that mobile wallets scan and
+               prefill. The bare-address copy above stays available. DGB only —
+               there is no URI scheme a DigiDollar sender would honour. -->
+          <label for="w-req-amount" style="margin-top:12px">Request a specific amount (DGB, optional)</label>
+          <input id="w-req-amount" inputmode="decimal" autocomplete="off" placeholder="e.g. 12.5" />
           <div class="grid" style="margin-top:0">
-            <button id="w-compat-copy" class="secondary">Copy compatibility address</button>
-            <button id="w-compat-copy-uri" class="secondary" style="display:none">Copy payment request</button>
+            <button id="w-copy-uri" class="secondary" style="display:none">Copy payment request</button>
+          </div>
+          <!-- Compatibility twin (#103 decision 1): some senders (older wallets,
+               exchanges) cannot pay taproot dgb1p… addresses. The low-emphasis
+               link reveals the SAME key's P2WPKH twin (dgb1q…, same derivation
+               index — already watched alongside its P2TR, #38), so funds sent to
+               either land in the same balance. Hidden again on every open:
+               the receive view stays taproot-first. -->
+          <button id="w-compat-toggle" class="textlink" type="button">Sender can’t pay this address?</button>
+          <div id="w-compat-section" style="display:none">
+            <p class="hint" style="margin-top:8px">Older wallets and some exchanges cannot send to taproot (dgb1p…) addresses. This is the same wallet key in the older witness-v0 form — funds sent here appear in the same balance.</p>
+            <div class="qr" id="w-compat-qr" aria-label="Compatibility address QR code"></div>
+            <div class="out mono" style="margin-top:0" id="w-compat-address"></div>
+            <div class="grid" style="margin-top:0">
+              <button id="w-compat-copy" class="secondary">Copy compatibility address</button>
+              <button id="w-compat-copy-uri" class="secondary" style="display:none">Copy payment request</button>
+            </div>
           </div>
         </div>
+
         <!-- Same taproot key, DigiDollar base58check form (DD…/TD…/RD…). Core and
-             mobile wallets can only send DigiDollar to THIS form, not to dgb1p…. -->
-        <div class="row" style="border:0;margin-top:12px"><span class="k">DigiDollar address</span><span></span></div>
-        <div class="hint" style="margin:0 0 6px">Share this to receive DigiDollar from Core or mobile wallets.</div>
-        <div class="out mono" style="margin-top:0" id="w-dd-address"></div>
-        <div class="grid" style="margin-top:0">
-          <button id="w-copy-dd" class="secondary">Copy DigiDollar address</button>
+             mobile wallets can only send DigiDollar to THIS form, not to dgb1p…,
+             so it gets a QR of its own rather than a copy button at the bottom. -->
+        <div id="rx-pane-dd" role="tabpanel" aria-labelledby="rx-tab-dd" style="display:none">
+          <div class="qr" id="w-dd-qr" aria-label="DigiDollar address QR code"></div>
+          <div class="addr-box">
+            <div class="out mono" style="margin-top:0" id="w-dd-address"></div>
+            <button type="button" class="icon-btn" id="w-copy-dd-icon" data-copy="w-dd-address" title="Copy DigiDollar address" aria-label="Copy DigiDollar address"></button>
+          </div>
+          <button id="w-copy-dd">Copy DigiDollar address</button>
+          <p class="hint">The same wallet key in DigiDollar form. Core and mobile wallets send DigiDollar only to a DD… address — they reject the dgb1p… one above. Plain DGB sent here lands in the same balance.</p>
         </div>
+
+        <!-- shared by both forms: they are one address, at one derivation -->
+        <div class="row" style="border:0;padding-bottom:0">
+          <span class="k">Address <span class="mono" id="w-path"></span></span>
+          <button id="w-next" class="secondary chip-btn">Next address</button>
+        </div>
+        <button id="w-prev-toggle" class="textlink" type="button">Previously used addresses</button>
+        <div id="w-prev-list" class="rx-prev" style="display:none"></div>
         </div>
       </div>
     </div>

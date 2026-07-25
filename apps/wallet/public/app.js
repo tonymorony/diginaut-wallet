@@ -567,7 +567,8 @@ function renderAddress() {
   // Never show an address for a guessed network: on a mainnet deployment with
   // an unreachable node the default would be testnet-encoded — confusing at
   // best. loadStatus retries until the node names its chain, then re-renders.
-  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet'), $('w-copy-dd'), $('w-compat-copy')];
+  const addressActions = [$('w-copy'), $('w-next'), $('w-faucet'), $('w-copy-dd'), $('w-compat-copy'),
+    $('w-copy-icon'), $('w-copy-dd-icon'), $('w-prev-toggle')];
   if (!chainState.netKnown) {
     $('w-path').textContent = '';
     $('w-address').textContent = 'waiting for the node to report a supported network…';
@@ -576,6 +577,8 @@ function renderAddress() {
     $('w-chip-addr').textContent = '…';
     $('w-qr').innerHTML = '';
     $('w-compat-qr').innerHTML = '';
+    $('w-dd-qr').innerHTML = '';
+    $('w-prev-list').innerHTML = '';
     for (const b of addressActions) b.disabled = true; // nothing here to copy/claim
     return;
   }
@@ -593,6 +596,7 @@ function renderAddress() {
   $('w-dd-address').textContent = encodeDDAddress(decodeDDAddress(address).outputKeyHex, chainState.netName);
   $('w-chip-addr').textContent = address.slice(0, 10) + '…' + address.slice(-4);
   updateReceiveQr();
+  renderPrevAddresses();
 }
 
 // Receive QR + payment-request copy (#71). Bare address by default; when the
@@ -627,7 +631,120 @@ function updateReceiveQr() {
     drawAddressQr($('w-compat-qr'), $('w-compat-address').textContent, requestSats);
     $('w-compat-copy-uri').style.display = useUri ? '' : 'none';
   }
+  // The DigiDollar form gets no amount: Core's senddigidollar takes an address,
+  // not a URI, so a `digibyte:…?amount=` QR would be a request no DigiDollar
+  // sender can act on. Bare address, always.
+  if ($('rx-pane-dd').style.display !== 'none') drawAddressQr($('w-dd-qr'), $('w-dd-address').textContent, 0n);
 }
+
+// ---- Receive: DGB / DigiDollar form switch ----
+// Not two addresses — one key in the two encodings the ecosystem needs. Core
+// and mobile wallets reject dgb1p… for a DigiDollar send (#72) and this wallet
+// would otherwise offer that form as a copy line with no QR to scan.
+function setReceiveTab(tab) {
+  const dd = tab === 'dd';
+  $('rx-pane-dgb').style.display = dd ? 'none' : 'block';
+  $('rx-pane-dd').style.display = dd ? 'block' : 'none';
+  for (const [el, on] of [[$('rx-tab-dgb'), !dd], [$('rx-tab-dd'), dd]]) {
+    el.classList.toggle('on', on);
+    el.setAttribute('aria-selected', String(on));
+  }
+  if (dd) updateReceiveQr(); // the DD QR renders lazily, only when its pane is up
+  renderPrevAddresses();     // the list re-encodes to match (no-op while collapsed)
+}
+$('rx-tab-dgb').addEventListener('click', () => setReceiveTab('dgb'));
+$('rx-tab-dd').addEventListener('click', () => setReceiveTab('dd'));
+
+// ---- Copy affordance on the address boxes ----
+// data-copy names the element holding the text; data-copy-text carries it
+// directly (the previous-address rows, which are built as markup).
+const COPY_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 3.5A1.5 1.5 0 0 0 9 2H4a2 2 0 0 0-2 2v5a1.5 1.5 0 0 0 1.5 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const DONE_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+for (const el of document.querySelectorAll('.icon-btn')) el.innerHTML = COPY_ICON;
+const copyTimers = new WeakMap(); // button → pending revert timer
+const copyLabels = new WeakMap(); // button → its resting aria-label
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.icon-btn');
+  if (!btn) return;
+  const text = btn.dataset.copyText ?? $(btn.dataset.copy)?.textContent ?? '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (err) {
+    $('w-open-err').textContent = surfaceError(err); // clipboard denied: say so, don't fake a tick
+    return;
+  }
+  const label = copyLabels.get(btn) ?? btn.getAttribute('aria-label');
+  copyLabels.set(btn, label); // a second tap mid-tick must not save "Copied" as the label
+  btn.innerHTML = DONE_ICON;
+  btn.classList.add('copied');
+  btn.setAttribute('aria-label', 'Copied');
+  clearTimeout(copyTimers.get(btn));
+  copyTimers.set(btn, setTimeout(() => {
+    btn.innerHTML = COPY_ICON;
+    btn.classList.remove('copied');
+    btn.setAttribute('aria-label', label);
+  }, 1400));
+});
+
+// ---- Previously used addresses ----
+// The receive chain is a list, not a single address: "Next address" hands out
+// another one and the old ones stay watched (see syncReceiveIndex). This shows
+// what has been handed out, and — from the data the money poll already
+// fetches, so no extra requests — which of them have actually been paid.
+let addressUse = new Map(); // derivation index → { used, sats }
+
+// Address strings only. deriveTaprootAddress also returns privKeyHex, and key
+// material must not sit in a cache that outlives a lock — this holds neither.
+const prevAddrCache = new Map(); // `${walletGen}:${net}:${index}` → address
+function receiveAddressAt(index) {
+  const key = `${walletGen}:${chainState.netName}:${index}`;
+  let hit = prevAddrCache.get(key);
+  if (!hit) {
+    hit = deriveTaprootAddress(wallet.seed, { ...wallet.network, index }).address;
+    prevAddrCache.set(key, hit);
+  }
+  return hit;
+}
+
+function renderPrevAddresses() {
+  const list = $('w-prev-list');
+  if (list.style.display === 'none' || !wallet.seed || !chainState.netKnown) return;
+  // the list speaks whichever form the tab does: a row copied while the
+  // DigiDollar pane is up must be a DD… address, not the dgb1p… a DigiDollar
+  // sender would reject (#72)
+  const asDD = $('rx-pane-dd').style.display !== 'none';
+  const rows = [];
+  for (let i = wallet.index; i >= 0; i--) {
+    const derived = receiveAddressAt(i);
+    const address = asDD
+      ? encodeDDAddress(decodeDDAddress(derived).outputKeyHex, chainState.netName)
+      : derived;
+    const use = addressUse.get(i);
+    // three states worth distinguishing: the one on display, one that has been
+    // paid, and one handed out that nobody has used yet
+    const tag = i === wallet.index
+      ? '<span class="rx-tag now">showing</span>'
+      : use?.used
+        ? '<span class="rx-tag">received</span>'
+        : `<span class="rx-tag idle">${appConfig.indexer ? 'unused' : 'handed out'}</span>`;
+    rows.push(`<div class="rx-row"><span class="rx-i mono">#${i}</span>`
+      + `<span class="rx-addr mono" title="${esc(address)}">${esc(address.slice(0, 14))}…${esc(address.slice(-6))}</span>`
+      + `${tag}<button type="button" class="icon-btn" data-copy-text="${esc(address)}" title="Copy address" aria-label="Copy address #${i}"></button></div>`);
+  }
+  list.innerHTML = rows.join('');
+  for (const el of list.querySelectorAll('.icon-btn')) el.innerHTML = COPY_ICON;
+}
+
+function setPrevShown(show) {
+  $('w-prev-list').style.display = show ? 'block' : 'none';
+  $('w-prev-toggle').textContent = show ? 'Hide previous addresses' : 'Previously used addresses';
+  if (show) renderPrevAddresses();
+}
+$('w-prev-toggle').addEventListener('click', () => {
+  setPrevShown($('w-prev-list').style.display === 'none');
+});
 
 // Receive compat toggle (#103 decision 1): the receive view is taproot-first —
 // the twin stays behind this low-emphasis link and re-hides on every open.
@@ -754,6 +871,8 @@ function resetWalletState() {
   // drop this wallet's Activity view so the next wallet doesn't inherit its
   // expanded page or see its rows flash before the first refresh (#69).
   allHistory = []; historyLimit = 8; myAddrSet = new Set(); $('w-history').innerHTML = '';
+  // the outgoing wallet's used-address markers must not label the next one's
+  addressUse = new Map(); $('w-prev-list').innerHTML = '';
   // the next wallet's balances are unknown until its first refresh — a stale
   // figure must not leak into fiat rows or the remove-ceremony warning
   lastConfirmedDgb = null; lastDdUsd = 0; openPositions = new Map();
@@ -1290,6 +1409,8 @@ function openReceiveModal() {
   $('w-receive-guard').style.display = guard ? 'block' : 'none';
   $('w-receive-body').style.display = guard ? 'none' : 'block';
   setCompatShown(false); // taproot-first on every open (#103 decision 1)
+  setReceiveTab('dgb'); // DGB is the default form; DigiDollar is a deliberate switch
+  setPrevShown(false);  // the current address is the answer to "receive" — history is opt-in
   openModal('receive-modal');
 }
 $('w-receive-anyway').addEventListener('click', () => {
@@ -1575,9 +1696,9 @@ async function refreshMoney() {
     // carries DD positions/tokens) and its P2WPKH twin — mint change lands
     // there by consensus (#38), so it must count toward balance and history.
     // DD lives on P2TR only; the twin contributes plain DGB.
-    const addrs = watchedDerivations().flatMap((d) => [
-      { address: d.address, dd: true },
-      { address: d.p2wpkhAddress, dd: false },
+    const addrs = watchedDerivations().flatMap((d, index) => [
+      { address: d.address, dd: true, index },
+      { address: d.p2wpkhAddress, dd: false, index },
     ]);
     const perAddr = await Promise.all(addrs.map(async ({ address: a, dd }) => ({
       utxos: (await fetchIndexer(`/address/${a}/utxos`)).utxos,
@@ -1586,6 +1707,19 @@ async function refreshMoney() {
       ddCents: dd ? BigInt((await fetchIndexer(`/address/${a}/dd-utxos`)).totalCents) : 0n,
     })));
     if (!wallet.seed) return; // locked while we were fetching
+    // Which derivations have actually seen money — for the receive view's
+    // address list. Both forms of an index count as that index: a payer who
+    // used the compat twin paid the same address as far as the user is
+    // concerned. History, not UTXOs: a spent-clean address was still used.
+    addressUse = new Map();
+    perAddr.forEach((r, i) => {
+      const { index } = addrs[i];
+      const at = addressUse.get(index) ?? { used: false, sats: 0 };
+      at.used = at.used || r.history.length > 0;
+      at.sats += r.utxos.reduce((n, u) => n + Number(u.valueSats), 0);
+      addressUse.set(index, at);
+    });
+    renderPrevAddresses(); // no-op unless the list is open
     const utxos = perAddr.flatMap((r) => r.utxos);
     const confirmed = utxos.filter((u) => u.height > 0).reduce((n, u) => n + Number(u.valueSats), 0);
     const pending = utxos.filter((u) => u.height === 0).reduce((n, u) => n + Number(u.valueSats), 0);
