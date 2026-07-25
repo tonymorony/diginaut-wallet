@@ -10,6 +10,7 @@ import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, extname, normalize } from 'node:path';
+import { verifyVendorTree, describeVendorFailure } from './vendor-integrity.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, 'public');
@@ -44,9 +45,30 @@ const LIB_DIR = dirname(fileURLToPath(import.meta.resolve('digidollar-js')));
 // Crypto deps of the lib, served under /vendor/ so the browser import map can
 // resolve the lib's bare specifiers (@noble/*, @scure/*) to real URLs.
 const VENDOR_PACKAGES = ['@noble/curves', '@noble/hashes', '@scure/base', '@scure/bip32', '@scure/bip39', 'qrcode-generator'];
-const VENDOR_ROOTS = Object.fromEntries(
+export const VENDOR_ROOTS = Object.fromEntries(
   VENDOR_PACKAGES.map((pkg) => [pkg, dirname(fileURLToPath(import.meta.resolve(pkg)))]),
 );
+
+// Fail closed if the /vendor tree is not byte-for-byte what vendor.lock records.
+// Pinned versions (#114) say what npm should install; this says what is actually
+// on disk at boot. Regenerate deliberately with `npm run vendor:lock`.
+function verifyVendorIntegrity() {
+  let lock;
+  try {
+    lock = JSON.parse(readFileSync(join(__dirname, 'vendor.lock'), 'utf8'));
+  } catch (err) {
+    throw new Error(`vendor.lock is missing or unreadable (${err.message}) — run: npm run vendor:lock`);
+  }
+  const result = verifyVendorTree(VENDOR_ROOTS, lock);
+  if (!result.ok) {
+    throw new Error(
+      'REFUSING TO START: the /vendor tree does not match vendor.lock.\n' +
+      describeVendorFailure(result) +
+      '\n  If this change is intentional, re-run: npm run vendor:lock',
+    );
+  }
+  return Object.keys(lock).length;
+}
 
 // ---- Security headers (#55) ----
 // A key-holding wallet locks its origin down. The CSP allows scripts only from
@@ -445,6 +467,7 @@ async function serveStatic(req, res) {
 }
 
 export function startServer(overrides = {}) {
+  const vendorFileCount = verifyVendorIntegrity();
   const env = configFromEnv();
   const config = { ...env, ...overrides, rpc: { ...env.rpc, ...(overrides.rpc || {}) } };
   const mockMode = !config.rpc.user || !config.rpc.pass;
@@ -492,7 +515,8 @@ export function startServer(overrides = {}) {
     const { port } = server.address();
     console.log(`\n  Diginaut · DigiDollar wallet ${APP_VERSION}`);
     console.log(`  → http://localhost:${port}`);
-    console.log(`  mode: ${mockMode ? 'MOCK (set DGB_RPC_USER/DGB_RPC_PASS for a real node)' : `REAL node @ ${config.rpc.url}`}\n`);
+    console.log(`  mode: ${mockMode ? 'MOCK (set DGB_RPC_USER/DGB_RPC_PASS for a real node)' : `REAL node @ ${config.rpc.url}`}`);
+    console.log(`  vendor: ${vendorFileCount} files verified against vendor.lock\n`);
   });
   return server;
 }

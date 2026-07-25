@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "vendor:lock": "node scripts/gen-vendor-lock.mjs"
   },
   "dependencies": {
     "digidollar-js": "0.1.0",
