@@ -256,7 +256,19 @@ window.addEventListener('scroll', () => {
   pill.classList.toggle('floating', on);
 }, { passive: true });
 
+// Poll cadences for the three things the UI presents as live. 60s matches what
+// loadDca already did; the status poll is slower because height and softfork
+// state are cheap to be a minute stale and it is the heaviest of the three
+// (two RPCs). PRICE_MAX_AGE_MS must stay a small multiple of ORACLE_POLL_MS so
+// one dropped tick does not disable USD entry.
+const ORACLE_POLL_MS = 60_000;
+const STATUS_POLL_MS = 60_000;
+const DCA_POLL_MS = 60_000;
+
 async function loadStatus() {
+  // Rebuilt from scratch each poll: line ~301 APPENDS the deployment error, so
+  // a node that keeps failing would otherwise grow this string a clause a minute.
+  $('s-err').textContent = '';
   try {
     const info = await rpc('getblockchaininfo');
     $('s-chain').textContent = info.chain;
@@ -305,11 +317,13 @@ async function loadStatus() {
 
 let lastPriceUsd = null; // feeds the fiat equivalents in the hero and asset rows
 let lastPriceMicroUsd = null; // feeds the live mint collateral estimate
+let lastPriceAt = null; // Date.now() of the quote above — see PRICE_MAX_AGE_MS
 
 async function loadOracle() {
   try {
     const price = await rpc('getoracleprice');
     if (price?.price_usd) {
+      lastPriceAt = Date.now();
       // sub-cent DGB prices need more than fmtUSD's 2 decimals
       $('o-price').textContent = '$' + price.price_usd.toLocaleString('en-US', { maximumFractionDigits: 5 }) + (price.is_stale ? ' (stale)' : '');
       lastPriceUsd = price.price_usd;
@@ -331,6 +345,11 @@ async function loadOracle() {
   }
   renderNetDot();
   syncSendPriceGate(); // USD send entry follows oracle freshness (#70)
+  // The rate just moved, and the ≈-line under the amount is the only place the
+  // user sees what their USD figure is worth. It is otherwise repainted only on
+  // typing, on the currency toggle and on Max — so without this a polled price
+  // leaves "$1.00 ≈ 74.5 DGB" on screen while Review builds 294.1 DGB.
+  updateSendEq();
   try {
     const list = await rpc('getoracles');
     if (Array.isArray(list) && list.length) {
@@ -805,7 +824,15 @@ function openWallet(id, mnemonic) {
 // stopping rule: 20 unused indices in a row means the chain ends there.
 const RECEIVE_GAP = 20;
 const RECEIVE_SCAN_BATCH = 5; // indices per round → 10 parallel history reads
-let receiveScanGen = -1;      // walletGen already scanned (see walletGen: ids repeat, generations don't)
+let receiveScanGen = -1;      // walletGen whose scan COMPLETED (see walletGen: ids repeat, generations don't)
+let receiveScanBusy = -1;     // walletGen whose scan is in flight
+let receiveScanFailGen = -1;  // walletGen the failure count below belongs to
+let receiveScanFails = 0;
+// Backoff for a failing indexer. No ceiling on purpose: capping the retries
+// reintroduces a slower version of the bug this replaces — a wallet that has
+// silently stopped looking for its own coins — and the last step is a minute,
+// so an indexer that stays down costs one request per minute per open wallet.
+const RECEIVE_RETRY_MS = [2_000, 5_000, 15_000, 60_000];
 
 /** Has either form of this derivation ever appeared on chain? The twin counts:
  * the compat flow (#103) hands out the P2WPKH form of an otherwise untouched
@@ -821,8 +848,15 @@ async function derivationUsed(d) {
 async function syncReceiveIndex() {
   if (!wallet.seed || !appConfig.indexer || !chainState.netKnown) return;
   const gen = walletGen;
-  if (receiveScanGen === gen) return; // one scan per open, not one per netKnown re-render
-  receiveScanGen = gen;
+  // One scan per open, not one per netKnown re-render — openWallet and
+  // loadStatus both call this. Two flags, not one: marking the generation
+  // SCANNED before the I/O (which is what this used to do) meant a single
+  // indexer error retired rediscovery for the rest of the session, and the
+  // catch swallowed it, so a restored wallet sat there showing a confidently
+  // wrong balance and never looked again.
+  if (receiveScanGen === gen || receiveScanBusy === gen) return;
+  if (receiveScanFailGen !== gen) { receiveScanFailGen = gen; receiveScanFails = 0; }
+  receiveScanBusy = gen;
   let highest = -1;
   try {
     for (let from = 0, gap = 0; gap < RECEIVE_GAP; from += RECEIVE_SCAN_BATCH) {
@@ -831,14 +865,31 @@ async function syncReceiveIndex() {
         derivationUsed(deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }))));
       // locked or switched mid-scan: this answer belongs to a wallet that is
       // no longer on screen, and wallet.seed may already be gone
+      // Deliberately leaves receiveScanBusy set to this generation: the wallet
+      // it belonged to is gone, and every route back in (openWallet) bumps
+      // walletGen, so nothing can be deadlocked by a flag naming a dead one.
       if (!wallet.seed || walletGen !== gen) return;
       used.forEach((isUsed, k) => { if (isUsed) { highest = batch[k]; gap = 0; } else gap += 1; });
     }
-  } catch {
-    return; // indexer hiccup: the 8s poll keeps the known window alive, and the next open rescans
+  } catch (e) {
+    // An indexer hiccup used to end rediscovery for the session. Retry with
+    // backoff instead, and say so — the original complaint about this path was
+    // as much that it failed invisibly as that it failed permanently.
+    receiveScanBusy = -1;
+    const wait = RECEIVE_RETRY_MS[Math.min(receiveScanFails, RECEIVE_RETRY_MS.length - 1)];
+    receiveScanFails += 1;
+    console.warn(`receive-chain scan failed (attempt ${receiveScanFails}), retrying in ${wait}ms:`, e.message);
+    setTimeout(() => { if (walletGen === gen) syncReceiveIndex(); }, wait);
+    return;
   }
-  if (highest <= wallet.index) return;
-  wallet.index = highest; // the last address the chain has seen, not one past it
+  receiveScanGen = gen; // only now: the chain actually answered
+  // One PAST the last index the chain has seen. `highest` was by definition
+  // already paid, so offering it again on the receive screen re-uses an
+  // address for no benefit; the watch window counts from 0, so moving one
+  // further along stops nothing being watched.
+  const next = highest + 1;
+  if (next <= wallet.index) return;
+  wallet.index = next;
   renderAddress();
   refreshMoney();
   rememberReceiveIndex(); // teach this device what the chain just taught us
@@ -1700,6 +1751,12 @@ async function refreshMoney() {
   // network would render a confident zero balance — wait for the real chain
   // (the 8s poll picks up automatically once loadStatus succeeds).
   if (!wallet.seed || !appConfig.indexer || !chainState.netKnown) return;
+  // Which wallet this poll belongs to. clearInterval on switch stops FUTURE
+  // ticks; it cannot cancel one already in flight, and the seed check below is
+  // not enough on its own — a switch REPLACES wallet.seed rather than nulling
+  // it, so the outgoing poll sails through and paints the previous wallet's
+  // balance, history and positions onto the wallet now on screen.
+  const gen = walletGen;
   try {
     // Each derivation is watched at TWO addresses: its P2TR (receive address,
     // carries DD positions/tokens) and its P2WPKH twin — mint change lands
@@ -1715,7 +1772,10 @@ async function refreshMoney() {
       positions: dd ? await fetchIndexer(`/address/${a}/positions`) : { address: a, positions: [], tipHeight: 0 },
       ddCents: dd ? BigInt((await fetchIndexer(`/address/${a}/dd-utxos`)).totalCents) : 0n,
     })));
-    if (!wallet.seed) return; // locked while we were fetching
+    // locked (seed nulled, generation unchanged) or switched (generation bumped)
+    // while we were fetching — either way this answer is not about the wallet
+    // the user is looking at
+    if (!wallet.seed || walletGen !== gen) return;
     // Which derivations have actually seen money — for the receive view's
     // address list. Both forms of an index count as that index: a payer who
     // used the compat twin paid the same address as far as the user is
@@ -1762,6 +1822,12 @@ async function refreshMoney() {
     $('w-money').style.display = 'grid';
     if (firstShow) renderSparkline(lastPriceSeries); // real width only now
   } catch (e) {
+    // Same reasoning as the success path: the outgoing wallet's indexer error
+    // is not the incoming wallet's, and tearing down the veil here would
+    // uncover a panel the new wallet has not painted yet. Dropping this is
+    // safe because the incoming wallet always has its own poll running
+    // (openWallet → startMoneyPolling), which hides the veil on either outcome.
+    if (walletGen !== gen) return;
     $('loading-veil').style.display = 'none';
     // transport-level failures mean the index isn't serving yet (e.g. initial
     // ElectrumX sync after a deployment) — say that, not ECONNREFUSED
@@ -2110,7 +2176,15 @@ let sendMaxArmed = false; // true once "Max" is clicked, until the amount is edi
 
 // USD is only offered when the oracle price is present AND fresh (not stale) —
 // same gate the mint flow uses. Stale/missing price → DGB-only entry.
-const priceUsable = () => lastPriceMicroUsd != null && lastPriceMicroUsd > 0n && netHealth.oracle === true;
+// The node's own is_stale flag is the primary gate, but it only arrives with a
+// poll. A tab that was throttled or a laptop that was asleep can hold a fresh
+// -looking quote that is hours old, so the local age of the last answer is a
+// second, independent conjunct. Kept at several times the poll cadence so one
+// dropped tick does not disable USD entry.
+const PRICE_MAX_AGE_MS = 180_000;
+const priceUsable = () => lastPriceMicroUsd != null && lastPriceMicroUsd > 0n
+  && netHealth.oracle === true
+  && lastPriceAt != null && Date.now() - lastPriceAt < PRICE_MAX_AGE_MS;
 
 /** "12.50" USD → sats, floored, via the live micro-USD/DGB oracle price. */
 function usdToSats(text) {
@@ -2175,7 +2249,18 @@ function syncSendPriceGate() {
   $('w-send-ccy').disabled = !ok;
   if (!ok) {
     $('w-send-ccy').title = 'USD entry needs a fresh oracle price';
-    if (sendCcy === 'USD') setSendCcy('DGB');
+    if (sendCcy === 'USD') {
+      // Demoting USD→DGB re-reads the SAME digits in a different currency —
+      // the #116 bug class, now fired by a timer instead of a paste. So the
+      // number goes, and Max goes with it: the Max handler arms sendMaxArmed
+      // and then leaves the field on USD, and review checks sendMaxArmed
+      // FIRST. Left armed behind a blanked field, the next Review would plan a
+      // drain of the whole spendable balance that the user never asked for —
+      // triggered by nothing more than one stale or failed getoracleprice.
+      $('w-send-amount').value = '';
+      sendMaxArmed = false;
+      setSendCcy('DGB'); // refreshes the ≈-line last, so it describes the cleared field
+    }
   } else if (sendCcy === 'DGB') {
     $('w-send-ccy').title = 'Enter the amount in USD instead';
   }
@@ -2846,16 +2931,38 @@ async function boot() {
   // server's first chain probe must still lock up once the mismatch is known.
   (async function statusLoop() {
     await loadStatus();
-    if (chainState.netKnown) return;
+    if (chainState.netKnown) {
+      // The chain is known, but height, softfork state and node reachability
+      // all keep moving, and the header presents them as live. Keep polling —
+      // slower, since this is no longer the boot retry.
+      setTimeout(statusLoop, STATUS_POLL_MS);
+      return;
+    }
     const cfg = await fetch('/api/config').then((r) => r.json()).catch(() => null);
     if (cfg?.chainMismatch) { appConfig = { ...appConfig, ...cfg }; renderCrossWire(cfg); return; }
     setTimeout(statusLoop, 5000);
   })();
-  loadOracle();
-  loadDca();
+  // The oracle price was fetched once here and then presented as live for the
+  // rest of the session. Everything downstream trusted it: the header figure,
+  // the fiat equivalents, the mint estimate, and — worst — usdToSats, the
+  // divisor a USD-denominated send is actually built from. The staleness gate
+  // that should demote USD entry ran once too, so a quote could go stale and
+  // nothing on screen would say so.
+  //
+  // A self-rescheduling timeout, not setInterval: rpc() uses bare fetch with no
+  // timeout, so an interval against a stalled node stacks concurrent calls, and
+  // whichever lands last wins — which can install an OLDER price than the one
+  // already held. A chain cannot overlap with itself.
+  (async function oracleLoop() {
+    await loadOracle();
+    setTimeout(oracleLoop, ORACLE_POLL_MS);
+  })();
   // network health moves with the market — keep the non-binding previews
   // honest mid-session (the review step always re-fetches anyway)
-  setInterval(loadDca, 60_000);
+  (async function dcaLoop() {
+    await loadDca();
+    setTimeout(dcaLoop, DCA_POLL_MS);
+  })();
 }
 
 boot();
