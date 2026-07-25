@@ -2603,12 +2603,27 @@ $('w-tr-review').addEventListener('click', (e) =>
     if (trCapErr) throw new Error(trCapErr);
     const ddUtxos = await ddUtxosWithKeys();
     const totalCents = ddUtxos.reduce((s, u) => s + u.ddCents, 0n);
-    const ddUtxo = ddUtxos.filter((u) => u.ddCents >= cents).sort((a, b) => (a.ddCents < b.ddCents ? -1 : 1))[0];
+    // Smallest coin that covers the amount AND leaves legal change. Consensus
+    // checks every DD output of a transfer against the $1 minimum, change
+    // included, so a coin that would leave 1..99c of change cannot be spent for
+    // this amount at all — picking it anyway builds a transaction the network
+    // refuses. Spending the coin whole leaves no change output, so that is fine
+    // at any size. Without this clause the old smallest-first pick would take
+    // the $10.50 coin to send $10.00 and fail, while an untouched $20.00 coin
+    // sitting right beside it would have worked.
+    const leavesLegalChange = (u) => u.ddCents === cents || u.ddCents - cents >= trLimits.minOutputCents;
+    const covering = ddUtxos.filter((u) => u.ddCents >= cents);
+    const ddUtxo = covering.filter(leavesLegalChange).sort((a, b) => (a.ddCents < b.ddCents ? -1 : 1))[0];
     if (!ddUtxo) {
       const fmtDD = (c) => (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-      throw new Error(totalCents >= cents
-        ? `your DigiDollar covers it, but it is split across smaller coins (a transfer spends one DD coin, largest is $${fmtDD(ddUtxos.reduce((m, u) => (u.ddCents > m ? u.ddCents : m), 0n))}). Transfer that amount or less, or consolidate by transferring to your own address.`
-        : `insufficient DigiDollar: you are sending $${fmtDD(cents)} but hold $${fmtDD(totalCents)}`);
+      const minDD = `$${(Number(trLimits.minOutputCents) / 100).toFixed(2)}`;
+      throw new Error(covering.length
+        // every coin big enough would leave illegal change — name the way out,
+        // which is an amount, not a different coin
+        ? `no single DigiDollar coin can send $${fmtDD(cents)} and leave legal change: the coins that cover it would each leave under ${minDD}, which consensus rejects. Send the whole coin ($${fmtDD(covering.sort((a, b) => (a.ddCents < b.ddCents ? -1 : 1))[0].ddCents)}) or at least ${minDD} less.`
+        : totalCents >= cents
+          ? `your DigiDollar covers it, but it is split across smaller coins (a transfer spends one DD coin, largest is $${fmtDD(ddUtxos.reduce((m, u) => (u.ddCents > m ? u.ddCents : m), 0n))}). Transfer that amount or less, or consolidate by transferring to your own address.`
+          : `insufficient DigiDollar: you are sending $${fmtDD(cents)} but hold $${fmtDD(totalCents)}`);
     }
     // the fee coin must sit on the SAME address as the DD coin being spent —
     // and be P2TR: buildSignedTransferTx signs key-path taproot, not v0
