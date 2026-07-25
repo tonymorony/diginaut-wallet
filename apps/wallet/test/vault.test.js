@@ -100,6 +100,40 @@ test('mutations persist via re-encryption with the held key (no re-prompt)', asy
   assert.equal(vm2.getMnemonic(id2), M2);
 });
 
+test('receive index survives a cold unlock and never walks backwards', async () => {
+  const store = memStorage();
+  const vm = createVaultManager(store);
+  const id1 = await vm.createVault(PW, { name: 'Wallet 1', mnemonic: M1 });
+  const { id: id2 } = await vm.addWallet({ name: 'Trading', mnemonic: M2 });
+  // absent on wallets that predate the counter — read as 0, not undefined-shaped
+  assert.equal(vm.meta().wallets.find((w) => w.id === id1).receiveIndex, undefined);
+
+  await vm.setReceiveIndex(id1, 4);
+  await vm.setReceiveIndex(id1, 2); // a stale tab must not un-watch address 3 and 4
+  await vm.setReceiveIndex(id1, -1); // nor may garbage
+  await vm.setReceiveIndex(id1, 1.5);
+  assert.equal(vm.meta().wallets.find((w) => w.id === id1).receiveIndex, 4);
+  assert.equal(vm.meta().wallets.find((w) => w.id === id2).receiveIndex, undefined, 'per wallet, not global');
+
+  const vm2 = createVaultManager(store);
+  const meta = await vm2.unlock(PW);
+  assert.equal(meta.wallets.find((w) => w.id === id1).receiveIndex, 4);
+});
+
+test('receive index writes only when it moves, and only while unlocked', async () => {
+  const store = memStorage();
+  const vm = createVaultManager(store);
+  const id = await vm.createVault(PW, { name: 'Wallet 1', mnemonic: M1 });
+  await vm.setReceiveIndex(id, 3);
+  const revAfterWrite = (await store.loadKeystoreAny()).vault.rev;
+  await vm.setReceiveIndex(id, 3); // same value: no re-encrypt, no rev churn
+  await vm.setReceiveIndex(id, 0);
+  assert.equal((await store.loadKeystoreAny()).vault.rev, revAfterWrite);
+  await assert.rejects(() => vm.setReceiveIndex('w-nope', 1), /unknown wallet/);
+  vm.lock();
+  await assert.rejects(() => vm.setReceiveIndex(id, 9), /vault is locked/);
+});
+
 test('rename and add enforce the duplicate-name guard', async () => {
   const store = memStorage();
   const vm = createVaultManager(store);

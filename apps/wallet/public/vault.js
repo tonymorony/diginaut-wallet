@@ -266,6 +266,24 @@ export function createVaultManager(storage) {
     await commit(nextMeta, secrets);
   }
 
+  /** Remember how far down the receive chain this wallet has handed out
+   * addresses. MONOTONIC on purpose: the counter is what keeps a handed-out
+   * address watched before anyone has paid it, so a stale tab (or a
+   * re-opened older session) must never walk it back and un-watch one.
+   * Absent on wallets created before this existed → treated as 0. */
+  async function setReceiveIndex(id, index) {
+    assertUnlocked();
+    const w = getWallet(id);
+    const want = Number.isSafeInteger(index) && index > 0 ? index : 0;
+    const next = Math.max(want, w.receiveIndex ?? 0);
+    if (next === (w.receiveIndex ?? 0)) return; // no write, no rev churn
+    const nextMeta = {
+      ...record.meta,
+      wallets: record.meta.wallets.map((x) => (x.id === id ? { ...x, receiveIndex: next } : x)),
+    };
+    await commit(nextMeta, secrets);
+  }
+
   /** The one secret read. Only while unlocked; only inside a reveal ceremony. */
   function getMnemonic(id) {
     assertUnlocked();
@@ -288,7 +306,7 @@ export function createVaultManager(storage) {
 
   return {
     load, refresh, unlock, lock, createVault, migrateV1,
-    addWallet, renameWallet, removeWallet, setActive, setBackedUp,
+    addWallet, renameWallet, removeWallet, setActive, setBackedUp, setReceiveIndex,
     getMnemonic, verifyPassword, meta,
     get status() { return status(); },
   };

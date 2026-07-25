@@ -266,7 +266,9 @@ async function loadStatus() {
       chainState.netName = net; // consensus DD limits are per-network
       chainState.netKnown = true; // safe to render addresses now
       wallet.network = HD_NETWORKS[net];
-      if (wallet.seed) renderAddress();
+      // a wallet unlocked before the node named its chain has no addresses yet
+      // — this is the first moment its chain can be scanned
+      if (wallet.seed) { renderAddress(); syncReceiveIndex(); }
     }
     // banner + tab title follow the node's chain — same build on every network
     const { title, banner, level, pill } = networkChrome(info.chain);
@@ -638,18 +640,100 @@ $('w-compat-toggle').addEventListener('click', () => {
   setCompatShown($('w-compat-section').style.display === 'none');
 });
 
+// Bumped on every open. Async work started for one wallet must not land on the
+// next one, and a wallet id is not enough to tell them apart: erasing the vault
+// and restoring hands the same id ('w-1') to a completely different seed.
+let walletGen = 0;
+
 function openWallet(id, mnemonic) {
+  walletGen += 1;
   wallet.id = id;
   wallet.mnemonic = mnemonic;
   wallet.seed = mnemonicToSeed(mnemonic);
-  wallet.index = 0;
+  // An address handed out in an earlier session must stay watched: opening at
+  // index 0 would narrow the watch window to 0…2 (watchedDerivations) and hide
+  // — and make unspendable — anything received further down the chain. The
+  // vault counter remembers this device's handouts even before anyone pays
+  // them; syncReceiveIndex covers what the counter cannot know.
+  wallet.index = vault.meta()?.wallets.find((w) => w.id === id)?.receiveIndex ?? 0;
   renderAddress();
   hideSeed();
   renderBackupCta();
   $('w-open-err').textContent = '';
   show('open');
   startMoneyPolling();
+  syncReceiveIndex(); // ask the chain how far this seed has actually been used
   armAutolock(); // the inactivity countdown starts (only) with an unlocked wallet
+}
+
+// ---- Receive-chain rediscovery ----
+// The vault counter is a per-device memory: a seed restored on another device
+// (or in a re-created vault) knows nothing about the addresses it handed out.
+// So on every open, ask the indexer how far down the chain this seed has been
+// used, and open the watch window at least that wide. BIP44's gap limit is the
+// stopping rule: 20 unused indices in a row means the chain ends there.
+const RECEIVE_GAP = 20;
+const RECEIVE_SCAN_BATCH = 5; // indices per round → 10 parallel history reads
+let receiveScanGen = -1;      // walletGen already scanned (see walletGen: ids repeat, generations don't)
+
+/** Has either form of this derivation ever appeared on chain? The twin counts:
+ * the compat flow (#103) hands out the P2WPKH form of an otherwise untouched
+ * index, so a taproot-only scan would walk straight past a paid address. */
+async function derivationUsed(d) {
+  const [taproot, twin] = await Promise.all([
+    fetchIndexer(`/address/${d.address}/history`),
+    fetchIndexer(`/address/${d.p2wpkhAddress}/history`),
+  ]);
+  return taproot.history.length > 0 || twin.history.length > 0;
+}
+
+async function syncReceiveIndex() {
+  if (!wallet.seed || !appConfig.indexer || !chainState.netKnown) return;
+  const gen = walletGen;
+  if (receiveScanGen === gen) return; // one scan per open, not one per netKnown re-render
+  receiveScanGen = gen;
+  let highest = -1;
+  try {
+    for (let from = 0, gap = 0; gap < RECEIVE_GAP; from += RECEIVE_SCAN_BATCH) {
+      const batch = Array.from({ length: RECEIVE_SCAN_BATCH }, (_, k) => from + k);
+      const used = await Promise.all(batch.map((i) =>
+        derivationUsed(deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }))));
+      // locked or switched mid-scan: this answer belongs to a wallet that is
+      // no longer on screen, and wallet.seed may already be gone
+      if (!wallet.seed || walletGen !== gen) return;
+      used.forEach((isUsed, k) => { if (isUsed) { highest = batch[k]; gap = 0; } else gap += 1; });
+    }
+  } catch {
+    return; // indexer hiccup: the 8s poll keeps the known window alive, and the next open rescans
+  }
+  if (highest <= wallet.index) return;
+  wallet.index = highest; // the last address the chain has seen, not one past it
+  renderAddress();
+  refreshMoney();
+  rememberReceiveIndex(); // teach this device what the chain just taught us
+}
+
+/** Persist the handout counter. Best effort by design: losing it costs an
+ * as-yet-unpaid address its watch until the next scan finds it funded — never
+ * a coin — so it must not interrupt the receive flow with an error.
+ *
+ * Serialized: tapping "Next address" three times fires three vault writes, and
+ * each one CAS-checks the rev it was computed from. Run in parallel, the later
+ * two lose the race and get dropped — the wallet would come back at index 1
+ * having handed out index 3. Queued behind each other, each write sees the
+ * previous rev; one retry covers a conflict from another tab (the manager
+ * re-synced before rethrowing, so the retry computes from fresh meta). */
+let receivePersist = Promise.resolve();
+function rememberReceiveIndex() {
+  if (!wallet.id || vault.status !== 'unlocked') return;
+  const gen = walletGen;
+  // reads wallet.index when the write RUNS, not when it was queued: three fast
+  // taps collapse into one landed write plus two no-ops (the vault skips a
+  // write that wouldn't move the counter) instead of three serialized commits
+  const write = () => (walletGen === gen && vault.status === 'unlocked'
+    ? vault.setReceiveIndex(wallet.id, wallet.index)
+    : Promise.resolve()); // switched or locked while queued — not our counter any more
+  receivePersist = receivePersist.then(write).catch(write).catch(() => {});
 }
 
 // Shared teardown for lock AND wallet switch (spec §7): every pending draft
@@ -939,7 +1023,12 @@ $('w-erase-go').addEventListener('click', (e) =>
   }));
 
 $('w-lock').addEventListener('click', lockWallet);
-$('w-next').addEventListener('click', () => { wallet.index += 1; renderAddress(); refreshMoney(); });
+$('w-next').addEventListener('click', () => {
+  wallet.index += 1;
+  renderAddress();
+  refreshMoney();
+  rememberReceiveIndex(); // this address is now out in the world — keep watching it
+});
 $('w-copy').addEventListener('click', async (e) =>
   busy(e.target, 'w-open-err', () => navigator.clipboard.writeText($('w-address').textContent)));
 $('w-copy-dd').addEventListener('click', async (e) =>
