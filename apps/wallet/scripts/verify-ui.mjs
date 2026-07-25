@@ -199,7 +199,13 @@ check((await evaluate(text('w-locked-err'))) === 'wrong password', 'PROBE: wrong
 await setVal('w-unlock-pass', 'correct horse battery');
 await click('w-unlock');
 await waitFor(visible('w-open'), 'unlocked after unlock');
-check((await evaluate(text('w-address'))) === addr0, 'unlock → same address 0 re-derived');
+// #112 changed the right answer here: unlock reopens on the last HANDED-OUT
+// index (step 4 clicked "Next address"), because an address someone may have
+// been given has to stay watched and shown. Determinism is still what this
+// check is for — the same seed must re-derive the same address, not a new one.
+check((await evaluate(text('w-address'))) === addr1
+  && (await evaluate(text('w-path'))) === "m/86'/1'/0'/0/1",
+  'unlock → the handed-out address (index 1) re-derived, not a fresh index 0');
 
 // -- 7. reload: wallet persists (IndexedDB), comes back locked
 await cdp('Page.navigate', { url: APP }, sessionId);
