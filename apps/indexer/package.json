@@ -5,7 +5,7 @@
   "description": "Indexer facade — address-level DGB queries over ElectrumX (the wallet's indexer seam)",
   "type": "module",
   "scripts": { "start": "node server.js", "test": "node --test" },
-  "dependencies": { "digidollar-js": "*" },
-  "engines": { "node": ">=20" },
+  "dependencies": { "digidollar-js": "0.1.0" },
+  "engines": { "node": ">=22" },
   "license": "MIT"
 }

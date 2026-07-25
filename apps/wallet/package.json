@@ -9,11 +9,11 @@
     "test": "node --test"
   },
   "dependencies": {
-    "digidollar-js": "*",
-    "qrcode-generator": "^2.0.4"
+    "digidollar-js": "0.1.0",
+    "qrcode-generator": "2.0.4"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "license": "MIT"
 }
