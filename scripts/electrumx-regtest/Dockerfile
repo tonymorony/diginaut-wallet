@@ -1,5 +1,8 @@
 # Stock ElectrumX + a DigiByte regtest coin class (no fork — see #4).
-FROM python:3.12-slim
+# Digest-pinned like deploy/node.Dockerfile: a regtest stand that silently
+# changes Python underneath is a test result you cannot trust. Refresh with
+#   docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' python:3.12-slim
+FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libleveldb-dev \
