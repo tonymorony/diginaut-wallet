@@ -50,10 +50,21 @@ updates:
 
   # The base images run the process that serves the signing page. They are
   # digest-pinned, so these PRs are digest bumps and the tag will look unchanged.
+  #
+  # MAJORS ARE IGNORED, and that is the whole point of this block. The first run
+  # of this config opened a major bump of the wallet's base image from Node 22 to
+  # Node 26 (#120) — across two majors, onto the Current line rather than an LTS
+  # one, and past .nvmrc, which CI runs the suites on. It read as a routine digest
+  # bump because that is what every other PR from this ecosystem is. Choosing a
+  # Node line is a decision about what runs the signing process; it belongs in a
+  # PR someone wrote on purpose, next to the matching .nvmrc change.
   - package-ecosystem: docker
     directory: /deploy
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
     labels:
       - dependencies
 
@@ -61,5 +72,8 @@ updates:
     directory: /scripts/electrumx-regtest
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
     labels:
       - dependencies
