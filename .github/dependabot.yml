@@ -1,0 +1,65 @@
+# Dependency-plan item 6. #114 pinned everything exactly and #115 made
+# check-pins.mjs enforce it; a pin that is never revisited is just an old
+# version, so something has to propose the bumps.
+#
+# Dependabot rather than Renovate for the same reason ci.yml installs Chrome
+# from the runner image instead of a marketplace action: Renovate means granting
+# a third-party GitHub App write access to the repository that builds a signing
+# wallet. Dependabot is GitHub's own and needs no extra install.
+#
+# Nothing here merges anything. Two of these ecosystems produce PRs that a human
+# must read line by line before merging — see the crypto note below.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Exact pins are the invariant check-pins.mjs enforces. "increase" rewrites
+    # "2.2.0" to "2.3.0" — still exact. Never let a caret back in.
+    versioning-strategy: increase
+    groups:
+      # Everything unremarkable arrives as one PR so the queue stays short.
+      routine:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - '@noble/*'
+          - '@scure/*'
+          - qrcode-generator
+    # @noble, @scure and qrcode-generator are served INTO THE PAGE through the
+    # /vendor seam and run with the seed in scope. They are excluded from the
+    # group deliberately: one PR each, so a bump to the code that touches
+    # private keys is never reviewed as part of a batch. Read the upstream diff,
+    # not just the version number. MERGE THESE BY HAND.
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - '*'
+    labels:
+      - dependencies
+
+  # The base images run the process that serves the signing page. They are
+  # digest-pinned, so these PRs are digest bumps and the tag will look unchanged.
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: docker
+    directory: /scripts/electrumx-regtest
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
