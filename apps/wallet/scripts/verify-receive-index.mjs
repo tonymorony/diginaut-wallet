@@ -143,10 +143,14 @@ check(await evaluate(`document.getElementById('w-path').textContent.endsWith('/0
 // PATH, not the balance: w-balance still holds the pre-erase figure (the money
 // grid is hidden on teardown, not blanked), so a balance wait passes on stale
 // text before the scan has run.
-await waitFor(`document.getElementById('w-path').textContent.endsWith('/${HANDOUT}')`, 'chain scan advances the index', 30_000);
-check(true, `the chain scan re-finds the funded index → ${await evaluate(text('w-path'))}`);
+// The scan lands ONE PAST the deepest index the chain has seen: index 6 was
+// already paid, so re-offering it would reuse an address for nothing.
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/${HANDOUT + 1}')`, 'chain scan advances the index', 30_000);
+check(true, `the chain scan re-finds the funded index and offers the NEXT one → ${await evaluate(text('w-path'))}`);
+// And this is what makes that free: watchedDerivations counts from 0, so the
+// already-paid index 6 is still inside the window and its coins still count.
 await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,234')`, 'balance recounts the funds', 30_000);
-check(true, `and the funds are in the balance again: ${await balance()} DGB`);
+check(true, `and the funds at the PREVIOUS index are still watched: ${await balance()} DGB`);
 await b.shot('111-receive-index-rediscovered.png');
 
 // ---- C. a run of unused indices must not stop the scan short ----
@@ -157,7 +161,7 @@ await b.shot('111-receive-index-rediscovered.png');
 // is the whole point, so the driver has to force one.)
 const deep = await evaluate(`(async () => {
   const el = document.getElementById('w-address');
-  for (let i = 0; i < ${DEEP - HANDOUT}; i++) { document.getElementById('w-next').click(); await new Promise((r) => setTimeout(r, 60)); }
+  for (let i = 0; i < ${DEEP - (HANDOUT + 1)}; i++) { document.getElementById('w-next').click(); await new Promise((r) => setTimeout(r, 60)); }
   return el.textContent;
 })()`);
 await waitFor(`document.getElementById('w-path').textContent.endsWith('/${DEEP}')`, `walked to index ${DEEP}`);
@@ -174,12 +178,61 @@ await setVal('w-create-pass', 'a third password for the third vault');
 await setVal('w-create-pass2', 'a third password for the third vault');
 await click('w-restore-go');
 await waitFor(visible('w-open'), 'restored wallet open (second)');
-await waitFor(`document.getElementById('w-path').textContent.endsWith('/${DEEP}')`,
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/${DEEP + 1}')`,
   'scan crosses the unused run', 30_000);
-check(true, `the scan walked past unused ${HANDOUT + 1}…${DEEP - 1} to the funded index ${DEEP}`);
+check(true, `the scan walked past unused ${HANDOUT + 1}…${DEEP - 1} to the funded index ${DEEP}, and offers ${DEEP + 1}`);
 await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,284')`, 'both funded indices counted', 30_000);
 check(true, `and both funded indices are in the balance: ${await balance()} DGB`);
 await b.shot('112-receive-index-gap-crossed.png');
+
+// ---- D. one indexer hiccup must not end rediscovery for the session ----
+// The scan used to mark its generation as scanned BEFORE the I/O and swallow
+// the error, so a single indexer failure retired receive rediscovery until the
+// wallet was re-opened — a restored wallet showing a confidently wrong balance
+// with no retry. Fund a THIRD index first, so the number this part waits for
+// has never been on screen: a balance assertion on 1,284 would pass instantly
+// on part C's leftover text (teardown hides the money grid, it does not blank it).
+const THIRD = 17;
+const third = await evaluate(`(async () => {
+  const el = document.getElementById('w-address');
+  for (let i = 0; i < ${THIRD - (DEEP + 1)}; i++) { document.getElementById('w-next').click(); await new Promise((r) => setTimeout(r, 60)); }
+  return el.textContent;
+})()`);
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/${THIRD}')`, `walked to index ${THIRD}`);
+await fund(third, '10000000000', 'c'.repeat(64)); // 100 DGB → total 1,384
+
+const setFail = (on) => fetch(`http://127.0.0.1:${IDX_PORT}/__fail`, {
+  method: 'POST', body: JSON.stringify({ on }),
+});
+
+await setFail(true);
+await evaluate(`document.getElementById('w-forget').click()`);
+await waitFor(visible('w-erase-view'), 'erase ceremony (third)');
+await setVal('w-erase-input', 'ERASE');
+await click('w-erase-go');
+await waitFor(visible('w-none'), 'vault erased (third)');
+await click('w-show-restore');
+await setVal('w-restore-seed', MNEMONIC);
+await setVal('w-create-pass', 'a fourth password for the fourth vault');
+await setVal('w-create-pass2', 'a fourth password for the fourth vault');
+await click('w-restore-go');
+await waitFor(visible('w-open'), 'restored wallet open (third)');
+// Taken while the indexer is still refusing — this is the load-bearing
+// precondition. If the scan had somehow already succeeded, the rest proves nothing.
+await new Promise((r) => setTimeout(r, 1500));
+check((await evaluate(text('w-path'))).endsWith('/0'),
+  'with the indexer down the restored wallet is stuck at index 0, as it must be');
+
+// Recovery: no reload, no re-unlock, nothing but the indexer coming back. Only
+// a retry inside the running session can move this.
+await setFail(false);
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/${THIRD + 1}')`,
+  'the scan RETRIES after the outage clears', 30_000);
+check(true, `the scan retried on its own and found index ${THIRD} → ${await evaluate(text('w-path'))}`);
+await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,384')`,
+  'balance reflects all three funded indices', 30_000);
+check(true, `and all three funded indices are counted: ${await balance()} DGB`);
+await b.shot('113-receive-index-retry-after-outage.png');
 
 console.log(process.exitCode ? '\nRED' : '\nall green');
 process.exit(process.exitCode || 0);

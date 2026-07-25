@@ -14,6 +14,7 @@ import { createServer } from 'node:http';
 const PORT = Number(process.env.PORT) || 8799;
 const TIP = Number(process.env.TIP) || 100_000;
 const funded = new Map(); // address -> { utxos, ddCents, ddUtxos }
+let failing = false; // fault injection: make every address read answer 503
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*' });
@@ -29,10 +30,22 @@ createServer(async (req, res) => {
     funded.set(address, { utxos, ddCents: String(ddCents), ddUtxos });
     return json(res, 200, { ok: true, address, count: utxos.length });
   }
+  // Deliberately does NOT clear `failing`: a driver that resets funding between
+  // parts should not have its injected outage silently switched off underneath it.
   if (req.method === 'POST' && req.url === '/__reset') { funded.clear(); return json(res, 200, { ok: true }); }
+  // Control endpoint: make the address reads fail, so a driver can prove the
+  // wallet recovers from an indexer outage rather than giving up on it.
+  if (req.method === 'POST' && req.url === '/__fail') {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    failing = JSON.parse(raw || '{}').on !== false;
+    return json(res, 200, { ok: true, failing });
+  }
 
   const m = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions|dd-utxos)$/);
   if (!m) return json(res, 404, { error: 'unknown path' });
+  // After the route matches, so an unknown path is still a 404 either way.
+  if (failing) return json(res, 503, { error: 'indexer down (injected)' });
   const [, address, what] = m;
   const entry = funded.get(address) || { utxos: [], ddCents: '0', ddUtxos: [] };
 
