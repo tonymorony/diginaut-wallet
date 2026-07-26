@@ -1,6 +1,6 @@
 # apps/wallet
 
-Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
+Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit changeset).
 
 ## Layout
 
@@ -20,9 +20,14 @@ Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
   v2); `BroadcastChannel('diginaut-vault')` cross-tab sync; rev-CAS writes →
   `VaultConflictError`. Held key must always match `record.kdf.salt`.
 - `public/connect.js` (~200 L) — sign-to-derive protocol + EIP-6963/Phantom plumbing (below).
-- Small pure modules: `netchrome.js` (per-chain banner/pill + `betaCapError`, cap $500/tx),
-  `dderrors.js` (consensus reject → friendly copy), `dca.js` (multiplier → BigInt bps),
-  `autolock.js` (default 5 min; **absent ≠ 0/"Never"**).
+- Small pure modules: `netchrome.js` (per-chain banner/pill + `betaCapError`, cap $500/tx;
+  `backupSkipAllowed` — mainnet/unknown chain seal the backup ceremony), `dderrors.js`
+  (consensus reject → friendly copy; spend/conflict families + `isAlreadyBroadcast`),
+  `dca.js` (multiplier → BigInt bps), `autolock.js` (default 5 min; **absent ≠ 0/"Never"**),
+  `broadcastlog.js` (pre-broadcast journal + local txid + FAIL-AMBIGUOUS classifier),
+  `nettimeout.js` (per-path fetch budgets > server's upstream budgets), `validate.js`
+  (indexer JSON: strict for signer inputs, tolerant for display), `persistence.js`
+  (storage.persist probe/request + `diginaut.hadVault` tombstone).
 - `vendor-integrity.js` + `vendor.lock` — see architecture.md invariant #2.
 
 ## Server facts
@@ -36,8 +41,14 @@ Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
 - Cross-wire guard is fail-closed: with `EXPECTED_CHAIN` set, every RPC/indexer/faucet call
   refused until the node's chain is confirmed matching; UI hard-stops boot on mismatch.
 - Env: `PORT` (8787), `DGB_RPC_URL/USER/PASS`, `FAUCET_URL`, `INDEXER_URL`,
-  `PRICE_HISTORY_FILE`, `EXPLORER_TX_URL`, `EXPECTED_CHAIN`. Tests inject via
-  `startServer(overrides)`.
+  `PRICE_HISTORY_FILE`, `EXPLORER_TX_URL`, `EXPECTED_CHAIN`; hardening (#H4/#M3):
+  `TRUST_PROXY` (read last XFF element — set ONLY behind a controlled proxy; the TLS/dual
+  overlays set it), `RATE_LIMIT_WINDOW_MS` + `RATE_LIMIT_{RPC,INDEXER,FAUCET}_PER_MIN`
+  (0 = unlimited; indexer must stay in the thousands — money poll is (index+3)×6 reads/8s),
+  `MAX_{RPC,FAUCET}_BODY_BYTES`, `HSTS` (TLS deployments only). Tests inject via
+  `startServer(overrides)` incl. `now` for the rate-limit clock.
+- Body caps → 413; fixed-window per-IP limits → 429 + retry-after, limiter runs BEFORE
+  guard/body/upstream. `rateBucket()` must mirror the routing conditions exactly.
 
 ## Client state (module-level in app.js)
 
@@ -53,8 +64,16 @@ Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
 - Send state: `sendCcy` ('DGB'|'USD') + `sendMaxArmed` — must be cleared by anything that
   abandons a draft (BIP21 absorb, switch, cancel) — #116.
 - Polling: self-rescheduling `setTimeout` chains (status 5s→60s, oracle/DCA/chart 60s, money
-  8s) — deliberately not `setInterval`, so a stalled fetch can't install an older price.
+  8s) — deliberately not `setInterval`, so a stalled fetch can't stack or install an older
+  price. (money + price chart were `setInterval` until #H1 converted them.) Every frontend
+  fetch goes through `apiFetch` with a `nettimeout.js` budget; failures carry
+  `err.transport = 'timeout'|'network'` — downstream code keys off the FLAG, never the copy.
   Price staleness: `PRICE_MAX_AGE_MS = 180s` demotes USD entry (and disarms Max).
+- Broadcast path: `broadcastTx(hex, meta)` journals to `diginaut.broadcasts` BEFORE sending;
+  ambiguous outcomes keep the record and surface the `#w-recovery` card (chain-scoped,
+  survives lock/switch, netKnown-gated). A definite reject's message passes through
+  UNMODIFIED (verify-honest-quotes pins this). Stale-tip warning rows (`w-*-c-stale`) are
+  written at REVIEW time only — never re-read state in the `w-*-go` handlers (L6 property).
 
 ## Sign-to-derive (branch #130)
 
@@ -111,8 +130,10 @@ Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
 
 ## Tests
 
-On `main`: 8 unit suites (~93 tests) under `test/`, `npm test` — server (CSP/allow-list/
-proxy/price/guard), vault (migration, CAS, receive-index), vendor-integrity, keystore,
-netchrome, dderrors, dca, autolock. Branch #130 adds `connect.test.js` (protocol pins) →
-9 suites. The audit branch adds `persistence.test.js` and extends `netchrome.test.js`
-(`backupSkipAllowed`). Drivers: see testing-and-drivers.md.
+15 unit suites (192 tests) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
+guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity, keystore, netchrome (incl.
+`backupSkipAllowed`), dderrors (incl. spend/conflict families), dca, autolock, connect
+(protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate
+(strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
+export→wipe→restore), driver-paths (Windows-path idiom must never return).
+Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
