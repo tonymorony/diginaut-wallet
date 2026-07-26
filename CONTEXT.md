@@ -46,3 +46,20 @@ _Avoid_: dispenser, tap, drip
 The user's non-custodial, browser-held key store. Keys are generated and kept client-side; the
 project never holds them server-side.
 _Avoid_: account (reserve for something else), custodial wallet (we are not one)
+
+**Sign-to-derive**:
+The ceremony that creates a Diginaut wallet from a deterministic signature made by a connected
+web3 extension wallet over a frozen, per-network message.
+_Avoid_: log in with wallet (it is not authentication), import (reserved for mnemonics/keystore
+files), link
+
+**Derived wallet**:
+A wallet whose seed came from sign-to-derive rather than a generated or restored mnemonic.
+First-class in every flow; distinct only in origin and backup story.
+_Avoid_: connected wallet (that's the source), linked wallet, MetaMask wallet
+
+**Source**:
+The external web3 wallet — brand plus signing account — whose signature derived a derived
+wallet. Re-signing in the source re-creates the seed, but the source is a convenience door,
+not a guaranteed backup; only the seed words are that.
+_Avoid_: parent wallet, owner wallet, backup (for the source specifically)
