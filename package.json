@@ -10,7 +10,8 @@
   ],
   "scripts": {
     "start": "npm start --workspace apps/wallet",
-    "test": "node --test"
+    "test": "node --test",
+    "vendor:lock": "npm run vendor:lock --workspace apps/wallet"
   },
   "engines": {
     "node": ">=18"
