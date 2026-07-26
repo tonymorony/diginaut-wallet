@@ -91,7 +91,13 @@ await nodeRpc('generatetoaddress', [1, await nodeRpc('getnewaddress')]);
 await waitFor(`${text('w-balance')} === '14,488'`, 'balance confirmed after mining');
 check(true, 'after 1 block: balance = 14,488 DGB');
 await waitFor(`document.getElementById('w-pending-row').style.display === 'none'`, 'pending row gone');
-check((await evaluate(text('w-history'))).includes('confirmed'), 'history entry flipped to confirmed');
+// The row is thin ("confirmed") only until #69's enrichment lands; once the
+// indexer answers /api/tx it renders the confirmation COUNT instead ("1 conf",
+// or "✓ final" at 6+). Accept any of the three — asserting the literal word
+// made this go red against a wallet that was reporting strictly more.
+const histText = await evaluate(text('w-history'));
+check(/\d+\s*conf|✓\s*final|confirmed/.test(histText),
+  'history entry flipped to confirmed (shows: ' + (histText.match(/\d+\s*conf|✓\s*final|confirmed|pending/) || ['?'])[0] + ')');
 await shot('21-confirmed.png');
 
 // probe: lock stops the money section; unlock restores it with the same balance

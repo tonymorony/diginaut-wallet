@@ -109,8 +109,15 @@ await shot('30-send-confirm.png');
 await click('w-send-cancel');
 check(await evaluate(`document.getElementById('w-send-confirm').style.display === 'none'`), 'cancel dismisses the confirmation');
 check((await nodeRpc('getrawmempool')).length === 0, 'cancel broadcasts nothing');
+// Cancel ABANDONS the draft: resetSend() clears the amount (and disarms Max)
+// so an abandoned draft can never be re-planned as a full drain (#116). The
+// recipient survives; the amount must be re-entered — assert that, don't just
+// work around it.
+check((await evaluate(`document.getElementById('w-send-amount').value`)) === '',
+  'cancel clears the amount field — an abandoned draft cannot be re-planned (#116)');
 
 // ---- Confirm & send: client-signed tx hits the mempool, history shows pending.
+await setVal('w-send-amount', '123.45');
 await click('w-send-review');
 await waitFor(`document.getElementById('w-send-confirm').style.display !== 'none'`, 'confirmation screen again');
 await click('w-send-go');
@@ -131,7 +138,11 @@ check(sentTx.version === 2, 'plain version-2 transaction (no DD envelope)');
 
 // ---- Mine: funds arrive; total balance drops only by the fee.
 await nodeRpc('generatetoaddress', [1, await nodeRpc('getnewaddress', [], 'stand')], 'stand');
-await waitFor(`${text('w-history')}.includes('confirmed') && !${text('w-history')}.includes('pending')`, 'history confirmed');
+// Once #69's enrichment lands the row shows the confirmation COUNT ("1 conf",
+// "✓ final" at 6+), not the literal "confirmed" of the thin pre-enrichment row.
+await waitFor(
+  `/\\d+\\s*conf|✓\\s*final|confirmed/.test(${text('w-history')}) && !${text('w-history')}.includes('pending')`,
+  'history confirmed');
 // The UI rounds to 2 decimals, so measure the drop in sats via the indexer:
 // both addresses are ours — the wallet total must shrink by exactly the fee.
 const utxosOf = async (a) => (await (await fetch(`http://127.0.0.1:8789/api/address/${a}/utxos`)).json()).utxos;

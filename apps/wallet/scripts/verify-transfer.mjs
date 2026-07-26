@@ -101,7 +101,11 @@ check(true, 'wallet A minted $20 via the UI; DigiDollar (spendable) shows $20.00
 await setVal('w-tr-to', 'dgbrt1qskyk2t69a02764tlvvcjq6ydgtacv6e9nxuw5t'); // witness v0
 await setVal('w-tr-amount', '5');
 await click('w-tr-review');
-await waitFor(`${text('w-tr-err')}.includes('not a DigiDollar-capable')`, 'non-taproot error');
+// #72 routed this through decodeDDAddress, which rejects a witness-v0 recipient
+// with "DigiDollar address must be a taproot (witness v1) output" — the old
+// "not a DigiDollar-capable" copy is gone. Wait on the INTENT (an error that
+// names taproot), which is what the check below actually asserts.
+await waitFor(`/taproot/i.test(${text('w-tr-err')})`, 'non-taproot error');
 check((await evaluate(text('w-tr-err'))).includes('taproot'),
   'invalid-address error explains DigiDollar needs a taproot address');
 
