@@ -28,7 +28,7 @@ function newWalletId(wallets) {
 export function createVaultManager(storage) {
   let record = null; // stored vault record: { v:2, rev, kdf, cipher, meta }
   let key = null; // non-extractable AES session key; matches record.kdf.salt, dropped on lock
-  let secrets = null; // { mnemonics: { [id]: mnemonic } } — plaintext, unlocked only
+  let secrets = null; // { mnemonics: { [id]: mnemonic }, sources?: { [id]: source } } — plaintext, unlocked only
   let primary = null; // legacy v1 record if one still exists (migration pending)
 
   const status = () => (key ? 'unlocked' : record || primary ? 'locked' : 'none');
@@ -50,6 +50,15 @@ export function createVaultManager(storage) {
     );
     if (clash) throw new Error(`a wallet named "${name.trim()}" already exists`);
   }
+
+  // A derived wallet's meta row carries ONLY `derived: true` in the cleartext
+  // (#129: the source linkage "this DGB wallet belongs to ETH address X" is
+  // exactly what a locked-vault reader must not get); the full source record
+  // — brand, address, fingerprint — lives in the ENCRYPTED secrets.
+  const walletMetaRow = ({ name, backedUp, source }) => ({
+    name: name.trim(), createdAt: Date.now(), backedUp: !!backedUp,
+    ...(source ? { derived: true } : {}),
+  });
 
   /** Read whatever storage holds (no decryption). Returns the status. */
   async function load() {
@@ -105,13 +114,13 @@ export function createVaultManager(storage) {
   }
 
   /** First-ever vault: one wallet, one master password. Returns the wallet id. */
-  async function createVault(password, { name, mnemonic, backedUp = false }) {
+  async function createVault(password, { name, mnemonic, backedUp = false, source = null }) {
     if ((await load()) !== 'none') throw new Error('a vault already exists');
     const id = newWalletId([]);
-    const newSecrets = { mnemonics: { [id]: mnemonic } };
+    const newSecrets = { mnemonics: { [id]: mnemonic }, ...(source ? { sources: { [id]: source } } : {}) };
     const newMeta = {
       activeId: id,
-      wallets: [{ id, name: name.trim(), createdAt: Date.now(), backedUp: !!backedUp }],
+      wallets: [{ id, ...walletMetaRow({ name, backedUp, source }) }],
     };
     // encryptJson hands back the key for the salt it just generated — the held
     // key must always match the salt in the record we store (key↔salt invariant).
@@ -187,7 +196,7 @@ export function createVaultManager(storage) {
   /** Add a wallet. Duplicate-mnemonic contract (restore + file import alike):
    * a seed already in the vault is never added twice — the existing wallet's
    * id comes back with existed:true. Does not change the active wallet. */
-  async function addWallet({ name, mnemonic, backedUp = false }) {
+  async function addWallet({ name, mnemonic, backedUp = false, source = null }) {
     assertUnlocked();
     const dup = Object.entries(secrets.mnemonics).find(([, m]) => normMnemonic(m) === normMnemonic(mnemonic));
     if (dup) return { id: dup[0], existed: true };
@@ -195,9 +204,12 @@ export function createVaultManager(storage) {
     const id = newWalletId(record.meta.wallets);
     const nextMeta = {
       ...record.meta,
-      wallets: [...record.meta.wallets, { id, name: name.trim(), createdAt: Date.now(), backedUp: !!backedUp }],
+      wallets: [...record.meta.wallets, { id, ...walletMetaRow({ name, backedUp, source }) }],
     };
-    await commit(nextMeta, { mnemonics: { ...secrets.mnemonics, [id]: mnemonic } });
+    // spread `secrets` so keys this version doesn't know about survive the write
+    const nextSecrets = { ...secrets, mnemonics: { ...secrets.mnemonics, [id]: mnemonic } };
+    if (source) nextSecrets.sources = { ...(secrets.sources ?? {}), [id]: source };
+    await commit(nextMeta, nextSecrets);
     return { id, existed: false };
   }
 
@@ -242,8 +254,12 @@ export function createVaultManager(storage) {
       const idx = wallets.findIndex((w) => w.id === id);
       activeId = (wallets[idx + 1] ?? wallets[idx - 1]).id;
     }
-    const nextSecrets = { mnemonics: { ...secrets.mnemonics } };
+    const nextSecrets = { ...secrets, mnemonics: { ...secrets.mnemonics } };
     delete nextSecrets.mnemonics[id];
+    if (nextSecrets.sources) {
+      nextSecrets.sources = { ...nextSecrets.sources };
+      delete nextSecrets.sources[id];
+    }
     await commit({ ...record.meta, activeId, wallets: remaining }, nextSecrets);
   }
 
@@ -284,6 +300,27 @@ export function createVaultManager(storage) {
     await commit(nextMeta, secrets);
   }
 
+  /** A derived wallet's source record ({kind, rdns, brand, address, msgVersion,
+   * fp}) or null. Encrypted-side read — unlocked only, like the mnemonic. */
+  function getSource(id) {
+    assertUnlocked();
+    getWallet(id);
+    return secrets.sources?.[id] ? structuredClone(secrets.sources[id]) : null;
+  }
+
+  /** Reconnect lookup: the wallet already derived from this signing account,
+   * if any. Address compare is case-insensitive (EVM hex vs base58 both safe). */
+  function findSource(kind, address) {
+    assertUnlocked();
+    const want = String(address ?? '').toLowerCase();
+    for (const [id, src] of Object.entries(secrets.sources ?? {})) {
+      if (src.kind === kind && String(src.address).toLowerCase() === want) {
+        return { id, source: structuredClone(src) };
+      }
+    }
+    return null;
+  }
+
   /** The one secret read. Only while unlocked; only inside a reveal ceremony. */
   function getMnemonic(id) {
     assertUnlocked();
@@ -307,7 +344,7 @@ export function createVaultManager(storage) {
   return {
     load, refresh, unlock, lock, createVault, migrateV1,
     addWallet, renameWallet, removeWallet, setActive, setBackedUp, setReceiveIndex,
-    getMnemonic, verifyPassword, meta,
+    getMnemonic, getSource, findSource, verifyPassword, meta,
     get status() { return status(); },
   };
 }
