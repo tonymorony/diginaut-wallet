@@ -12,8 +12,9 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
   DD address interop, receive strategy).
 - Wallet-management v2 (map #92) — vault, multi-wallet, backup UX; spec in
   `docs/specs/wallet-management-v2.md`.
-- Server migration (old box OOM-killed electrumx-main) — closed 2026-07-23, runbook
-  `docs/runbooks/server-migration-2026-07.md`.
+- Server migration (old box OOM-killed electrumx-main) — closed 2026-07-23. Runbook
+  `docs/runbooks/server-migration-2026-07.md` exists locally but is **untracked** (user
+  decision pending) — don't treat it as reachable from a fresh clone.
 
 ## Active: map #126 — "Connect a web3 wallet" (sign-to-derive), TESTNET only
 

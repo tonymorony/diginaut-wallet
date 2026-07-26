@@ -16,17 +16,21 @@ Last known green: all unit suites + 8/8 regtest drivers (98 checks) vs main, 202
 
 ## Driver catalog (what guards what)
 
-- Self-contained (mock/stub): `verify-ui` (create/lock/unlock/restore; needs stack),
-  `verify-crosswire`, `verify-wallet-mgmt`, `verify-autolock-default`,
-  `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider),
-  `verify-beta-posture`, `verify-honest-quotes` (MOCK_SYSTEM_HEALTH), `verify-oracle-bounds`,
-  `verify-oracle-refresh`, `verify-send-amount`, `verify-wallet-switch` (**flaky** — fixed
-  sleeps + first-row assumption; fix before CI becomes required), `verify-receive-index`,
-  `verify-receive-ui`, `verify-receive-compat` (needs stack), `verify-history`,
-  `verify-fiat-sendmax`, `verify-disclaimer`, `verify-mainnet-bringup`.
-- Regtest stack: `verify-balance`, `verify-send`, `verify-mint`, `verify-positions`,
-  `verify-transfer`, `verify-redeem`, `verify-p2wpkh-change`, `verify-walkthrough`
-  (release gate), `verify-fold-shapes` (#118 shapes via testmempoolaccept).
+- **Registered in `run-drivers.sh` = what CI runs.** SELF_CONTAINED: `verify-autolock-default`,
+  `verify-crosswire`, `verify-wallet-mgmt`, `verify-receive-index`, `verify-receive-ui`,
+  `verify-send-amount`, `verify-wallet-switch` (**flaky** — fixed sleeps + first-row
+  assumption; fix before CI becomes required), `verify-oracle-refresh`; branch #130 adds
+  `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider).
+  NEEDS_STACK (runner starts fake-indexer 8799 + wallet 8791): `verify-ui`
+  (create/lock/unlock/restore), `verify-receive-compat`.
+- **Manual mock/stub drivers — NOT in the runner or CI, run them by name when touching
+  their area**: `verify-beta-posture`, `verify-honest-quotes` (MOCK_SYSTEM_HEALTH),
+  `verify-oracle-bounds`, `verify-history`, `verify-fiat-sendmax`, `verify-disclaimer`,
+  `verify-mainnet-bringup`.
+- Regtest stack (manual, need the stand): `verify-balance`, `verify-send`, `verify-mint`,
+  `verify-positions`, `verify-transfer`, `verify-redeem`, `verify-p2wpkh-change`,
+  `verify-walkthrough` (release gate), `verify-fold-shapes` (#118 shapes via
+  testmempoolaccept; fresh stand per run).
 
 ## Running the full local regtest stack on this Mac (proven recipe)
 

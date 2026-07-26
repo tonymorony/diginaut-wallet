@@ -34,9 +34,9 @@ classifies by shape, not index). `unlockHeight = nextHeight + 100 + tier.lockBlo
    Recipe: `DGB_BIN=… ./scripts/regtest-stand.sh --keep` then
    `DD_E2E_RPC=http://dd:ddpass@127.0.0.1:18500 npm test`.
 3. **Pinned protocol vectors** for sign-to-derive live in `apps/wallet/test/connect.test.js`
-   (not this package): frozen 321-byte message + SHA-256, RFC-6979 signature for fixed key
-   `32×0x07`, resulting mnemonic + fingerprint. Consensus-grade — a red pin is an incident,
-   never re-pin.
+   (not this package; **lands with #130** — on branch `build/connect-wallet-130` until
+   merged): frozen 321-byte message + SHA-256, RFC-6979 signature for fixed key `32×0x07`,
+   resulting mnemonic + fingerprint. Consensus-grade — a red pin is an incident, never re-pin.
 
 ## Rules
 

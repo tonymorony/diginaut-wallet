@@ -78,6 +78,7 @@ Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
 
 ## Tests
 
-9 unit suites (~101 tests) under `test/`, `npm test`: server (CSP/allow-list/proxy/price/
-guard), vault (migration, CAS, receive-index), connect (protocol pins), vendor-integrity,
-keystore, netchrome, dderrors, dca, autolock. Drivers: see testing-and-drivers.md.
+On `main`: 8 unit suites (~93 tests) under `test/`, `npm test` — server (CSP/allow-list/
+proxy/price/guard), vault (migration, CAS, receive-index), vendor-integrity, keystore,
+netchrome, dderrors, dca, autolock. Branch #130 adds `connect.test.js` (protocol pins) →
+9 suites. Drivers: see testing-and-drivers.md.
