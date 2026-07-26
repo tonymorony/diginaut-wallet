@@ -159,6 +159,22 @@ await waitFor(`Number(${text('w-balance')}.replace(/,/g,'')) >= ${balAfterFaucet
 await setVal('w-tr-to', addrB);
 await setVal('w-tr-amount', '2.5');
 await click('w-tr-review');
+
+// The DD does NOT necessarily land on addrA: a mint pays its DigiDollar back to
+// the address of the coin it SPENT, which is whichever derivation held a big
+// enough P2TR coin — not the index-0 address captured at wallet creation. So
+// funding addrA can leave the DD-holding address with no fee coin. The wallet
+// names that address in its error precisely so this is recoverable; follow it,
+// which also proves the error is actionable rather than merely distinct.
+const trErr = await evaluate(text('w-tr-err'));
+const feeAddrMatch = trErr.match(/send at least [\d.]+ DGB to (\w+)/);
+if (feeAddrMatch) {
+  check(true, `fee-coin error names the DD-holding address: ${feeAddrMatch[1].slice(0, 16)}…`);
+  await nodeRpc('sendtoaddress', [feeAddrMatch[1], 2], 'stand');
+  await mine();
+  await waitFor(`${text('w-tr-err')} === '' || document.getElementById('w-tr-err').textContent !== ${JSON.stringify(trErr)}`, 'fee coin picked up');
+  await click('w-tr-review');
+}
 await waitFor(`document.getElementById('w-tr-confirm').style.display !== 'none'`, 'transfer confirmation');
 check((await evaluate(text('w-tr-c-to'))) === addrB && (await evaluate(text('w-tr-c-dd'))) === '2.50',
   'transfer confirmation: $2.50 to wallet B');

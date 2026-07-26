@@ -124,7 +124,10 @@ const posText = await evaluate(text('w-positions'));
 check(posText.includes('$100.00'), `position shows the minted amount: "${posText.slice(0, 90)}…"`);
 check(posText.includes('6 months'), 'position shows the lock tier');
 check(posText.includes(Math.round(Number(collateralSats) / 1e8).toLocaleString('en-US').slice(0, 3)), 'position shows the locked collateral in DGB');
-check(/unlocks ≈ \d{4}-\d{2}-\d{2}/.test(posText) && posText.includes(`block ${unlockHeight.toLocaleString('en-US')}`),
+// The card says "locked until ≈ <date>"; this asserted "unlocks ≈ <date>",
+// a wording that is nowhere in app.js. What matters is a real expiry DATE
+// next to the unlock block, so accept either verb rather than pin the copy.
+check(/(?:unlocks|locked until) ≈ \d{4}-\d{2}-\d{2}/.test(posText) && posText.includes(`block ${unlockHeight.toLocaleString('en-US')}`),
   'position shows an expiry DATE and the unlock block');
 check(await evaluate(text('w-dd-total')) === '$' + (totalCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }),
   'DigiDollar total shown next to the positions header');
