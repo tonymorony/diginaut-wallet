@@ -357,6 +357,26 @@
     .wal-edit .grid button { margin-top: 10px; }
     button.danger { background: var(--primary-700); }
     button.danger:hover { background: var(--primary-800); }
+    /* sign-to-derive (#130): picker rows, ceremony steps, disclosure checkbox */
+    .badge.exp { background: var(--warn-bg); color: var(--warn); }
+    .w3-row { display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 10px; padding: 12px 14px;
+      background: #fff; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-s); text-align: left; }
+    .w3-row:hover { background: var(--gray-50); border-color: var(--gray-400); }
+    .w3-row img { width: 24px; height: 24px; border-radius: 6px; flex: none; }
+    .w3-row .w3-fallback-ic { width: 24px; height: 24px; border-radius: 6px; flex: none; background: var(--accent-5);
+      color: var(--accent); font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .w3-name { font-weight: 600; } .w3-sub { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+    .w3-steps { margin: 0 0 4px; display: grid; gap: 8px; }
+    .w3-step { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: var(--radius-s); background: var(--gray-100); font-size: 13px; }
+    .w3-step.on { background: var(--accent-5); } .w3-step.ok { background: var(--good-bg); }
+    .w3-step .n { flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--gray-300); color: #fff; font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; }
+    .w3-step.on .n { background: var(--accent); } .w3-step.ok .n { background: var(--good); }
+    .w3-step.on .w3-wait { animation: w3pulse 1.2s ease-in-out infinite; }
+    @keyframes w3pulse { 50% { opacity: .45; } }
+    .checkline { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 0; padding: 12px; border-radius: var(--radius-s);
+      background: var(--bad-bg); font-size: 13px; }
+    .checkline input { width: 16px; height: 16px; margin: 2px 0 0; flex: none; }
     section[hidden] { display: none !important; }
   </style>
 </head>
@@ -388,7 +408,7 @@
        but has no verified backup. Dismiss hides it for this session only. -->
   <div class="backup-strip" id="w-backup-strip" style="display:none">
     <div class="backup-strip-inner">
-      <span>This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.</span>
+      <span id="w-backup-strip-text">This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.</span>
       <button id="w-backup-strip-go" type="button">Back up now</button>
       <button id="w-backup-strip-dismiss" type="button" class="secondary" title="Dismiss for this session" aria-label="Dismiss for this session">✕</button>
     </div>
@@ -538,6 +558,9 @@
           <button id="w-create-choice">Create new wallet</button>
           <button id="w-show-restore" class="secondary">I already have a seed phrase</button>
           <button id="w-show-import" class="secondary">Restore from backup file</button>
+          <!-- sign-to-derive (#130, variant A): co-equal fourth door -->
+          <button id="w-web3-choice">Connect a web3 wallet… <span class="badge exp">EXPERIMENTAL</span></button>
+          <p class="hint">Use MetaMask, Phantom, OKX or any wallet extension you already have — no new seed phrase to write down today.</p>
         </div>
         <div id="w-form" style="display:none">
           <div id="w-restore" style="display:none">
@@ -574,6 +597,46 @@
           <button id="w-form-back" class="secondary">Back</button>
         </div>
         <div class="err" id="w-none-err"></div>
+      </div>
+
+      <!-- sign-to-derive picker (#130, variant A): EIP-6963-announced wallets
+           + Phantom's Solana provider; rows are rendered by app.js -->
+      <div id="w-web3-pick" style="display:none">
+        <p class="hint" style="margin-top:0">Your extension signs one fixed message; the signature becomes a DigiByte wallet that lives in this browser. The derived wallet belongs to the signing account — a different account (or a different wallet app) derives a different wallet.</p>
+        <div id="w-web3-list"></div>
+        <button id="w-web3-back" class="secondary">Back</button>
+        <div class="err" id="w-web3-pick-err"></div>
+      </div>
+
+      <!-- sign-to-derive ceremony (#130, variant A): acknowledge → sign 1 →
+           sign 2 → verify, then the save step (password only while no vault
+           exists). Mismatch view is the #129 hard stop. -->
+      <div id="w-web3-sign" style="display:none">
+        <div class="w3-steps" id="w-web3-steps"></div>
+        <div id="w-web3-disclose" style="display:none">
+          <p class="hint">You’ll sign the same message twice — the second signature proves your wallet signs deterministically.</p>
+          <p class="hint">Even if your wallet uses a hardware device, the derived DigiByte wallet is a hot key in this browser.</p>
+          <label class="checkline"><input type="checkbox" id="w-web3-agree" />
+            <span>I understand: only <b>dgb.ludere.space</b> may ever ask for this signature. Any other site asking for it is stealing my funds.</span></label>
+          <button id="w-web3-go" disabled>Request signature 1 of 2</button>
+        </div>
+        <div id="w-web3-save" style="display:none">
+          <label for="w-web3-name">Wallet name</label>
+          <input id="w-web3-name" autocomplete="off" />
+          <div id="w-web3-pass-fields" style="display:none">
+            <label for="w-web3-pass">Master password <span class="hint" style="display:inline">— one password for every wallet on this device</span></label>
+            <input id="w-web3-pass" type="password" autocomplete="new-password" />
+            <label for="w-web3-pass2">Repeat password</label>
+            <input id="w-web3-pass2" type="password" autocomplete="new-password" />
+          </div>
+          <button id="w-web3-save-go">Save wallet</button>
+        </div>
+        <div id="w-web3-mismatch" style="display:none">
+          <p class="hint warn-text" id="w-web3-mismatch-text"></p>
+          <button id="w-web3-newwallet" class="secondary">Save as a NEW wallet anyway…</button>
+        </div>
+        <button id="w-web3-sign-back" class="secondary">Back</button>
+        <div class="err" id="w-web3-err"></div>
       </div>
 
       <!-- backup ceremony (spec §2): reveal (blur + decoy words + tap to
