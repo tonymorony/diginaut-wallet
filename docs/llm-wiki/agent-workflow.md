@@ -51,7 +51,8 @@ Split work by phase: **Fable 5 thinks, Opus 5 agents execute.**
 
 ## CI (`.github/workflows/ci.yml`, since #115)
 
-- Runs unit suites + self-contained drivers via `scripts/run-drivers.sh`; `check-pins.mjs`
+- Runs unit suites + the registered browser drivers (both the SELF_CONTAINED and
+  NEEDS_STACK sets) via `scripts/run-drivers.sh`; `check-pins.mjs`
   enforces exact dep pins; a committed-vendor.lock-vs-tree test catches dep bumps that skip
   the regen.
 - `verify-wallet-switch` is **flaky** (fixed sleeps, first-`[data-switch]`-row assumption) —

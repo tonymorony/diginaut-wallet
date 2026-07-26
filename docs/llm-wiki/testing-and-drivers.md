@@ -1,7 +1,8 @@
 # Testing & drivers
 
 Verified: 2026-07-26 @ `7247899`. Baselines drift — run and compare, don't quote stale counts.
-Last known green: all unit suites + 8/8 regtest drivers (98 checks) vs main, 2026-07-26.
+Last known green: all unit suites + 8 of the 9 regtest drivers (98 checks) vs main,
+2026-07-26 — `verify-fold-shapes` was proven separately (PR #124), not part of that run.
 
 ## Layers
 

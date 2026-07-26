@@ -20,6 +20,7 @@ Agent-facing knowledge base. Protocol: see root `CLAUDE.md`. Load only what the 
 - `docs/adr/0001–0005` — architecture decisions (digested in architecture.md).
 - `docs/discovery/*` — research with primary-source citations (sign-to-derive, consensus facts, oracles, indexer, UX benchmark).
 - `docs/specs/wallet-management-v2.md` — vault/backup/multi-wallet spec (shipped).
-- `docs/runbooks/*` — mainnet node prep, 2026-07 server migration.
+- `docs/runbooks/*` — mainnet node prep (tracked); the 2026-07 server-migration runbook
+  exists locally but is untracked (see project-status.md).
 - `docs/PRD.md` (archived), `ROADMAP.md` (M0–M3 history), `TODO.md` (conscious deferrals).
 - `docs/SELF-HOSTING.md` — full-stack compose walkthrough (the reference deploy follows it).
