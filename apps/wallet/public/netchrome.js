@@ -19,6 +19,17 @@ export function betaCapError(netName, usdAmount) {
   return `during the mainnet beta, transactions are capped at $${BETA_TX_CAP_USD} each`;
 }
 
+/** May the seed-backup ceremony offer "Remind me later" on this chain? (#C3)
+ * Inverted default vs betaCapError on purpose: the cap warn-allows what it
+ * cannot price, but an unnameable chain here is a mainnet deployment whose
+ * node is down, and "skip your only backup" must never be the fail-open.
+ * ALLOW-LIST, not a deny-list: 'test'/'testnet'/'regtest' only. Accepts both
+ * spellings for the same reason betaCapError does — the node says 'test', the
+ * wallet's netName says 'testnet'. */
+export function backupSkipAllowed(chain) {
+  return chain === 'test' || chain === 'testnet' || chain === 'regtest';
+}
+
 export function networkChrome(chain) {
   switch (chain) {
     case 'test':

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { friendlyDDError } from '../public/dderrors.js';
+import { friendlyDDError, friendlyRejectError, isAlreadyBroadcast, isNodeRejectString } from '../public/dderrors.js';
 
 // Consensus reject strings from DigiByte Core v9.26.4 (digidollar/validation.cpp,
 // consensus/digidollar_transaction_validation.cpp). The node surfaces them raw in
@@ -65,4 +65,77 @@ test('non-DigiDollar errors pass through untranslated (null)', () => {
   assert.equal(friendlyDDError('Node returned non-JSON (HTTP 500)'), null);
   assert.equal(friendlyDDError(''), null);
   assert.equal(friendlyDDError(undefined), null);
+});
+
+// ---- Spend/broadcast reject families (#H3) ----
+// These strings are met AFTER an ambiguous broadcast, where the first attempt
+// usually DID land. The raw token invites "rebuild and send again", which
+// spends the same coins twice — the copy exists to stop exactly that.
+
+test('missingorspent explains the coins are gone and forbids re-sending', () => {
+  const msg = friendlyRejectError('bad-txns-inputs-missingorspent');
+  assert.match(msg, /already gone/i);
+  assert.match(msg, /do NOT rebuild and send it again/);
+  assert.match(msg, /bad-txns-inputs-missingorspent/); // raw token preserved for support
+});
+
+test('missingorspent leads with the explanation, not the raw token', () => {
+  // same house rule the mint driver pins: a user must meet English first
+  assert.ok(!friendlyRejectError('bad-txns-inputs-missingorspent').startsWith('bad-txns-'));
+});
+
+test('mempool conflict names the same-coins cause and says do not send again', () => {
+  const msg = friendlyRejectError('txn-mempool-conflict');
+  assert.match(msg, /same coins/i);
+  assert.match(msg, /do NOT send again/);
+  assert.match(msg, /txn-mempool-conflict/);
+});
+
+test('the bad-txns- catch-all never shadows the two specific spend messages', () => {
+  // ordering regression guard: a catch-all placed first still passes a loose
+  // /rejected/ assertion while destroying the only messages that matter here
+  assert.match(friendlyRejectError('bad-txns-inputs-missingorspent'), /already gone/i);
+  assert.match(friendlyRejectError('bad-txns-nonstandard-inputs'), /consensus level/i);
+});
+
+test('DigiDollar consensus strings still delegate to friendlyDDError unchanged', () => {
+  assert.equal(friendlyRejectError('minting-frozen-volatility'), friendlyDDError('minting-frozen-volatility'));
+  assert.equal(friendlyRejectError('bad-mint-multiple-collateral-outputs'),
+    friendlyDDError('bad-mint-multiple-collateral-outputs'));
+});
+
+test('unrecognised text still passes through untranslated (null)', () => {
+  assert.equal(friendlyRejectError('min relay fee not met'), null);
+  assert.equal(friendlyRejectError(''), null);
+  assert.equal(friendlyRejectError(undefined), null);
+});
+
+test('already-broadcast answers are recognised as success, not failure', () => {
+  assert.equal(isAlreadyBroadcast('txn-already-in-mempool'), true);
+  assert.equal(isAlreadyBroadcast('Transaction already in block chain'), true);
+  assert.equal(isAlreadyBroadcast('Transaction outputs already in utxo set'), true);
+  const msg = friendlyRejectError('txn-already-in-mempool');
+  assert.match(msg, /broadcast successfully/i);
+});
+
+test('already-broadcast patterns stay anchored — a genuine reject is not swallowed', () => {
+  assert.equal(isAlreadyBroadcast('bad-txns-inputs-missingorspent'), false);
+  assert.equal(isAlreadyBroadcast(''), false);
+  assert.equal(isAlreadyBroadcast(undefined), false);
+});
+
+test('transport failures are NOT node verdicts — the ambiguity must survive', () => {
+  // isNodeRejectString returning true here would let the classifier call a
+  // timed-out broadcast a definite failure and drop the recovery record (#C1)
+  assert.equal(isNodeRejectString('The operation was aborted due to timeout'), false);
+  assert.equal(isNodeRejectString('fetch failed'), false);
+  assert.equal(isNodeRejectString('HTTP 502'), false);
+  assert.equal(isNodeRejectString('the node did not answer in time — it may be down, or the connection dropped.'), false);
+  assert.equal(isNodeRejectString(''), false);
+});
+
+test('recognised node verdicts are reported as definite', () => {
+  assert.equal(isNodeRejectString('bad-mint-multiple-collateral-outputs'), true);
+  assert.equal(isNodeRejectString('bad-txns-inputs-missingorspent'), true);
+  assert.equal(isNodeRejectString('txn-already-in-mempool'), true);
 });
