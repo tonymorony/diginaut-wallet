@@ -74,6 +74,13 @@ Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit 
   survives lock/switch, netKnown-gated). A definite reject's message passes through
   UNMODIFIED (verify-honest-quotes pins this). Stale-tip warning rows (`w-*-c-stale`) are
   written at REVIEW time only — never re-read state in the `w-*-go` handlers (L6 property).
+  Card row titles drop to `r.kind` while `vault.status !== 'unlocked'` (amount + counterparty
+  must not outlive the lock) — `show()` re-renders the card so it flips on the transition.
+- **Cross-module copy contract**: `SERVER_REFUSALS` in `broadcastlog.js` string-matches the
+  proxy's own 413/`request body too large` and 429/`too many requests — ` (the only refusals
+  it cannot detect structurally). `server.test.js` feeds the live response through
+  `classifyBroadcastError`, so rewording either message fails there instead of silently
+  reclassifying a refused broadcast as ambiguous. Reword both sides together.
 
 ## Sign-to-derive (branch #130)
 

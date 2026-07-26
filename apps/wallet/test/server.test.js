@@ -2,6 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { startServer, importmapCspHash } from '../server.js';
+// The wallet's broadcast classifier keys off these refusals' COPY (they are the
+// only refusals it cannot detect structurally). Importing it here ties the two
+// sides together: a reworded 413/429 fails this file, not a user's send.
+import { classifyBroadcastError } from '../public/broadcastlog.js';
 
 async function withServer(fn) {
   const server = startServer({ port: 0 }); // mock mode: no RPC creds passed
@@ -669,7 +673,11 @@ test('refuses an oversized RPC body with 413 (#H4)', async () => {
   await withConfiguredServer({ maxBodyBytes: { rpc: 64 } }, async (base) => {
     const big = await postRpc(base, { method: 'sendrawtransaction', params: ['ab'.repeat(200)] });
     assert.equal(big.status, 413);
-    assert.match((await big.json()).error, /too large/);
+    const refusal = (await big.json()).error;
+    assert.match(refusal, /too large/);
+    // this server answered before the node saw anything, so the wallet must
+    // read it as a definite reject — never "it MAY already have been broadcast"
+    assert.equal(classifyBroadcastError(new Error(refusal)).kind, 'reject');
     // the same endpoint still works under the cap — the merge kept the other budgets
     const ok = await postRpc(base, { method: 'getblockchaininfo' });
     assert.equal(ok.status, 200);
@@ -732,6 +740,8 @@ test('spends the RPC budget then answers 429 with retry-after (#H4)', async () =
     const body = await limited.json();
     assert.ok(body.retryAfterMs > 0);
     assert.match(body.error, /too many requests/);
+    // same contract as the 413: the limiter runs before any upstream fetch
+    assert.equal(classifyBroadcastError(new Error(body.error)).kind, 'reject');
   });
 });
 

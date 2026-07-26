@@ -94,7 +94,11 @@
     .amt-head label { margin-bottom: 0; }
     .amt-tools { display: flex; gap: 6px; }
     .amt-btn { width: auto; margin: 0 0 2px; padding: 4px 11px; font-size: 12px; border-radius: 999px; }
-    .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
+    /* overflow-wrap because an error line can now carry the RAW TRANSACTION
+       (the storage-failure branch of the ambiguous-broadcast message, #C1):
+       hex has no spaces, so the default `normal` would push one unbreakable
+       token out of the modal and clip the very bytes the user must copy. */
+    .err { color: var(--bad); font-size: 13px; margin-top: 8px; overflow-wrap: anywhere; }
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px,1fr)); gap: 5px; margin-top: 10px; }
     .oracle { height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
     .net-banner {
