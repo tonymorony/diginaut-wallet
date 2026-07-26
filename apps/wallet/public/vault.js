@@ -199,7 +199,21 @@ export function createVaultManager(storage) {
   async function addWallet({ name, mnemonic, backedUp = false, source = null }) {
     assertUnlocked();
     const dup = Object.entries(secrets.mnemonics).find(([, m]) => normMnemonic(m) === normMnemonic(mnemonic));
-    if (dup) return { id: dup[0], existed: true };
+    if (dup) {
+      const [dupId] = dup;
+      // A re-derive of a seed that's already here (e.g. it arrived earlier via
+      // keystore-file import) upgrades that wallet in place: without the
+      // source record it would never get the derived badge or the reconnect
+      // fingerprint check.
+      if (source && !secrets.sources?.[dupId]) {
+        const nextMeta = {
+          ...record.meta,
+          wallets: record.meta.wallets.map((w) => (w.id === dupId ? { ...w, derived: true } : w)),
+        };
+        await commit(nextMeta, { ...secrets, sources: { ...(secrets.sources ?? {}), [dupId]: source } });
+      }
+      return { id: dupId, existed: true };
+    }
     assertNameFree(name, null);
     const id = newWalletId(record.meta.wallets);
     const nextMeta = {
@@ -308,17 +322,23 @@ export function createVaultManager(storage) {
     return secrets.sources?.[id] ? structuredClone(secrets.sources[id]) : null;
   }
 
-  /** Reconnect lookup: the wallet already derived from this signing account,
-   * if any. Address compare is case-insensitive (EVM hex vs base58 both safe). */
-  function findSource(kind, address) {
+  /** Reconnect lookup: the wallet already derived from this signing account.
+   * EVM addresses compare case-insensitively (checksum casing is display);
+   * Solana base58 compares exactly. With `fp` given, only an exact-fingerprint
+   * record matches — several wallets can share one source account after an
+   * explicit save-drifted-signature-as-new, and the reconnect check must find
+   * the one this signature actually re-derives, not whichever came first. */
+  function findSource(kind, address, fp = null) {
     assertUnlocked();
-    const want = String(address ?? '').toLowerCase();
+    const norm = (a) => (kind === 'sol' ? String(a ?? '') : String(a ?? '').toLowerCase());
+    const want = norm(address);
+    let anyMatch = null;
     for (const [id, src] of Object.entries(secrets.sources ?? {})) {
-      if (src.kind === kind && String(src.address).toLowerCase() === want) {
-        return { id, source: structuredClone(src) };
-      }
+      if (src.kind !== kind || norm(src.address) !== want) continue;
+      if (fp !== null && src.fp === fp) return { id, source: structuredClone(src) };
+      anyMatch ??= { id, source: structuredClone(src) };
     }
-    return null;
+    return fp !== null ? null : anyMatch;
   }
 
   /** The one secret read. Only while unlocked; only inside a reveal ceremony. */

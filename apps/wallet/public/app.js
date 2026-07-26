@@ -12,7 +12,7 @@ import {
 } from '/lib/index.js';
 import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
-import { discoverProviders, deriveFromSource, shortAddress } from '/connect.js';
+import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
@@ -508,8 +508,11 @@ function setConnectMode(mode) {
   $('w-web3-pick').style.display = mode === 'web3-pick' ? 'block' : 'none';
   $('w-web3-sign').style.display = mode === 'web3-sign' ? 'block' : 'none';
   if (mode !== 'web3-sign') {
+    web3Run += 1; // orphan any in-flight ceremony continuation (late popups)
     web3Pending = null; // plaintext mnemonic must not outlive the ceremony
     web3Entry = null;
+    web3Address = null;
+    web3ForceNew = false;
     $('w-web3-agree').checked = false;
     $('w-web3-go').disabled = true;
     $('w-web3-pass').value = '';
@@ -1134,6 +1137,9 @@ $('w-restore-go').addEventListener('click', (e) =>
 let web3Found = []; // last discovery result, indexed by the picker rows
 let web3Entry = null; // the picked provider entry while the ceremony is open
 let web3Pending = null; // { mnemonic, source } between verify and save
+let web3Address = null; // the connected signing account for this ceremony
+let web3ForceNew = false; // set by the explicit "save as NEW wallet" path
+let web3Run = 0; // ceremony token: a bumped counter orphans in-flight awaits
 
 function renderWeb3Steps(stage) {
   const brand = esc(web3Entry?.brand ?? '');
@@ -1150,6 +1156,17 @@ function renderWeb3Steps(stage) {
     const body = on ? `<span class="w3-wait">${label}${active}</span>` : `<span>${label}</span>`;
     return `<div class="w3-step${on ? ' on' : ''}${ok ? ' ok' : ''}"><span class="n">${ok ? '✓' : i + 1}</span>${body}</div>`;
   }).join('');
+}
+
+// The two-step display for the one-signature reconnect verification.
+function renderWeb3VerifySteps(stage) {
+  const brand = esc(web3Entry?.brand ?? '');
+  const done = stage === 'done';
+  $('w-web3-steps').innerHTML =
+    `<div class="w3-step${done ? ' ok' : ' on'}"><span class="n">${done ? '✓' : '1'}</span>`
+    + (done ? '<span>Signature received</span>' : `<span class="w3-wait">Known account — one signature to verify, check the ${brand} popup…</span>`)
+    + '</div>'
+    + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? '✓' : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
 }
 
 async function openWeb3Picker() {
@@ -1179,51 +1196,91 @@ async function openWeb3Picker() {
 $('w-web3-choice').addEventListener('click', () => { openWeb3Picker(); });
 $('w-web3-back').addEventListener('click', () => setConnectMode('choice'));
 $('w-web3-sign-back').addEventListener('click', () => { openWeb3Picker(); });
-$('w-web3-list').addEventListener('click', (e) => {
+// Picking a wallet connects it FIRST: a known (kind, account) routes to the
+// one-signature reconnect verification (#129: reconnects never re-ask the
+// checkbox); an unknown one gets the full first-derive ceremony.
+$('w-web3-list').addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-web3-pick]');
   const entry = btn && web3Found[Number(btn.dataset.web3Pick)];
   if (!entry) return;
-  setConnectMode('web3-sign'); // clears any stale ceremony, then arm this one
+  setConnectMode('web3-sign'); // clears any stale ceremony (and bumps web3Run)
+  const run = web3Run;
   web3Entry = entry;
-  renderWeb3Steps('disclose');
-  $('w-web3-disclose').style.display = 'block';
+  try {
+    const address = await connectAccount(entry);
+    if (run !== web3Run) return; // ceremony abandoned while the popup was open
+    web3Address = address;
+    const known = vault.status === 'unlocked' ? vault.findSource(entry.kind, address) : null;
+    if (known) { await verifyReconnect(entry, address, run); return; }
+    renderWeb3Steps('disclose');
+    $('w-web3-disclose').style.display = 'block';
+  } catch (err) {
+    if (run !== web3Run) return;
+    $('w-web3-err').textContent = surfaceError(err);
+  }
 });
+
+// One signature, re-derive, compare the stored fingerprint (spec §8). Match →
+// verified switch. Mismatch → hard stop; the explicit new-wallet path must
+// then run the FULL ceremony — one signature has not proven determinism.
+async function verifyReconnect(entry, address, run) {
+  renderWeb3VerifySteps('sign');
+  const derived = await deriveOnce(entry, address);
+  if (run !== web3Run) return;
+  renderWeb3VerifySteps('done');
+  const exact = vault.findSource(derived.source.kind, derived.source.address, derived.source.fp);
+  if (exact) {
+    const name = vault.meta().wallets.find((w) => w.id === exact.id)?.name ?? '';
+    await vault.setActive(exact.id);
+    switchToWallet(exact.id); // full reset closes the modal
+    openWalletModal(`Re-derived and verified — switched to ${name}.`);
+    return;
+  }
+  showWeb3Mismatch(derived.source.brand);
+}
 $('w-web3-agree').addEventListener('change', (e) => { $('w-web3-go').disabled = !e.target.checked; });
+
+function showWeb3Mismatch(brand) {
+  $('w-web3-mismatch-text').textContent =
+    `${brand} no longer produces the signature that created your existing derived wallet. `
+    + 'Your funds are safe at that wallet’s addresses, but this extension can no longer re-derive them — '
+    + 'restore from its 24-word phrase if you ever lose this browser. '
+    + 'You can still save today’s signature as a separate, NEW wallet.';
+  $('w-web3-mismatch').style.display = 'block';
+}
 
 $('w-web3-go').addEventListener('click', (e) =>
   busy(e.target, 'w-web3-err', async () => {
     const entry = web3Entry;
+    const run = web3Run;
     $('w-web3-disclose').style.display = 'none';
     let derived;
     try {
-      derived = await deriveFromSource(entry, { onStep: renderWeb3Steps });
+      derived = await deriveFromSource(entry, { onStep: renderWeb3Steps, address: web3Address });
     } catch (err) {
+      if (run !== web3Run) return; // ceremony abandoned — a late popup must not resurface it
       // refusal or user-rejected popup: back to the armed disclosure, error below
       renderWeb3Steps('disclose');
       $('w-web3-disclose').style.display = 'block';
       throw err;
     }
+    if (run !== web3Run) return;
     renderWeb3Steps('done');
-    // Reconnect of a known source (#129): fingerprint check BEFORE anything
-    // renders funds. Match → verified switch. Mismatch → hard stop, never a
-    // silent swap; "new wallet anyway" stays behind an explicit click.
-    if (vault.status === 'unlocked') {
-      const known = vault.findSource(derived.source.kind, derived.source.address);
-      if (known) {
-        if (known.source.fp === derived.source.fp) {
-          const name = vault.meta().wallets.find((w) => w.id === known.id)?.name ?? '';
-          await vault.setActive(known.id);
-          switchToWallet(known.id); // full reset closes the modal
-          openWalletModal(`Re-derived and verified — switched to ${name}.`);
-          return;
-        }
-        web3Pending = derived;
-        $('w-web3-mismatch-text').textContent =
-          `${derived.source.brand} no longer produces the signature that created your existing derived wallet. `
-          + 'Your funds are safe at that wallet’s addresses, but this extension can no longer re-derive them — '
-          + 'restore from its 24-word phrase if you ever lose this browser. '
-          + 'You can still save today’s signature as a separate, NEW wallet.';
-        $('w-web3-mismatch').style.display = 'block';
+    // A full ceremony can still land on a known source (vault unlocked mid-way
+    // or the sanctioned re-derive): exact fingerprint → verified switch;
+    // same account with no exact match → hard stop, never a silent save.
+    if (vault.status === 'unlocked' && !web3ForceNew) {
+      const exact = vault.findSource(derived.source.kind, derived.source.address, derived.source.fp);
+      if (exact) {
+        const name = vault.meta().wallets.find((w) => w.id === exact.id)?.name ?? '';
+        await vault.setActive(exact.id);
+        switchToWallet(exact.id); // full reset closes the modal
+        openWalletModal(`Re-derived and verified — switched to ${name}.`);
+        return;
+      }
+      if (vault.findSource(derived.source.kind, derived.source.address)) {
+        web3Pending = derived; // double-signed already — "new wallet" may save it directly
+        showWeb3Mismatch(derived.source.brand);
         return;
       }
     }
@@ -1243,7 +1300,12 @@ function showWeb3Save() {
 
 $('w-web3-newwallet').addEventListener('click', () => {
   $('w-web3-mismatch').style.display = 'none';
-  showWeb3Save();
+  web3ForceNew = true;
+  if (web3Pending) { showWeb3Save(); return; } // already double-sign-proven
+  // the mismatch came from the one-signature reconnect check: a NEW wallet
+  // needs the full ceremony — one signature has not proven determinism
+  renderWeb3Steps('disclose');
+  $('w-web3-disclose').style.display = 'block';
 });
 
 $('w-web3-save-go').addEventListener('click', (e) =>
@@ -1843,9 +1905,15 @@ function showRemoveView(id) {
       ? 'This wallet holds no funds the indexer can see.'
       : 'Its balance could not be checked.'); // no indexer on this deployment
   } else lines.push('Its balance was not checked — only the active wallet is watched.');
+  // #129 (ratified): a derived wallet's remove warning advertises the one
+  // recovery door a native wallet doesn't have — reconnect + re-sign.
+  let rederive = null;
+  if (w.derived) { try { rederive = vault.getSource(id); } catch { /* locked mid-render */ } }
   lines.push(w.backedUp
     ? 'You verified its seed phrase backup — that phrase can restore it later.'
-    : 'This wallet is NOT backed up — removing it without the seed phrase means the funds are unrecoverable.');
+    : rederive
+      ? `This wallet is NOT backed up, but it is derived: reconnecting ${rederive.brand} with the account ${shortAddress(rederive.address)} and signing again re-creates it — unless ${rederive.brand} ever changes how it signs.`
+      : 'This wallet is NOT backed up — removing it without the seed phrase means the funds are unrecoverable.');
   if (m.wallets.length === 1) lines.push('It is the last wallet on this device: removing it erases the vault entirely.');
   $('w-remove-warnings').innerHTML = lines.map((l) => `<li>${esc(l)}</li>`).join('');
   $('w-remove-name').value = '';

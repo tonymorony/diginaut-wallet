@@ -150,6 +150,20 @@ test('source rides encrypted: cleartext meta gets only derived:true, record roun
   assert.equal(v.findSource('evm', ADDR), null);
 });
 
+test('findSource prefers the exact fingerprint when one account backs several wallets', async () => {
+  const storage = memStorage();
+  const v = createVaultManager(storage);
+  await v.createVault(PW, { name: 'First', mnemonic: M1, source: SRC });
+  const first = v.meta().wallets[0].id;
+  // the sanctioned save-drifted-signature-as-NEW path: same (kind, address), new fp
+  const drifted = { ...SRC, fp: 'deadbeef' };
+  const { id: second } = await v.addWallet({ name: 'Second', mnemonic: M2, source: drifted });
+  assert.equal(v.findSource('evm', ADDR, 'deadbeef').id, second, 'exact fp wins');
+  assert.equal(v.findSource('evm', ADDR, SRC.fp).id, first, 'the original still resolves by its fp');
+  assert.equal(v.findSource('evm', ADDR, '00000000'), null, 'fp given but absent → null, no fallback');
+  assert.ok(v.findSource('evm', ADDR), 'no fp → any-match still answers the routing question');
+});
+
 test('a source survives a lock/unlock cycle and unrelated writes', async () => {
   const storage = memStorage();
   const v = createVaultManager(storage);

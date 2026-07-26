@@ -43,7 +43,12 @@ const SIG1 = walletHex(secp256k1.sign(digest, PRIV, { format: 'recovered', preha
 // extraEntropy = a *valid* signature from the same key that differs from SIG1 —
 // exactly what a drifted firmware (constant) or an MPC signer (fresh) returns
 const DRIFT = walletHex(secp256k1.sign(digest, PRIV, { format: 'recovered', prehash: false, extraEntropy: new Uint8Array(32).fill(1) }));
-const RAND1 = walletHex(secp256k1.sign(digest, PRIV, { format: 'recovered', prehash: false, extraEntropy: new Uint8Array(32).fill(2) }));
+// A second key (32 × 0x08) plays the MPC wallet: a fresh account whose two
+// ceremony signatures differ — must be refused before anything derives.
+const PRIV2 = new Uint8Array(32).fill(8);
+const ETH_ADDR2 = '0x' + hex(keccak_256(secp256k1.getPublicKey(PRIV2, false).subarray(1)).subarray(12));
+const MPC_A = walletHex(secp256k1.sign(digest, PRIV2, { format: 'recovered', prehash: false }));
+const MPC_B = walletHex(secp256k1.sign(digest, PRIV2, { format: 'recovered', prehash: false, extraEntropy: new Uint8Array(32).fill(3) }));
 
 const derivedAddr = async (sigHex) => {
   const { rs } = canonicalizeEvmSignature(sigHex);
@@ -64,13 +69,13 @@ const EDADDR = deriveTaprootAddress(
 // Injected before the app loads: an EIP-6963 wallet answering with canned
 // signatures (sigs[min(n, len-1)] per personal_sign call). A wrong message
 // hex from the app throws — the ceremony must send the frozen bytes verbatim.
-const evmProviderScript = (sigs) => `
+const evmProviderScript = (sigs, addr = ETH_ADDR) => `
   (() => {
     let calls = 0;
     const sigs = ${JSON.stringify(sigs)};
     const provider = {
       request: async ({ method, params }) => {
-        if (method === 'eth_requestAccounts') return [${JSON.stringify(ETH_ADDR)}];
+        if (method === 'eth_requestAccounts') return [${JSON.stringify(addr)}];
         if (method === 'personal_sign') {
           if (params[0] !== ${JSON.stringify(MSG_HEX)}) throw new Error('fake wallet: unexpected message bytes');
           return sigs[Math.min(calls++, sigs.length - 1)];
@@ -160,7 +165,7 @@ async function agreeAndGo(b) {
   await b.shot('81-web3-row.png');
 }
 
-// ============ 3. reconnect verified: same signature → switch, no new wallet ============
+// ============ 3. reconnect verified: known account → ONE signature, no checkbox, switch ============
 {
   const b = await freshTab(evmProviderScript([SIG1]));
   await b.waitFor(visible('w-locked'), 'locked (vault persisted)');
@@ -168,15 +173,18 @@ async function agreeAndGo(b) {
   await b.click('w-unlock');
   await b.waitFor(visible('w-open'), 'unlocked');
   await b.evaluate(`document.getElementById('w-connect').click()`);
-  await toCeremony(b);
-  await agreeAndGo(b);
+  await b.click('w-web3-choice');
+  await b.waitFor(`document.querySelector('#w-web3-list [data-web3-pick]')`, 'picker row announced');
+  await b.evaluate(`document.querySelector('#w-web3-list [data-web3-pick]').click()`);
+  // #129: reconnects never re-ask — straight to the verified switch
   await b.waitFor(`document.getElementById('w-wallet-note').textContent.includes('Re-derived and verified')`,
     'reconnect verified note');
   const count = await b.evaluate(`document.querySelectorAll('#w-wallet-list .wal-row').length`);
-  check(count === 1, `fingerprint match switches instead of duplicating (${count} wallet)`);
+  check(count === 1, `one-signature fingerprint match switches instead of duplicating (${count} wallet)`);
 }
 
-// ============ 4. drift: consistent-but-different signature → hard stop, then explicit new wallet ============
+// ============ 4. drift: known account, ONE signature mismatches the fingerprint → hard stop;
+// the explicit NEW-wallet path then requires the FULL ceremony (checkbox + double-sign) ============
 {
   const b = await freshTab(evmProviderScript([DRIFT]));
   await b.waitFor(visible('w-locked'), 'locked');
@@ -184,25 +192,28 @@ async function agreeAndGo(b) {
   await b.click('w-unlock');
   await b.waitFor(visible('w-open'), 'unlocked');
   await b.evaluate(`document.getElementById('w-connect').click()`);
-  await toCeremony(b);
-  await agreeAndGo(b);
-  await b.waitFor(visible('w-web3-mismatch'), 'drift hard stop');
+  await b.click('w-web3-choice');
+  await b.waitFor(`document.querySelector('#w-web3-list [data-web3-pick]')`, 'picker row announced');
+  await b.evaluate(`document.querySelector('#w-web3-list [data-web3-pick]').click()`);
+  await b.waitFor(visible('w-web3-mismatch'), 'drift hard stop straight from the one-signature check');
   check((await b.evaluate(`document.getElementById('w-web3-mismatch-text').textContent`)).includes('no longer produces'),
     'hard-stop copy names the drift, points at the 24 words');
   check(await b.evaluate(hidden('w-web3-save')), 'no silent save on mismatch');
   await b.shot('82-web3-mismatch.png');
   await b.click('w-web3-newwallet');
-  await b.waitFor(visible('w-web3-save'), 'explicit NEW-wallet path opens save');
+  await b.waitFor(visible('w-web3-disclose'), 'NEW-wallet path demands the full ceremony (one signature proves nothing)');
+  await agreeAndGo(b);
+  await b.waitFor(visible('w-web3-save'), 'double-sign passed → save step');
   await b.click('w-web3-save-go');
   await b.waitFor(visible('w-open'), 'wallet open');
   await b.evaluate(`document.getElementById('w-chip').click()`);
   await b.waitFor(`document.querySelectorAll('#w-wallet-list .wal-row').length === 2`, 'second wallet exists');
-  check(true, 'explicit confirmation saves the drifted signature as a separate wallet');
+  check(true, 'explicit confirmation + full ceremony saves the drifted signature as a separate wallet');
 }
 
-// ============ 5. MPC refusal: two different signatures in one ceremony ============
+// ============ 5. MPC refusal: a FRESH account whose two signatures differ ============
 {
-  const b = await freshTab(evmProviderScript([SIG1, RAND1]));
+  const b = await freshTab(evmProviderScript([MPC_A, MPC_B], ETH_ADDR2));
   await b.waitFor(visible('w-locked'), 'locked');
   await b.setVal('w-unlock-pass', PASS);
   await b.click('w-unlock');

@@ -161,40 +161,70 @@ async function signOnce(entry, address) {
 
 const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
-/** The full derive ceremony for a picked source. onStep(name) fires as the
- * wizard advances ('sign1' | 'sign2' | 'verify') so the UI can render the
- * step machine. Resolves { mnemonic, source } or throws with user-facing copy.
- * Signature bytes are treated as key material: canonical copies are zeroed
- * before return (best-effort in JS), and nothing here is ever logged. */
-export async function deriveFromSource(entry, { onStep = () => {} } = {}) {
-  let address;
+/** Connect the source and return its signing account — no signature yet, so
+ * the caller can decide between the first-derive ceremony (unknown account)
+ * and the one-signature reconnect verification (known account, #129). */
+export async function connectAccount(entry) {
   if (entry.kind === 'evm') {
     const accounts = await entry.provider.request({ method: 'eth_requestAccounts' });
-    address = String(accounts?.[0] ?? '').toLowerCase();
+    const address = String(accounts?.[0] ?? '').toLowerCase();
     if (!/^0x[0-9a-f]{40}$/.test(address)) throw new Error(`${entry.brand} returned no account`);
-  } else {
-    const conn = await entry.provider.connect();
-    address = String(conn?.publicKey ?? entry.provider.publicKey ?? '');
-    if (!address) throw new Error('Phantom returned no account');
+    return address;
   }
+  const conn = await entry.provider.connect();
+  const address = String(conn?.publicKey ?? entry.provider.publicKey ?? '');
+  if (!address) throw new Error('Phantom returned no account');
+  return address;
+}
+
+// Signature bytes and entropy are key material: derive everything, then zero
+// the buffers (best-effort in JS). Nothing in this module is ever logged.
+async function packageDerived(entry, address, canonical) {
+  const entropy = await entropyFromSignature(canonical);
+  try {
+    const mnemonic = mnemonicFromEntropy(entropy);
+    const fp = await fingerprintOfEntropy(entropy);
+    return {
+      mnemonic,
+      source: { kind: entry.kind, rdns: entry.rdns, brand: entry.brand, address, msgVersion: S2D_VERSION, fp },
+    };
+  } finally {
+    entropy.fill(0);
+  }
+}
+
+/** Reconnect verification (#129, spec §8): ONE signature, no ceremony — the
+ * stored fingerprint is the cross-check on this path, not the double-sign. */
+export async function deriveOnce(entry, address) {
+  const sig = await signOnce(entry, address);
+  try {
+    return await packageDerived(entry, address, sig);
+  } finally {
+    sig.fill(0);
+  }
+}
+
+/** The full first-derive ceremony. onStep(name) fires as the wizard advances
+ * ('sign1' | 'sign2' | 'verify') so the UI can render the step machine.
+ * Resolves { mnemonic, source } or throws with user-facing copy. */
+export async function deriveFromSource(entry, { onStep = () => {}, address = null } = {}) {
+  const account = address ?? await connectAccount(entry);
   onStep('sign1');
-  const first = await signOnce(entry, address);
-  onStep('sign2');
-  const second = await signOnce(entry, address);
-  onStep('verify');
-  if (!sameBytes(first, second)) {
-    // dYdX-v4-style refusal, brand by name: an MPC (or otherwise
-    // non-deterministic) signer can never re-derive this wallet — deriving
-    // once would strand the funds behind a signature that never comes back.
-    throw new Error(`${entry.brand} does not sign deterministically (this is typical of MPC wallets). It cannot derive a recoverable wallet.`);
+  const first = await signOnce(entry, account);
+  try {
+    onStep('sign2');
+    const second = await signOnce(entry, account);
+    const secondMatches = sameBytes(first, second);
+    second.fill(0);
+    onStep('verify');
+    if (!secondMatches) {
+      // dYdX-v4-style refusal, brand by name: an MPC (or otherwise
+      // non-deterministic) signer can never re-derive this wallet — deriving
+      // once would strand the funds behind a signature that never comes back.
+      throw new Error(`${entry.brand} does not sign deterministically (this is typical of MPC wallets). It cannot derive a recoverable wallet.`);
+    }
+    return await packageDerived(entry, account, first);
+  } finally {
+    first.fill(0);
   }
-  const entropy = await entropyFromSignature(first);
-  const mnemonic = mnemonicFromEntropy(entropy);
-  const fp = await fingerprintOfEntropy(entropy);
-  first.fill(0);
-  second.fill(0);
-  return {
-    mnemonic,
-    source: { kind: entry.kind, rdns: entry.rdns, brand: entry.brand, address, msgVersion: S2D_VERSION, fp },
-  };
 }
