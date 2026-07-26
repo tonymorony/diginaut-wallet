@@ -296,6 +296,12 @@ async function loadStatus() {
     pillEl.hidden = pill == null;
     pillEl.classList.toggle('danger', level === 'danger');
     pillEl.classList.toggle('warn', level === 'warn');
+    // Sign-to-derive is TESTNET-ONLY (#126 destination, ADR 0005): the frozen
+    // v1 message names the testnet, so the same bundle on a mainnet node must
+    // not offer the door at all — hide it the moment the chain says main.
+    const web3Gate = info.chain === 'main' ? 'none' : '';
+    $('w-web3-choice').style.display = web3Gate;
+    $('w-web3-choice').nextElementSibling.style.display = web3Gate; // its hint line
     maybeShowMainnetAck(info.chain);
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
@@ -1170,6 +1176,13 @@ function renderWeb3VerifySteps(stage) {
 }
 
 async function openWeb3Picker() {
+  // belt for the boot race: the button is hidden on mainnet, but a click that
+  // lands before the chain poll resolves must still refuse (ADR 0005)
+  if (chainState.netName === 'mainnet') {
+    setConnectMode('choice');
+    $('w-none-err').textContent = 'Connecting a web3 wallet is testnet-only for now.';
+    return;
+  }
   setConnectMode('web3-pick');
   const listEl = $('w-web3-list');
   listEl.innerHTML = '<p class="hint">Looking for wallet extensions…</p>';
