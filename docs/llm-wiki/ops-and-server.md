@@ -1,0 +1,46 @@
+# Ops & server
+
+Verified: 2026-07-26. Server specifics (IPs, key paths, creds) live in agent memory and
+server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
+
+## Live deployments (dual stack, one server, 8 containers)
+
+- <https://dgb.ludere.space> — testnet wallet. <https://diginaut.ludere.space> — mainnet.
+- Compose = **THREE** -f files: `docker-compose.yml` + `docker-compose.dual.yml` +
+  server-local `docker-compose.cache.yml` (ElectrumX CACHE_MB overlay; not in repo).
+  The `.tls` overlay is **no longer used** (pre-dual-stack).
+- Build identity: `curl -s <domain>/api/config` → `version` field (`v<semver>+<sha>`).
+  There is no `/api/version`. Prod is deployed from `git archive` (tar to `/opt/dgb-support`,
+  a plain copy, no .git) so the export-subst stamp resolves; `.env` survives (untracked).
+
+## Deploy recipes (verified)
+
+- Frontend-only (normal case):
+  `docker compose -f docker-compose.yml -f docker-compose.dual.yml -f docker-compose.cache.yml up --build -d --no-deps wallet wallet-main`
+  — `--no-deps` is **LOAD-BEARING**: without it compose rebuilds non-reproducible
+  indexer/faucet images and recreates the whole closure **including electrumx-main**, whose
+  restart closes port 50001 for ~10 min (mainnet balances down).
+- Full-stack `up --build -d` only for compose/infra changes, expecting that window.
+- After deploy: verify served `app.js` sha256 vs repo + run `verify-dual-public.mjs`.
+
+## Server facts & gotchas
+
+- Migrated 2026-07-22 (47 GB RAM / 400 GB SSD; old 11 GB box OOM-killed electrumx-main
+  forever). electrumx-main steady state ≈ 15–17 GB RSS. Full resync reference: node IBD ~31 h,
+  ElectrumX genesis ~39 h (tx-bound, 54 M txs).
+- ufw must allow **172.16.0.0/12 → RPC ports** (docker→host; symptom: ElectrumX "timeout
+  error. Retrying occasionally" forever) + p2p ports open.
+- Two nodes on the box: testnet `digibyted` + user's personal mainnet `digibyted-mainnet`
+  (systemd, `-daemon=0` required). `rpcwhitelistdefault=0` is REQUIRED with rpcauth users;
+  first `rpcbind` line wins. **Restarts of the mainnet node are owner-run (HITL).**
+- ssh: long sessions get RESET (~2 min) — run long ops detached (nohup+log fails the
+  classifier; plain foreground `docker compose up --build -d` over ssh works), poll with
+  short sessions, use ServerAliveInterval=5. Intermittent resets are a path issue from the
+  user's machine — don't blame the server.
+- Classifier constraints (auto mode): reading prod configs/creds is blocked; **read-only
+  `digibyte-cli` calls over ssh are fine**; `pkill` over ssh: always `-x`, never `-f`.
+- Faucet test-reset: `docker exec deploy-faucet-1 rm /data/faucet-claims.json` + compose
+  restart faucet (claims are one-per-IP-per-24h). Top-up: server-side mine script.
+- Indexer 502 on `/api/tx/<unknown txid>` is **by design** since #69 — read the body:
+  `daemon-error` = trio healthy; `ECONNREFUSED` = link actually down.
+- Config backups live server-side/user-side (0700) — never commit.
