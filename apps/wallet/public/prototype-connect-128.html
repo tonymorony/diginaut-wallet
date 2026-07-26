@@ -1,0 +1,352 @@
+<!doctype html>
+<!-- PROTOTYPE (wayfinder #128, map #126) — THROWAWAY, never ship.
+     Three variants of the "Connect a web3 wallet" onboarding flow, switchable
+     via ?variant=A|B|C or the floating bar / arrow keys.
+     Everything is faked in-memory: EIP-6963 announcements, wallet popups,
+     signatures, the vault. Copy comes from the #129 custody grilling. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE · Connect a web3 wallet — Diginaut</title>
+  <style>
+    /* Tokens lifted from apps/wallet/public/index.html (Stakinator UI kit) */
+    :root {
+      --gray-50:#fcfcfd; --gray-100:#f1f3f6; --gray-200:#e0e4ea; --gray-300:#c8ced9;
+      --gray-400:#a8b3c4; --gray-500:#8292aa; --gray-600:#5b6b86; --gray-700:#384252;
+      --gray-800:#242b35; --gray-900:#191d24; --gray-950:#15181e;
+      --primary-100:#fdf0f4; --primary-300:#f7c5d1; --primary-600:#e74c73;
+      --primary-700:#d71d4c; --primary-800:#79102b;
+      --bg:var(--gray-100); --card:#ffffff; --border:var(--gray-200);
+      --text:var(--gray-950); --muted:var(--gray-600);
+      --good:#12a150; --good-bg:#e8f7ee; --bad:var(--primary-700); --bad-bg:var(--primary-100);
+      --warn:#9a6700; --warn-bg:#fff3d1;
+      --accent:#0b92f9; --accent-2:#44abfa; --accent-5:#ddf0fe;
+      --radius:16px; --radius-s:8px;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font:400 14px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      background:var(--bg); color:var(--text); min-height:100vh; }
+    main { max-width:520px; margin:0 auto; padding:20px 20px 120px; display:grid; gap:14px; }
+    .card { background:var(--card); border-radius:var(--radius); padding:22px; box-shadow:0 1px 2px rgba(21,24,30,.04); }
+    .card h2 { margin:0 0 12px; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--gray-500); }
+    h3 { margin:0; font-size:16px; }
+    .hint { font-size:12.5px; color:var(--muted); margin:8px 0 0; }
+    button { margin-top:14px; width:100%; padding:10px 16px; border:0; border-radius:var(--radius-s); cursor:pointer;
+      background:var(--gray-950); color:#fff; font:600 14px/1.4 Inter,-apple-system,sans-serif; }
+    button:hover { background:var(--gray-800); } button:disabled { opacity:.45; cursor:default; }
+    button.secondary { background:var(--gray-100); color:var(--text); }
+    button.secondary:hover { background:var(--gray-200); }
+    .badge { display:inline-block; font-size:10px; font-weight:600; padding:2px 8px; border-radius:999px; letter-spacing:.02em; vertical-align:middle; }
+    .badge.exp { background:var(--warn-bg); color:var(--warn); }
+    .badge.testnet { background:var(--accent-5); color:var(--accent); }
+    .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .err { color:var(--bad); font-size:13px; margin-top:10px; }
+    /* wallet rows (wal-*) copied from the real switcher */
+    .wal-row { display:flex; align-items:center; gap:8px; padding:3px 0; }
+    .wal-pick { flex:1 1 auto; width:auto; margin:0; padding:8px 10px; background:none; color:var(--text);
+      text-align:left; border-radius:var(--radius-s); display:flex; align-items:center; gap:10px; }
+    .wal-pick:hover { background:var(--gray-100); }
+    .wal-name { font-weight:600; }
+    .wal-sub { font-size:11.5px; color:var(--muted); font-weight:400; }
+    .wal-check { margin-left:auto; color:var(--accent); font-weight:700; }
+    .wal-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); vertical-align:1px; }
+    /* prototype-only helpers */
+    .pk-row { display:flex; align-items:center; gap:12px; width:100%; margin-top:10px; padding:12px 14px;
+      background:#fff; color:var(--text); border:1px solid var(--border); border-radius:var(--radius-s); }
+    .pk-row:hover { background:var(--gray-50); border-color:var(--gray-400); }
+    .pk-ic { font-size:22px; line-height:1; }
+    .pk-name { font-weight:600; } .pk-sub { font-size:11.5px; color:var(--muted); font-weight:400; }
+    .checkline { display:flex; gap:10px; align-items:flex-start; margin:14px 0 0; padding:12px; border-radius:var(--radius-s);
+      background:var(--bad-bg); font-size:13px; }
+    .checkline input { width:16px; height:16px; margin:2px 0 0; flex:none; }
+    .steps { margin:14px 0 0; display:grid; gap:8px; }
+    .step { display:flex; gap:10px; align-items:center; padding:10px 12px; border-radius:var(--radius-s); background:var(--gray-100); font-size:13px; }
+    .step.on { background:var(--accent-5); }
+    .step.ok { background:var(--good-bg); }
+    .step .n { flex:none; width:20px; height:20px; border-radius:50%; background:var(--gray-300); color:#fff; font-size:11px; font-weight:700;
+      display:flex; align-items:center; justify-content:center; }
+    .step.on .n { background:var(--accent); } .step.ok .n { background:var(--good); }
+    .pulse { animation:pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity:.45; } }
+    .strip { margin-top:12px; padding:10px 12px; border-radius:var(--radius-s); background:var(--warn-bg); color:var(--warn); font-size:12.5px; }
+    .glyph { position:relative; }
+    .glyph .ov { position:absolute; right:-4px; bottom:-4px; font-size:11px; background:#fff; border-radius:50%; padding:1px; box-shadow:0 0 0 1px var(--border); }
+    /* fake extension popup */
+    #fakepop { position:fixed; top:16px; right:16px; width:300px; background:var(--gray-950); color:#fff; border-radius:12px;
+      padding:16px; box-shadow:0 12px 40px rgba(0,0,0,.35); display:none; z-index:60; font-size:12.5px; }
+    #fakepop .t { font-weight:700; margin-bottom:8px; display:flex; gap:8px; align-items:center; }
+    #fakepop pre { background:var(--gray-800); border-radius:8px; padding:10px; font-size:10.5px; line-height:1.5; white-space:pre-wrap;
+      max-height:150px; overflow:auto; margin:8px 0; }
+    #fakepop button { margin-top:6px; background:var(--accent); }
+    #fakepop button.secondary { background:var(--gray-700); color:#fff; }
+    /* floating prototype switcher */
+    #proto-bar { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); z-index:70; display:flex; gap:10px; align-items:center;
+      background:var(--gray-950); color:#fff; border-radius:999px; padding:8px 14px; box-shadow:0 8px 30px rgba(0,0,0,.3); font-size:13px; }
+    #proto-bar button { all:unset; cursor:pointer; padding:2px 8px; font-weight:700; }
+    #proto-bar .lbl { min-width:210px; text-align:center; font-weight:600; }
+    #proto-bar .tag { font-size:9px; background:var(--primary-600); border-radius:4px; padding:1px 5px; margin-right:4px; vertical-align:1px; }
+    #empty-toggle { position:fixed; right:14px; bottom:14px; z-index:70; width:auto; margin:0; font-size:11.5px; padding:8px 12px;
+      background:var(--gray-700); border-radius:999px; }
+  </style>
+</head>
+<body>
+  <main id="app"></main>
+
+  <div id="fakepop"></div>
+  <button id="empty-toggle">🧩 toggle "no extensions installed"</button>
+  <div id="proto-bar">
+    <span class="tag">PROTOTYPE</span>
+    <button id="pb-prev" title="previous variant">←</button>
+    <span class="lbl" id="pb-label"></span>
+    <button id="pb-next" title="next variant">→</button>
+  </div>
+
+<script>
+/* ---------- shared fake data & copy (from #129 / sign-to-derive.md) ---------- */
+const VARIANTS = { A: 'Third door', B: 'Quiet path', C: 'Web3 spotlight' };
+const COPY = {
+  checkbox: 'I understand: only dgb.ludere.space may ever ask for this signature. Any other site asking for it is stealing my funds.',
+  hotkey: 'Even if your wallet uses a hardware device, the derived DigiByte wallet is a hot key in this browser.',
+  twice: 'You’ll sign the same message twice — the second signature proves your wallet signs deterministically.',
+  strip: (b) => `Protected only by ${b} re-signing — back up the 24 words in case ${b} ever changes how it signs.`,
+  perAccount: 'The derived wallet belongs to this signing account — a different account (or a different wallet app) derives a different DigiByte wallet.',
+};
+const ANNOUNCED = [ // fake EIP-6963 announcements + Phantom special case
+  { rdns:'io.metamask',  name:'MetaMask', ic:'\u{1F98A}', kind:'evm', addr:'0xd8dA…6045' },
+  { rdns:'io.rabby',     name:'Rabby',    ic:'\u{1F430}', kind:'evm', addr:'0x1a2B…c3D4' },
+  { rdns:'com.okex.wallet', name:'OKX Wallet', ic:'⬛', kind:'evm', addr:'0x9f00…11aa' },
+  { rdns:'app.phantom',  name:'Phantom',  ic:'\u{1F47B}', kind:'sol', addr:'7xKX…gAsU' },
+];
+let noExt = false;           // empty-state toggle
+let state = {};              // per-run ceremony state, reset on variant switch
+
+const $ = (id) => document.getElementById(id);
+const app = $('app');
+const qs  = new URLSearchParams(location.search);
+let variant = ['A','B','C'].includes(qs.get('variant')) ? qs.get('variant') : 'A';
+
+/* ---------- fake extension popup ---------- */
+function fakePopup(brand, n, cb) {
+  const p = $('fakepop');
+  p.style.display = 'block';
+  p.innerHTML = `<div class="t"><span>${brand.ic}</span> ${brand.name} — signature request ${n} of 2</div>
+    <div>dgb.ludere.space asks you to sign:</div>
+    <pre>Diginaut sign-to-derive v1
+Network: DigiByte testnet
+Origin: https://dgb.ludere.space
+
+This signature generates the private keys of your DigiByte wallet.
+Anyone who obtains this signature can steal your DigiByte funds.
+Only sign this message on https://dgb.ludere.space. If any other site asks for this signature, refuse.</pre>
+    <button id="fp-sign">Sign</button><button id="fp-rej" class="secondary">Reject</button>`;
+  $('fp-sign').onclick = () => { p.style.display='none'; cb(true); };
+  $('fp-rej').onclick  = () => { p.style.display='none'; cb(false); };
+}
+
+/* ---------- ceremony engine (shared logic, per-variant rendering) ---------- */
+function startCeremony(brand, renderStep) {
+  state = { brand, step:'disclose', agreed:false, sig1:false, sig2:false };
+  renderStep();
+}
+function requestSig(n, renderStep) {
+  state.step = 'sign'+n;
+  renderStep();
+  setTimeout(() => fakePopup(state.brand, n, (ok) => {
+    if (!ok) { state.step='rejected'; renderStep(); return; }
+    if (n===1) { state.sig1=true; requestSig(2, renderStep); }
+    else { state.sig2=true; state.step='verify'; renderStep();
+           setTimeout(()=>{ state.step='done'; renderStep(); }, 900); }
+  }), 500);
+}
+
+/* ---------- shared blocks ---------- */
+const expBadge = '<span class="badge exp">EXPERIMENTAL</span>';
+function discloseHtml(idPrefix) {
+  return `<p class="hint" style="margin-top:12px">${COPY.twice}</p>
+    <p class="hint">${COPY.hotkey}</p>
+    <label class="checkline"><input type="checkbox" id="${idPrefix}-agree" />
+      <span>${COPY.checkbox}</span></label>
+    <button id="${idPrefix}-go" disabled>Request signature 1 of 2</button>`;
+  }
+function wireDisclose(idPrefix, renderStep) {
+  $(idPrefix+'-agree').onchange = (e) => { state.agreed = e.target.checked; $(idPrefix+'-go').disabled = !state.agreed; };
+  $(idPrefix+'-go').onclick = () => requestSig(1, renderStep);
+}
+function rejectedHtml() {
+  return `<div class="err">Signature rejected in ${state.brand.name}. Nothing was derived — you can try again.</div>
+    <button class="secondary" onclick="render()">Back</button>`;
+}
+function emptyStateHtml() {
+  return `<div class="pk-row" style="opacity:.65"><span class="pk-ic">\u{1F50C}</span>
+    <span><span class="pk-name">No wallet extensions detected</span><br/>
+    <span class="pk-sub">Install MetaMask, Phantom, OKX or any EIP-6963 wallet extension, then reload.</span></span></div>`;
+}
+/* the classic modal choice list, reused by A and B */
+function choiceButtons() {
+  return `<button>Create new wallet</button>
+    <button class="secondary">I already have a seed phrase</button>
+    <button class="secondary">Restore from backup file</button>`;
+}
+/* wallet-list preview shown after the ceremony, per-variant treatment */
+function doneCard(listHtml) {
+  const b = state.brand;
+  return `<div class="card"><h2>Done — how it appears in your wallet list</h2>
+    ${listHtml}
+    <div class="strip">Not backed up — ${COPY.strip(b.name)}</div>
+    <p class="hint">${COPY.perAccount}</p></div>`;
+}
+
+/* ---------- VARIANT A — "Third door": co-equal choice → picker page → step wizard ---------- */
+function renderA() {
+  const b = state.brand;
+  if (state.step === 'pick') {
+    app.innerHTML = `<div class="card"><h3>Connect a web3 wallet ${expBadge}</h3>
+      <p class="hint" style="margin-top:8px">Your extension signs one fixed message; the signature becomes a DigiByte wallet that lives here. ${COPY.perAccount}</p>
+      ${ noExt ? emptyStateHtml() : ANNOUNCED.map((w,i) =>
+        `<button class="pk-row" data-pick="${i}" style="margin-top:10px"><span class="pk-ic">${w.ic}</span>
+          <span style="text-align:left"><span class="pk-name">${w.name}</span><br/>
+          <span class="pk-sub">${w.kind==='sol' ? 'Solana signature (Ed25519)' : 'detected extension'}</span></span></button>`).join('') }
+      <button class="secondary" onclick="render()">Back</button></div>`;
+    app.querySelectorAll('[data-pick]').forEach(el => el.onclick = () => startCeremony(ANNOUNCED[el.dataset.pick], renderA));
+    return;
+  }
+  if (state.step) { // ceremony wizard: one numbered card, steps advance
+    const S = (key, n, label) => {
+      const on = state.step===key, ok = (key==='disclose' && state.agreed && state.step!=='disclose')
+        || (key==='sign1'&&state.sig1) || (key==='sign2'&&state.sig2) || (key==='verify'&&state.step==='done');
+      return `<div class="step ${state.step===key?'on':''} ${ok?'ok':''}"><span class="n">${ok?'✓':n}</span>
+        <span ${on&&(key==='sign1'||key==='sign2')?'class="pulse"':''}>${label}</span></div>`;
+    };
+    app.innerHTML = `<div class="card"><h3>Derive from ${b.ic} ${b.name} ${expBadge}</h3>
+      <div class="steps">
+        ${S('disclose',1,'Acknowledge the risk')}
+        ${S('sign1',2,'Signature 1 of 2' + (state.step==='sign1'?' — check the '+b.name+' popup…':''))}
+        ${S('sign2',3,'Signature 2 of 2' + (state.step==='sign2'?' — same message, proves determinism…':''))}
+        ${S('verify',4, state.step==='verify' ? 'Verifying the two signatures match…' : 'Signatures match — wallet derived')}
+      </div>
+      ${ state.step==='disclose' ? discloseHtml('a') : '' }
+      ${ state.step==='rejected' ? rejectedHtml() : '' }</div>
+      ${ state.step==='done' ? doneCard(
+        `<div class="wal-row"><button class="wal-pick"><span><span class="wal-name">${b.name} wallet</span> <span class="wal-dot"></span>
+           <div class="wal-sub">via ${b.ic} ${b.name} · <span class="mono">${b.addr}</span> · <span class="badge exp">EXPERIMENTAL</span></div></span>
+           <span class="wal-check">✓</span></button></div>
+         <div class="wal-row"><button class="wal-pick"><span><span class="wal-name">Wallet 1</span>
+           <div class="wal-sub">created on this device</div></span></button></div>`) : '' }`;
+    if (state.step==='disclose') wireDisclose('a', renderA);
+    return;
+  }
+  // landing: the real connect modal's choice list + a co-equal third door
+  app.innerHTML = `<div class="card"><h3>Connect wallet</h3>
+    <p class="hint" style="margin-top:8px">Your keys are generated in this browser and never sent anywhere. Pick how to start:</p>
+    ${choiceButtons()}
+    <button id="a-connect">\u{1F98A} Connect a web3 wallet… &nbsp;${expBadge}</button>
+    <p class="hint">Use MetaMask, Phantom, OKX or any wallet extension you already have — no new seed phrase to write down today.</p></div>`;
+  $('a-connect').onclick = () => { state = { step:'pick' }; renderA(); };
+}
+
+/* ---------- VARIANT B — "Quiet path": tertiary link → inline icon row → one consolidated sheet ---------- */
+function renderB() {
+  const b = state.brand;
+  if (state.step && state.step!=='pick') {
+    app.innerHTML = `<div class="card"><h3>${b.ic} ${b.name} <span class="badge testnet">DigiByte testnet</span> ${expBadge}</h3>
+      ${ state.step==='disclose' ? discloseHtml('b') :
+        `<div class="steps">
+          <div class="step ok"><span class="n">✓</span><span>Risk acknowledged</span></div>
+          <div class="step ${state.sig1?'ok':'on'}"><span class="n">${state.sig1?'✓':'1'}</span>
+            <span ${state.step==='sign1'?'class="pulse"':''}>Signature 1 of 2 ${state.step==='sign1'?'— in the '+b.name+' popup':''}</span></div>
+          <div class="step ${state.sig2?'ok':(state.step==='sign2'?'on':'')}"><span class="n">${state.sig2?'✓':'2'}</span>
+            <span ${state.step==='sign2'?'class="pulse"':''}>Signature 2 of 2 — must be byte-identical</span></div>
+          <div class="step ${state.step==='done'?'ok':(state.step==='verify'?'on':'')}"><span class="n">${state.step==='done'?'✓':'3'}</span>
+            <span>${state.step==='done'?'Wallet derived':'Compare signatures'}</span></div>
+        </div>` }
+      ${ state.step==='rejected' ? rejectedHtml() : '' }</div>
+      ${ state.step==='done' ? doneCard(
+        `<div class="wal-row"><button class="wal-pick">
+           <span class="glyph pk-ic">\u{1F680}<span class="ov">${b.ic}</span></span>
+           <span><span class="wal-name">${b.name} wallet</span> <span class="wal-dot"></span>
+           <div class="wal-sub mono">${b.addr}</div></span><span class="wal-check">✓</span></button></div>
+         <div class="wal-row"><button class="wal-pick"><span class="glyph pk-ic">\u{1F680}</span>
+           <span><span class="wal-name">Wallet 1</span></span></button></div>
+         <p class="hint">The little ${b.ic} on the avatar is the only list-level difference.</p>`) : '' }`;
+    if (state.step==='disclose') wireDisclose('b', renderB);
+    return;
+  }
+  app.innerHTML = `<div class="card"><h3>Connect wallet</h3>
+    <p class="hint" style="margin-top:8px">Your keys are generated in this browser and never sent anywhere. Pick how to start:</p>
+    ${choiceButtons()}
+    <p class="hint" style="margin-top:16px">Have MetaMask, Phantom or another wallet extension?
+      <a href="#" id="b-reveal">Use it instead — no new seed phrase</a> ${expBadge}</p>
+    <div id="b-icons" style="display:none; margin-top:6px">
+      ${ noExt ? emptyStateHtml() : `<div style="display:flex; gap:10px; margin-top:8px">
+        ${ANNOUNCED.map((w,i)=>`<button class="secondary" data-pick="${i}" title="${w.name}"
+          style="width:auto; flex:1; margin:0; font-size:20px; padding:12px 0">${w.ic}<br/><span style="font-size:10.5px; font-weight:600">${w.name}</span></button>`).join('')}
+      </div><p class="hint">${COPY.perAccount}</p>` }</div></div>`;
+  $('b-reveal').onclick = (e) => { e.preventDefault(); $('b-icons').style.display='block'; };
+  app.querySelectorAll('[data-pick]').forEach(el => el.onclick = () => startCeremony(ANNOUNCED[el.dataset.pick], renderB));
+}
+
+/* ---------- VARIANT C — "Web3 spotlight": hero card, wallets inline on landing, timeline ceremony, grouped list ---------- */
+function renderC() {
+  const b = state.brand;
+  if (state.step && state.step!=='pick') {
+    const log = [];
+    log.push(`<div class="step ok"><span class="n">✓</span><span>Connected ${b.ic} ${b.name} — <span class="mono">${b.addr}</span></span></div>`);
+    if (state.step==='disclose') { /* checkbox below */ }
+    if (['sign1','sign2','verify','done'].includes(state.step)) log.push(`<div class="step ok"><span class="n">✓</span><span>Risk acknowledged</span></div>`);
+    if (state.step==='sign1') log.push(`<div class="step on"><span class="n">…</span><span class="pulse">Waiting for signature 1 of 2 in ${b.name}…</span></div>`);
+    if (state.sig1) log.push(`<div class="step ok"><span class="n">✓</span><span>Signature 1 received</span></div>`);
+    if (state.step==='sign2') log.push(`<div class="step on"><span class="n">…</span><span class="pulse">Waiting for signature 2 of 2 — same message…</span></div>`);
+    if (state.sig2) log.push(`<div class="step ok"><span class="n">✓</span><span>Signature 2 received — byte-identical ✓ deterministic</span></div>`);
+    if (state.step==='done') log.push(`<div class="step ok"><span class="n">\u{1F680}</span><span><b>DigiByte wallet derived.</b> 24 words now exist — back them up when ready.</span></div>`);
+    app.innerHTML = `<div class="card"><h3>Connecting ${b.ic} ${b.name} ${expBadge}</h3>
+      <div class="steps">${log.join('')}</div>
+      ${ state.step==='disclose' ? discloseHtml('c') : '' }
+      ${ state.step==='rejected' ? rejectedHtml() : '' }</div>
+      ${ state.step==='done' ? doneCard(
+        `<div class="wal-sub" style="text-transform:uppercase; letter-spacing:.08em; font-size:10px; margin-bottom:4px">Derived from web3 ${expBadge}</div>
+         <div class="wal-row"><button class="wal-pick"><span><span class="wal-name">${b.name} wallet</span> <span class="wal-dot"></span>
+           <div class="wal-sub">${b.ic} <span class="mono">${b.addr}</span></div></span><span class="wal-check">✓</span></button></div>
+         <div class="wal-sub" style="text-transform:uppercase; letter-spacing:.08em; font-size:10px; margin:10px 0 4px">This device</div>
+         <div class="wal-row"><button class="wal-pick"><span><span class="wal-name">Wallet 1</span></span></button></div>`) : '' }`;
+    if (state.step==='disclose') wireDisclose('c', renderC);
+    return;
+  }
+  app.innerHTML = `
+    <div class="card" style="border:1.5px solid var(--accent-2)"><h3>⚡ Use a wallet you already have ${expBadge}</h3>
+      <p class="hint" style="margin-top:8px">MetaMask, Phantom, OKX & friends can’t hold DGB — but one signature from them derives a DigiByte wallet that lives here. No new seed phrase today. ${COPY.perAccount}</p>
+      ${ noExt ? emptyStateHtml() : ANNOUNCED.map((w,i) =>
+        `<button class="pk-row" data-pick="${i}"><span class="pk-ic">${w.ic}</span>
+          <span style="text-align:left"><span class="pk-name">${w.name}</span><br/>
+          <span class="pk-sub">${w.kind==='sol' ? 'Solana · Ed25519 signature' : 'Ethereum-style · personal_sign'}</span></span></button>`).join('') }
+    </div>
+    <div class="card"><h2>Or start fresh</h2>${choiceButtons()}</div>`;
+  app.querySelectorAll('[data-pick]').forEach(el => el.onclick = () => startCeremony(ANNOUNCED[el.dataset.pick], renderC));
+}
+
+/* ---------- switcher ---------- */
+function render() {
+  state = {};
+  $('fakepop').style.display = 'none';
+  ({A:renderA, B:renderB, C:renderC})[variant]();
+  $('pb-label').textContent = `${variant} — ${VARIANTS[variant]}`;
+}
+function setVariant(v) {
+  variant = v;
+  const u = new URL(location); u.searchParams.set('variant', v);
+  history.replaceState(null, '', u);
+  render();
+}
+const order = ['A','B','C'];
+$('pb-prev').onclick = () => setVariant(order[(order.indexOf(variant)+2)%3]);
+$('pb-next').onclick = () => setVariant(order[(order.indexOf(variant)+1)%3]);
+document.addEventListener('keydown', (e) => {
+  if (/INPUT|TEXTAREA/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable) return;
+  if (e.key==='ArrowLeft') $('pb-prev').click();
+  if (e.key==='ArrowRight') $('pb-next').click();
+});
+$('empty-toggle').onclick = () => { noExt = !noExt; render(); };
+render();
+</script>
+</body>
+</html>
