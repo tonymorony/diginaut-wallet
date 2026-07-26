@@ -200,6 +200,10 @@ const SERVER_REFUSALS = [
   /^invalid JSON body$/,
   /^refusing to serve: this deployment expects chain/,
   /^no indexer configured$/,
+  // #H4's own refusals — the limiter answers BEFORE touching the node, so a
+  // rate-limited or oversized broadcast definitely never left this server.
+  /^request body too large/,
+  /^too many requests — /,
 ];
 
 /** Was this a node VERDICT, or did we simply never hear back?

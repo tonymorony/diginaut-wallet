@@ -204,6 +204,10 @@ test('server-side refusals are definite — nothing was broadcast', () => {
   assert.equal(kindOf(new Error('invalid JSON body')), 'reject');
   assert.equal(kindOf(new Error('refusing to serve: this deployment expects chain "test"')), 'reject');
   assert.equal(kindOf(new Error('no indexer configured')), 'reject');
+  // #H4's own limiter answers before the request reaches the node, so these two
+  // are definite too — verbatim from server.js (413 and 429), em dash included
+  assert.equal(kindOf(new Error('request body too large (limit 65536 bytes)')), 'reject');
+  assert.equal(kindOf(new Error('too many requests — this server limits how often one client may call the node; retry in 12s')), 'reject');
 });
 
 test('an already-known transaction is success, not failure', () => {

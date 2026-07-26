@@ -136,9 +136,19 @@ async function sendAndClassify(hex, txid) {
     }
     if (txid) broadcastLog.markAmbiguous(txid, c.message);
     renderRecoveryCard();
+    // The panel can only be named if the journal actually holds the record:
+    // record()/markAmbiguous are best-effort, and a quota-full or private-mode
+    // storage keeps nothing. When it kept nothing, the error itself must carry
+    // the one thing that still recovers the situation — the signed bytes.
+    const journalled = txid !== null && broadcastLog.get(txid) !== null;
     const e = new Error('The node did not answer, so this transaction MAY ALREADY have been broadcast. '
       + 'Do not rebuild and send it again — that would create a second, conflicting transaction over the same '
-      + 'coins. Use “Check status” or “Rebroadcast” in the Unconfirmed broadcast panel above. '
+      + 'coins. '
+      + (journalled
+        ? 'Use “Check status” or “Rebroadcast” in the Unconfirmed broadcast panel above. '
+        : 'This browser could not save a recovery record, so copy the raw transaction below and keep it: '
+          + 'a block explorer’s broadcast form re-sends the identical bytes, and searching its ID there '
+          + 'tells you whether it already confirmed. Raw transaction: ' + hex + ' ')
       + `(${c.message})`);
     e.ambiguousTxid = txid;
     e.ambiguous = true;
@@ -579,6 +589,11 @@ function show(state) {
   // (only once the chain is known — before that "syncing" would be a lie)
   $('loading-veil').style.display =
     open && appConfig.indexer && chainState.netKnown && $('w-money').style.display === 'none' ? 'block' : 'none';
+  // The recovery card is a sibling of every wallet surface on purpose (it must
+  // outlive lock, autolock and switch), but its ROW TITLES depend on the lock
+  // state — so the one funnel every state transition goes through has to
+  // re-render it, or the summary stays on screen behind the lock.
+  renderRecoveryCard();
 }
 
 // The price block lives inside the hero card while connected (chart right
@@ -1807,6 +1822,10 @@ function beginBackupCeremony(id, mnemonic, { mandatory = false } = {}) {
 }
 $('w-backup-show').addEventListener('click', () => { renderBackupGrid(true); armSeedHide(); });
 $('w-backup-continue').addEventListener('click', () => { buildQuiz(); setConnectMode('quiz'); });
+// The only route back out of the quiz on a sealed ceremony (#C3): mode + regrid
+// is the established re-entry pair (setConnectMode wipes the word nodes but not
+// `ceremony`, so the words are still there to re-render, blurred).
+$('w-quiz-back').addEventListener('click', () => { setConnectMode('backup'); renderBackupGrid(false); });
 
 // Quiz: 3 slots at distinct random indices (ascending); chips are ONLY the 3
 // removed words + 6 random decoys — never the full seed in legible plaintext.
@@ -3587,6 +3606,15 @@ function recoveryRowHtml(txid, title, line, rec) {
     </div>`;
 }
 
+/** The card deliberately outlives lock, autolock and wallet switch — but the
+ *  summary carries the amount and the counterparty ("1,234.5 DGB to dgb1q…"),
+ *  and locking used to take every balance and every address off screen. Behind
+ *  the lock the row falls back to the bare kind: still enough to know WHICH
+ *  transaction is unresolved and to act on it, without the shoulder-surfable
+ *  detail. (The signed hex sits in localStorage either way — this is a
+ *  lock-screen regression to close, not a new secret.) */
+const recoveryTitle = (r) => (vault.status === 'unlocked' ? (r.summary || r.kind) : r.kind);
+
 function renderRecoveryCard() {
   const card = $('w-recovery');
   // netKnown gate: the record is chain-scoped, and before the node names its
@@ -3602,8 +3630,10 @@ function renderRecoveryCard() {
     return;
   }
   $('w-recovery-list').innerHTML = [
-    ...recs.map((r) => recoveryRowHtml(r.txid, r.summary || r.kind, recoveryStatus.get(r.txid)?.line ?? r.lastError ?? '', r)),
-    ...resolved.map(([txid, s]) => recoveryRowHtml(txid, s.summary, s.line, null)),
+    ...recs.map((r) => recoveryRowHtml(r.txid, recoveryTitle(r), recoveryStatus.get(r.txid)?.line ?? r.lastError ?? '', r)),
+    // a verdict captured while unlocked must not put the summary back on screen
+    // once the wallet locks, so the resolved row keeps both titles and picks
+    ...resolved.map(([txid, s]) => recoveryRowHtml(txid, recoveryTitle(s), s.line, null)),
   ].join('');
   card.style.display = 'block';
 }
@@ -3617,8 +3647,9 @@ $('w-recovery-list').addEventListener('click', (e) => {
   if (d.recDismiss) { broadcastLog.drop(txid); recoveryStatus.delete(txid); renderRecoveryCard(); return; }
   const rec = broadcastLog.get(txid);
   if (!rec) { renderRecoveryCard(); return; } // another tab resolved it
-  const title = rec.summary || rec.kind;
-  const note = (line) => recoveryStatus.set(txid, { line, summary: title });
+  // both titles, because the verdict outlives the record AND the unlocked
+  // session that produced it — renderRecoveryCard picks per lock state
+  const note = (line) => recoveryStatus.set(txid, { line, summary: rec.summary, kind: rec.kind });
   if (d.recCopy) {
     // the way out when this deployment's node is the broken hop: the signed
     // bytes are self-contained and any explorer's broadcast form will take them

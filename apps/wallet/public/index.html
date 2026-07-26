@@ -674,6 +674,11 @@
         <div class="quiz-slots" id="w-quiz-slots"></div>
         <div class="quiz-chips" id="w-quiz-chips"></div>
         <button id="w-quiz-verify">Verify</button>
+        <!-- The way BACK when the words weren't written down: on a sealed
+             (mainnet/unknown-chain) ceremony every dismiss route is gated, so
+             without this the quiz is a dead end whose only exit is F5 (#C3).
+             Going backwards INTO the ceremony is not a skip. -->
+        <button id="w-quiz-back" class="secondary">Show the words again</button>
         <div class="err" id="w-quiz-err"></div>
       </div>
       <div id="w-backup-success" style="display:none;text-align:center;padding:16px 0 4px">
