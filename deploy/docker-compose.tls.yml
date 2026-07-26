@@ -19,6 +19,14 @@ services:
     restart: unless-stopped
 
   wallet:
+    environment:
+      # #H4: Caddy is the socket peer for every request, so without this the
+      # per-IP limiter buckets the whole internet into one key — the first
+      # ~120 RPCs/min serve everyone and every other user gets 429.
+      TRUST_PROXY: "1"
+      # #M3: Caddy terminates TLS here, so the browser can be told to stay on
+      # https. Harmless on the container's plain-http hop (RFC 6797 §7.2).
+      HSTS: "1"
     # with Caddy in front, the wallet itself stays off the public interface
     ports: !override
       - "127.0.0.1:8791:8791"

@@ -152,6 +152,29 @@ Guard rails, on by default:
   backend swap can't leak even one wrong-chain price into the history. The
   guard probes every 5 s until first confirmation, then every minute — fixing
   the backend clears the block without a restart.
+- **Request caps** — the wallet proxy caps request bodies (`MAX_RPC_BODY_BYTES`,
+  default 1 MiB; `MAX_FAUCET_BODY_BYTES`, 16 KiB → `413`) and applies a
+  fixed-window per-IP budget to `/api/rpc` (120/min), `/api/indexer/*`
+  (6000/min) and `/api/faucet/claim` (20/min) → `429` with `Retry-After`.
+  Static assets, `/api/config` and `/api/price-history` are never limited so
+  cold page loads and boot still work. Any budget set to `0` is unlimited.
+  Keep the indexer budget generous: a restored wallet polls
+  `(address index + 3) × 6` reads every 8 s, so a low cap makes the wallet
+  rate-limit itself. **`TRUST_PROXY`** decides where the client address comes
+  from — `1` reads the last `X-Forwarded-For` element (the one Caddy appends),
+  which the TLS and dual overlays set for you. Leave it off when the wallet
+  port is published directly: a header the client can write is a free bypass.
+  It also fixes the Faucet cooldown, which behind a proxy previously saw one
+  address for the entire deployment (one claim per 24 h for everybody).
+- **HSTS on TLS deployments** — the TLS and dual overlays set `HSTS=1`, which
+  adds `Strict-Transport-Security: max-age=15552000; includeSubDomains`
+  (180 days) to every response, so a key-holding page can't be downgraded to
+  plain HTTP on a hostile network. No `preload` — that is an irreversible,
+  browser-vendor-list commitment you opt into yourself. Set on the app rather
+  than in the Caddyfile so self-hosters terminating TLS elsewhere (nginx, a
+  Cloudflare tunnel) get it too. Leave it **off** for plain-http or localhost
+  hosting; `includeSubDomains` also forces https on every sibling name under
+  the same parent, which matters if you host an unrelated http subdomain.
 - **No mainnet faucet** — `wallet-main` simply has no `FAUCET_URL`.
 - **Per-network price history** — each wallet persists its series in its own
   volume (`wallet-data` / `wallet-main-data`).

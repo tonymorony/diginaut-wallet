@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { startServer } from '../server.js';
+import { startServer, importmapCspHash } from '../server.js';
 
 async function withServer(fn) {
   const server = startServer({ port: 0 }); // mock mode: no RPC creds passed
@@ -32,6 +32,9 @@ test('sets a strict Content-Security-Policy and hardening headers on every respo
     assert.match(csp, /frame-ancestors 'none'/);
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+    // #M3: HSTS is opt-in (HSTS=1) — pinned here so the default can never flip
+    // silently and poison a developer's http://localhost origin.
+    assert.equal(res.headers.get('strict-transport-security'), null);
   });
 });
 
@@ -45,6 +48,17 @@ test('the CSP script-src hash matches the inline importmap in index.html — no 
     const csp = (await fetch(base + '/')).headers.get('content-security-policy');
     assert.ok(csp.includes(hash), `CSP must carry the current importmap hash ${hash}`);
   });
+});
+
+// The drift test above recomputes the hash with the SAME expression the server
+// uses, so both sides move together and it is structurally incapable of failing
+// on a CRLF checkout. This one feeds the function bytes directly (#L7).
+test('the importmap CSP hash is CRLF-invariant — a Windows checkout still boots (#L7)', () => {
+  const lf = '<script type="importmap">\n{ "imports": {} }\n</script>';
+  const crlf = lf.replace(/\n/g, '\r\n');
+  const cr = lf.replace(/\n/g, '\r');
+  assert.equal(importmapCspHash(crlf), importmapCspHash(lf));
+  assert.equal(importmapCspHash(cr), importmapCspHash(lf));
 });
 
 test('proxies allow-listed read RPCs (mock mode)', async () => {
@@ -629,4 +643,241 @@ test('config reports the build version (semver + commit stamp)', async () => {
     // working tree: git supplies "<sha> <date>"; archive: export-subst; else "dev"
     assert.match(cfg.version, /^v\d+\.\d+\.\d+\+\S/);
   });
+});
+
+// ---- H4: body caps + per-IP rate limits on the proxy ----
+// Every test starts its own server, so limiter state never crosses tests.
+
+// start a server with overrides and hand the test its base URL
+async function withConfiguredServer(overrides, fn) {
+  const server = startServer({ port: 0, ...overrides });
+  await once(server, 'listening');
+  try {
+    await fn(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    server.close();
+  }
+}
+
+const postRpc = (base, body, headers = {}) => fetch(base + '/api/rpc', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', ...headers },
+  body: JSON.stringify(body),
+});
+
+test('refuses an oversized RPC body with 413 (#H4)', async () => {
+  await withConfiguredServer({ maxBodyBytes: { rpc: 64 } }, async (base) => {
+    const big = await postRpc(base, { method: 'sendrawtransaction', params: ['ab'.repeat(200)] });
+    assert.equal(big.status, 413);
+    assert.match((await big.json()).error, /too large/);
+    // the same endpoint still works under the cap — the merge kept the other budgets
+    const ok = await postRpc(base, { method: 'getblockchaininfo' });
+    assert.equal(ok.status, 200);
+  });
+});
+
+test('counts BYTES while streaming — a chunked body with no content-length still 413s (#H4)', async () => {
+  await withConfiguredServer({ maxBodyBytes: { rpc: 64 } }, async (base) => {
+    const body = new ReadableStream({
+      start(c) {
+        for (let i = 0; i < 10; i++) c.enqueue(new TextEncoder().encode('x'.repeat(64)));
+        c.close();
+      },
+    });
+    const res = await fetch(base + '/api/rpc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      duplex: 'half', // Node 22 requires this for a stream body
+    });
+    assert.equal(res.status, 413);
+  });
+});
+
+test('the faucet body cap runs BEFORE the upstream call (#H4)', async () => {
+  const { createServer } = await import('node:http');
+  const hits = [];
+  const faucet = createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    hits.push({ url: req.url, body: raw });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ txid: 'a'.repeat(64) }));
+  });
+  await new Promise((r) => faucet.listen(0, r));
+  const faucetUrl = `http://127.0.0.1:${faucet.address().port}`;
+  try {
+    await withConfiguredServer({ faucetUrl, maxBodyBytes: { faucet: 32 } }, async (base) => {
+      const res = await fetch(base + '/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: 'dgbrt1q' + 'z'.repeat(180) }),
+      });
+      assert.equal(res.status, 413);
+      assert.equal(hits.length, 0, 'nothing was forwarded to the Faucet');
+    });
+  } finally {
+    faucet.close();
+  }
+});
+
+test('spends the RPC budget then answers 429 with retry-after (#H4)', async () => {
+  await withConfiguredServer({ rateLimit: { rpc: 3 } }, async (base) => {
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 200, `call ${i + 1}`);
+    }
+    const limited = await postRpc(base, { method: 'getblockchaininfo' });
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get('retry-after')) > 0, 'retry-after seconds');
+    const body = await limited.json();
+    assert.ok(body.retryAfterMs > 0);
+    assert.match(body.error, /too many requests/);
+  });
+});
+
+test('budgets are per-bucket; static, config and price-history are never limited (#H4)', async () => {
+  const { createServer } = await import('node:http');
+  const indexer = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ address: 'x', utxos: [] }));
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  const indexerUrl = `http://127.0.0.1:${indexer.address().port}`;
+  try {
+    await withConfiguredServer({ rateLimit: { rpc: 1 }, indexerUrl }, async (base) => {
+      assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 200);
+      assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 429);
+      // a spent RPC budget must not touch the other routes
+      assert.equal((await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos')).status, 200);
+      assert.equal((await fetch(base + '/api/config')).status, 200);
+      assert.equal((await fetch(base + '/api/price-history')).status, 200);
+      assert.equal((await fetch(base + '/')).status, 200); // a cold page load pulls ~50 files
+    });
+  } finally {
+    indexer.close();
+  }
+});
+
+test('the fixed window rolls over and refills the budget (#H4)', async () => {
+  let t = 1_000_000;
+  await withConfiguredServer({ now: () => t, rateLimit: { rpc: 1 } }, async (base) => {
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 200);
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 429);
+    t += 60_000; // next window
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 200);
+  });
+});
+
+test('a budget of 0 is unlimited — the escape hatch the CDP drivers use (#H4)', async () => {
+  await withConfiguredServer({ rateLimit: { rpc: 0 } }, async (base) => {
+    for (let i = 0; i < 25; i++) {
+      assert.equal((await postRpc(base, { method: 'getblockchaininfo' })).status, 200, `call ${i + 1}`);
+    }
+  });
+});
+
+test('x-forwarded-for is ignored unless TRUST_PROXY, and then the LAST element wins (#H4)', async () => {
+  // untrusted: a forged header must not mint a fresh budget per request
+  await withConfiguredServer({ rateLimit: { rpc: 1 } }, async (base) => {
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' }, { 'x-forwarded-for': '1.1.1.1' })).status, 200);
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' }, { 'x-forwarded-for': '2.2.2.2' })).status, 429);
+  });
+  // trusted: Caddy APPENDS the peer it saw, so only the last element is real
+  await withConfiguredServer({ trustProxy: true, rateLimit: { rpc: 1 } }, async (base) => {
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' }, { 'x-forwarded-for': '9.9.9.9, 1.2.3.4' })).status, 200);
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' }, { 'x-forwarded-for': '9.9.9.9, 1.2.3.4' })).status, 429);
+    // same spoofable left element, different real peer → its own budget
+    assert.equal((await postRpc(base, { method: 'getblockchaininfo' }, { 'x-forwarded-for': '9.9.9.9, 5.6.7.8' })).status, 200);
+  });
+});
+
+test('the faucet proxy forwards the resolved client address, not the proxy socket (#H4)', async () => {
+  const { createServer } = await import('node:http');
+  const seen = [];
+  const faucet = createServer(async (req, res) => {
+    for await (const _c of req) { /* drain */ }
+    seen.push(req.headers['x-forwarded-for']);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ txid: 'a'.repeat(64) }));
+  });
+  await new Promise((r) => faucet.listen(0, r));
+  const faucetUrl = `http://127.0.0.1:${faucet.address().port}`;
+  try {
+    await withConfiguredServer({ faucetUrl, trustProxy: true }, async (base) => {
+      const res = await fetch(base + '/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': '9.9.9.9, 1.2.3.4' },
+        body: JSON.stringify({ address: 'dgbrt1q...' }),
+      });
+      assert.equal(res.status, 200);
+      // the Faucet keys its 24h cooldown off the FIRST element it receives, so
+      // exactly one address must arrive — and it must be the real peer
+      assert.deepEqual(seen, ['1.2.3.4']);
+    });
+  } finally {
+    faucet.close();
+  }
+});
+
+test('a 429 costs the upstream nothing (#H4)', async () => {
+  const { createServer } = await import('node:http');
+  const hits = [];
+  const indexer = createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ address: 'x', utxos: [] }));
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  const indexerUrl = `http://127.0.0.1:${indexer.address().port}`;
+  try {
+    await withConfiguredServer({ rateLimit: { indexer: 1 }, indexerUrl }, async (base) => {
+      assert.equal((await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos')).status, 200);
+      const limited = await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos');
+      assert.equal(limited.status, 429);
+      assert.match((await limited.json()).error, /balance index/); // CONTEXT.md-free UI wording
+      assert.equal(hits.length, 1, 'the limiter ran before the upstream fetch');
+    });
+  } finally {
+    indexer.close();
+  }
+});
+
+// ---- M3: HSTS on TLS deployments ----
+
+test('no HSTS by default — the wallet also runs on plain-http localhost (#M3)', async () => {
+  await withServer(async (base) => {
+    assert.equal((await fetch(base + '/')).headers.get('strict-transport-security'), null);
+    assert.equal((await fetch(base + '/api/config')).headers.get('strict-transport-security'), null);
+  });
+});
+
+test('HSTS=1 adds Strict-Transport-Security to every response (#M3)', async () => {
+  await withConfiguredServer({ hsts: true }, async (base) => {
+    const expected = 'max-age=15552000; includeSubDomains';
+    assert.equal((await fetch(base + '/')).headers.get('strict-transport-security'), expected, 'static');
+    assert.equal((await fetch(base + '/api/config')).headers.get('strict-transport-security'), expected, 'json');
+    // and on an error response — sendJson()'s writeHead must not drop it
+    const denied = await postRpc(base, { method: 'sendtoaddress' });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers.get('strict-transport-security'), expected, '4xx');
+    // no preload: that is an irreversible browser-vendor-list commitment
+    assert.doesNotMatch(expected, /preload/);
+    // the existing hardening headers are untouched
+    assert.match((await fetch(base + '/')).headers.get('content-security-policy'), /script-src 'self' 'sha256-/);
+  });
+});
+
+test('HSTS is per-server, not process-global — one instance must not leak into another (#M3)', async () => {
+  const tls = startServer({ port: 0, hsts: true });
+  const plain = startServer({ port: 0 });
+  await Promise.all([once(tls, 'listening'), once(plain, 'listening')]);
+  try {
+    const tlsRes = await fetch(`http://127.0.0.1:${tls.address().port}/`);
+    const plainRes = await fetch(`http://127.0.0.1:${plain.address().port}/`);
+    assert.equal(tlsRes.headers.get('strict-transport-security'), 'max-age=15552000; includeSubDomains');
+    assert.equal(plainRes.headers.get('strict-transport-security'), null);
+  } finally {
+    tls.close();
+    plain.close();
+  }
 });
