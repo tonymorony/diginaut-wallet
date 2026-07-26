@@ -5,14 +5,21 @@
 // send / send-max / fiat flows locally without a regtest node + ElectrumX.
 //
 // Usage:
-//   PORT=8799 TIP=100000 node apps/wallet/scripts/fake-indexer.mjs &
+//   PORT=8799 node apps/wallet/scripts/fake-indexer.mjs &
 //   curl -XPOST 127.0.0.1:8799/__fund -d '{"address":"dgb1…","utxos":[{"txid":"aa..","vout":0,"valueSats":"30000000000","height":100}]}'
+//   curl -XPOST 127.0.0.1:8799/__tip  -d '{"tip":284512}'   # make the index look behind
 //
 // Then run the wallet with INDEXER_URL=http://127.0.0.1:8799.
 import { createServer } from 'node:http';
 
 const PORT = Number(process.env.PORT) || 8799;
-const TIP = Number(process.env.TIP) || 100_000;
+// Default matches the mock node's `blocks` (server.js getblockchaininfo). A
+// lower default makes the wallet think the index is ~1.2M blocks behind and
+// paint the stale-tip warning on every confirm screen (#H5), poisoning
+// screenshots and any confirm-screen assertion. Drivers that WANT the warning
+// set TIP explicitly or POST /__tip.
+const TIP_DEFAULT = 1_284_512;
+let tip = Number(process.env.TIP) || TIP_DEFAULT;
 const funded = new Map(); // address -> { utxos, ddCents, ddUtxos }
 let failing = false; // fault injection: make every address read answer 503
 
@@ -41,6 +48,18 @@ createServer(async (req, res) => {
     failing = JSON.parse(raw || '{}').on !== false;
     return json(res, 200, { ok: true, failing });
   }
+  // Control endpoint: move the served tip at runtime, so a driver can prove the
+  // stale-index warning (#H5) both appears when the index falls behind the node
+  // AND clears when it catches up — the second half is what a fixture-only lag
+  // can never show.
+  if (req.method === 'POST' && req.url === '/__tip') {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const next = Number(JSON.parse(raw || '{}').tip);
+    if (!Number.isInteger(next)) return json(res, 400, { error: 'tip must be an integer' });
+    tip = next;
+    return json(res, 200, { ok: true, tip });
+  }
 
   const m = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions|dd-utxos)$/);
   if (!m) return json(res, 404, { error: 'unknown path' });
@@ -56,6 +75,6 @@ createServer(async (req, res) => {
     for (const u of entry.utxos) if (!seen.has(u.txid)) seen.set(u.txid, u.height);
     return json(res, 200, { address, history: [...seen].map(([txid, height]) => ({ txid, height })) });
   }
-  if (what === 'positions') return json(res, 200, { address, positions: [], tipHeight: TIP });
+  if (what === 'positions') return json(res, 200, { address, positions: [], tipHeight: tip });
   if (what === 'dd-utxos') return json(res, 200, { address, totalCents: entry.ddCents, utxos: entry.ddUtxos });
-}).listen(PORT, () => console.log(`fake-indexer on :${PORT} (tip ${TIP})`));
+}).listen(PORT, () => console.log(`fake-indexer on :${PORT} (tip ${tip})`));

@@ -5,10 +5,11 @@
 // errors for stale-oracle, insufficient and fragmented funds. Setup: same as
 // verify-send.mjs.
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500';
 
 async function nodeRpc(method, params = [], wallet) {

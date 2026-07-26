@@ -11,11 +11,12 @@
 //     --remote-debugging-port=9224 --user-data-dir=$(mktemp -d) --no-first-run about:blank &
 //   node apps/wallet/scripts/verify-fiat-sendmax.mjs      # exit 0 = all checks green
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CDP_PORT = Number(process.env.CDP_PORT) || 9224;
 const APP = process.env.APP || 'http://127.0.0.1:8798';
 const INDEXER = process.env.INDEXER || 'http://127.0.0.1:8799';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 
 const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json();
 const ws = new WebSocket(webSocketDebuggerUrl);

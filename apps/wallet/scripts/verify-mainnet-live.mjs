@@ -7,8 +7,9 @@
 //   2. Browser: RED mainnet banner + MAINNET pill, and the one-time BLOCKING
 //      mainnet acknowledgment interstitial appears and can be accepted.
 //   3. A THROWAWAY wallet (keys client-side only, zero funds): the v2 backup
-//      ceremony overlays create (blur + Tap to reveal), skip via
-//      "Remind me later", "Not backed up" badge shows.
+//      ceremony overlays create (blur + Tap to reveal) and on mainnet is
+//      SEALED (#C3) — no "Remind me later", no Close; "Not backed up" badge
+//      shows until the quiz is passed (which happens after step 4).
 //   4. Receive: dgb1p… mainnet address on m/86'/20'/0'/0/0, DD… interop
 //      address, and the backup interception fires on the unbacked wallet.
 //   5. Beta posture, fund-free: mint UI surfaces the $100 consensus floor
@@ -23,10 +24,11 @@
 //   node apps/wallet/scripts/verify-mainnet-live.mjs [url]   # exit 0 = all green
 // A FRESH user-data-dir per run is REQUIRED: it gives a fresh IndexedDB (no
 // wallet) and fresh localStorage (the one-time interstitial must appear).
+import { fileURLToPath } from 'node:url';
 import { connectCdp } from './lib/cdp.mjs';
 
 const APP = (process.argv[2] || 'https://diginaut.ludere.space').replace(/\/$/, '');
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC_WARMUP_MS = 3 * 60_000; // node may still be verifying blocks (-28)
 const PASS = 'mainnet live smoke';
 
@@ -142,11 +144,16 @@ const decoys = await grid('w-backup-words');
 await click('w-backup-show');
 const words = (await grid('w-backup-words')).split(' ');
 check(words.length === 12 && words.join(' ') !== decoys, 'Tap to reveal swaps decoys for the real 12 words');
-await click('w-backup-done'); // Remind me later — the badge carries the nag
-await waitFor(`!(${modalOpen('w-connect-modal')})`, 'skip closes the ceremony', 15_000);
+// #C3: on mainnet there is no skip and no close — the coins are real. The
+// ceremony stays open over the already-open wallet; section 4 runs against the
+// still-un-backed-up wallet underneath it, and the quiz is passed after that.
+check(!(await evaluate(visible('w-backup-done'))), 'mainnet ceremony offers no "Remind me later" (#C3)');
+check(await evaluate(`document.getElementById('w-modal-close').style.display === 'none'`),
+  'and Close is not the skip in disguise — the create-time ceremony is sealed');
+check(await evaluate(visible('w-backup-sealed')), 'the sealed ceremony says why, instead of showing a dead end');
 check(await evaluate(visible('w-backup-badge')) && /Not backed up/.test(await evaluate(text('w-backup-badge'))),
-  '"Not backed up" badge shows after the skip');
-await shot('86-live-unbacked-badge.png');
+  '"Not backed up" badge shows while the ceremony is unfinished');
+await shot('86-live-sealed-ceremony.png');
 
 // ================= 4. Receive: mainnet addresses + backup interception =================
 await waitFor(`${text('w-address')}.startsWith('dgb1p')`, 'mainnet address derived', 20_000);
@@ -166,6 +173,27 @@ await waitFor(visible('w-receive-body'), 'Continue anyway shows the address', 10
 check((await evaluate(text('w-address'))) === addr, 'receive view shows the same dgb1p… address');
 await shot('87-live-receive-guard.png');
 await evaluate(`document.getElementById('receive-modal').classList.remove('open')`);
+
+// ---- the sealed ceremony's only exit: pass the quiz (#C3) ----
+// The seal removes the SKIP, not the flow. Done here, after the receive
+// interception above has been proven against the still-un-backed-up wallet.
+await click('w-backup-show');
+const seedWords = (await grid('w-backup-words')).split(' ');
+await click('w-backup-continue');
+await waitFor(visible('w-quiz-view'), 'quiz step', 15_000);
+await evaluate(`{ const words = ${JSON.stringify(seedWords)};
+  const idxs = [...document.querySelectorAll('#w-quiz-slots .qn')].map((e) => Number(e.textContent.match(/\\d+/)[0]) - 1);
+  for (const n of idxs) [...document.querySelectorAll('#w-quiz-chips [data-chip]')].find((c) => !c.disabled && c.textContent === words[n]).click(); }`);
+await click('w-quiz-verify');
+await waitFor(visible('w-backup-success'), 'quiz pass → success beat', 15_000);
+check(await evaluate(visible('w-backup-file')), 'the success beat offers the encrypted backup file (#M1)');
+await click('w-backup-file');
+await waitFor(modalOpen('reauth-modal'), 're-auth gate on the ceremony backup-file download', 15_000);
+check(true, 'the backup-file download is password-gated like the switcher export (#M1)');
+await click('reauth-cancel');
+await click('w-backup-success-done');
+await waitFor(`!(${modalOpen('w-connect-modal')})`, 'ceremony closes on Done', 15_000);
+check(!(await evaluate(visible('w-backup-badge'))), 'the quiz pass clears the "Not backed up" badge');
 
 // ================= 5. Beta posture: $100 mint floor + $500/tx cap, fund-free =================
 // Both mint checks trip validation BEFORE any oracle/funding gate, so a

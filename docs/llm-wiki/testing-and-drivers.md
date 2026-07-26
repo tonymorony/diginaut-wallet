@@ -58,6 +58,15 @@ Last known green: all unit suites + 8 of the 9 regtest drivers (98 checks) vs ma
   `pkill` fake-indexer/server between runs (run-drivers.sh does this).
 - **Faucet is one-claim-per-IP-per-24h** — a second driver in the same stack silently never
   gets funded; restart the faucet with a fresh `FAUCET_DATA_FILE` before each driver.
+- **Stub indexer tips must equal the mock node's `blocks` (`1_284_512`, server.js
+  `getblockchaininfo`)** or the #H5 stale-index warning fires on every confirm screen and
+  poisons screenshots + confirm-screen assertions. `fake-indexer.mjs` defaults to it; inline
+  fixtures (`verify-beta-posture`, `verify-history`, `verify-honest-quotes`) hard-code it;
+  `verify-oracle-bounds` uses its own `HEIGHT` on both sides.
+- `fake-indexer.mjs` control endpoints: `/__fund`, `/__reset`, `/__fail`, and `/__tip`
+  (`{"tip":N}`, moves the served tipHeight at runtime). The warning is written at REVIEW
+  time from the retained 8 s poll state, so after `/__tip` you must **re-review** until it
+  flips — see `verify-send-amount.mjs` §C.
 - Drivers print "Done." even with red checks — grep `❌`, never trust the tail.
 - Never pipe a driver into grep (backgrounded Chrome holds the pipe; shell hangs) —
   redirect to a file, grep the file.
@@ -67,3 +76,11 @@ Last known green: all unit suites + 8 of the 9 regtest drivers (98 checks) vs ma
 - Start headless Chrome with `run_in_background` and **poll the CDP endpoint** before
   driving; a fixed 2 s sleep is not enough.
 - Assert **intent**, never exact UI copy (see agent-workflow.md).
+- The drivers' `click(id)` is `element.click()` over CDP, so it fires on a `display:none`
+  element too. That is why the ~20 mock/testnet `w-backup-done` clicks survived the audit's
+  mainnet skip gate (#C3) — visibility must be asserted explicitly, a passing click proves
+  nothing about whether the button is on screen.
+- Any driver that creates a wallet on a **mainnet or chain-unknown** node must solve the
+  backup quiz to escape the ceremony — there is no skip and no Close there (#C3). Proven
+  snippet: `verify-wallet-mgmt.mjs` §1; already applied in `verify-beta-posture`,
+  `verify-mainnet-bringup`, `verify-mainnet-live`.

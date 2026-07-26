@@ -17,9 +17,10 @@
 //   node apps/wallet/scripts/verify-autolock-default.mjs   # exit 0 = all green
 // A FRESH user-data-dir per run is required (IndexedDB carries the vault).
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { connectCdp } from './lib/cdp.mjs';
 const PORT = 8883;
-const app = spawn('node', [`${new URL('..', import.meta.url).pathname}server.js`], { env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
+const app = spawn('node', [`${fileURLToPath(new URL('..', import.meta.url))}server.js`], { env: { ...process.env, PORT: String(PORT) }, stdio: 'ignore' });
 const APP = `http://127.0.0.1:${PORT}`;
 for (let i = 0; i < 100; i++) { try { await fetch(`${APP}/api/config`); break; } catch { await new Promise((r) => setTimeout(r, 100)); } }
 let b;

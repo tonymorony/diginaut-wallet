@@ -22,7 +22,7 @@ const now = Math.floor(Date.now() / 1000);
 const EXT_Y = 'dgbt1qpayee00000000000000000000000000payee0';
 const EXT_X = 'dgbt1qsender0000000000000000000000000sendr0';
 const EXT_COLL = 'dgbt1qcollateral0000000000000000000000coll0';
-const TIP = 1000;
+const TIP = 1_284_512; // = the mock node's `blocks`, or every confirm screen carries the stale-index warning (#H5)
 const tx32 = (p) => p.repeat(64).slice(0, 64);
 
 let WALLET = null;

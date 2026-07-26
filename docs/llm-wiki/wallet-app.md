@@ -76,9 +76,43 @@ Verified: 2026-07-26 @ `7247899` (branch `build/connect-wallet-130`).
 - CSP is derived from the real index.html importmap hash; changing the importmap fails loudly.
   No unsafe-inline; every `innerHTML` sink goes through `esc()`.
 
+## Backup & browser storage (external audit, branch `audit/2026-07-26-external-audit`)
+
+- `public/persistence.js` — pure, deps-injected (StorageManager + Storage), node-testable:
+  `readPersistence` (**never** prompts — the boot probe) vs `ensurePersistence` (may prompt —
+  only from a gesture: vault create, unlock), `persistenceCopy` → `{level,label,detail}`
+  mapping onto `.dot.good/.bad/.warn`, and the tombstone helpers over
+  `HAD_VAULT_KEY = 'diginaut.hadVault'`. Never `await` `probePersistence({request:true})` on a
+  create/unlock path — a denied or slow browser prompt would freeze `busy()` (#C2).
+- **localStorage keys are now three**: `diginaut.autolock`, `diginaut-mainnet-ack`,
+  `diginaut.hadVault`. The tombstone is written wherever a vault exists (create, add-wallet,
+  unlock, boot-with-vault) and cleared by **exactly two** deliberate erase paths —
+  `w-erase-go` and last-wallet removal — always **before** `show('none')`. It must NOT be
+  cleared by `vault.js`'s v1→v2 `deleteKeystore()`: a vault still exists there. Tombstone +
+  no vault ⇒ the guest hero swaps `#hero-guest-copy` for `#hero-recovery` and the CTA reads
+  "Restore a wallet" (keyed on `state === 'none'` only — the same hero also serves `locked`).
+- Backup strip escalates on `persistState?.persisted !== true` (unknown counts as evictable),
+  so it now nags at **zero balance**; the per-session dismiss is what keeps that bearable.
+- `backupSkipAllowed(chain)` in `netchrome.js` is an **allow-list** (`test`/`testnet`/
+  `regtest`) — mainnet *and an unknown chain* fail strict, the inverse of `betaCapError`'s
+  warn-allow. Always gate on `gateChain()` (`netKnown ? netName : null`), never
+  `chainState.netName` — that defaults to the string `'testnet'`.
+- Sealing the ceremony means all three dismiss routes: `#w-backup-done`, `#w-modal-close`,
+  backdrop. `closeConnectModal()` itself stays **unguarded** (lock/switch/autolock teardown);
+  the guard lives in `requestCloseConnectModal()`. Only the create-time ceremony is
+  `mandatory` — re-entry stays dismissible. `renderBackupSkipGate()` re-runs when the node
+  names its chain, so a slow node does not permanently seal a testnet ceremony.
+- `onModalClosed` tears down **every** draft (send **and** transfer, mint, consolidate) —
+  each holds per-UTXO private keys and an armed confirm screen; `act-send`/`act-mint`/
+  `dd-mint-open` also reset before opening (#L3).
+- `?autolockSecs=` requires `appConfig.loaded && appConfig.mock` and is capped at 600 s —
+  `appConfig.mock` defaults to `true` before `/api/config` answers, so the bare check failed
+  open on a live deployment with a flaky config fetch (#L10).
+
 ## Tests
 
 On `main`: 8 unit suites (~93 tests) under `test/`, `npm test` — server (CSP/allow-list/
 proxy/price/guard), vault (migration, CAS, receive-index), vendor-integrity, keystore,
 netchrome, dderrors, dca, autolock. Branch #130 adds `connect.test.js` (protocol pins) →
-9 suites. Drivers: see testing-and-drivers.md.
+9 suites. The audit branch adds `persistence.test.js` and extends `netchrome.test.js`
+(`backupSkipAllowed`). Drivers: see testing-and-drivers.md.

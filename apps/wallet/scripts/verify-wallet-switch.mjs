@@ -22,16 +22,17 @@
 //   node apps/wallet/scripts/verify-wallet-switch.mjs   # exit 0 = all green
 // A FRESH user-data-dir per run is required (IndexedDB carries the vault).
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { connectCdp } from './lib/cdp.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const IDX_PORT = Number(process.env.IDX_PORT) || 8867;
 const APP_PORT = Number(process.env.APP_PORT) || 8866;
 const PASS = 'wallet switch driver';
 const A_TXID = 'a'.repeat(64); // recognisable in the Activity list
 
 const idx = spawn('node', [`${ROOT}scripts/fake-indexer.mjs`], {
-  env: { ...process.env, PORT: String(IDX_PORT), TIP: '100000' }, stdio: 'ignore',
+  env: { ...process.env, PORT: String(IDX_PORT), TIP: '1284512' }, stdio: 'ignore',
 });
 const app = spawn('node', [`${ROOT}server.js`], {
   env: { ...process.env, PORT: String(APP_PORT), INDEXER_URL: `http://127.0.0.1:${IDX_PORT}` }, stdio: 'ignore',

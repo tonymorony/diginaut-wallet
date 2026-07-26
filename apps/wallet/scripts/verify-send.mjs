@@ -8,10 +8,11 @@
 //     --remote-debugging-port=9224 --user-data-dir=$(mktemp -d) --no-first-run about:blank &
 //   node apps/wallet/scripts/verify-send.mjs        # exit 0 = all checks green
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500';
 
 async function nodeRpc(method, params = [], wallet) {

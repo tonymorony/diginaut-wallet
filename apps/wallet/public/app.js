@@ -14,10 +14,17 @@ import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
 import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { networkChrome, betaCapError } from '/netchrome.js';
+import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
-import { friendlyDDError, MINT_FREEZE_EXPLANATION } from '/dderrors.js';
+import { MINT_FREEZE_EXPLANATION } from '/dderrors.js';
+import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/broadcastlog.js';
 import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
+import { ensurePersistence, readPersistence, persistenceCopy, markHadVault, clearHadVault, hadVault } from '/persistence.js';
+import { NET_TIMEOUT_MS, isTimeoutError, timeoutMessage } from '/nettimeout.js';
+import {
+  validateUtxosResponse, validateHistoryResponse, validatePositionsResponse,
+  validateDdUtxosResponse, validateTxDetail,
+} from '/validate.js';
 import qrcode from 'qrcode-generator';
 
 const $ = (id) => document.getElementById(id);
@@ -35,11 +42,41 @@ const ORACLE_MAX_PRICE_MICRO_USD = 100_000_000n; // $100 / DGB
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** Every frontend fetch goes through here (#H1). A bare fetch against a stalled
+ *  hop never settles: busy() only re-enables its button in `finally`, and every
+ *  poll chain awaits before rescheduling — so one hung socket disables the UI
+ *  and stops the wallet updating for the rest of the session.
+ *  The ONLY mechanism is `AbortSignal.timeout` handed to fetch as init.signal —
+ *  never a Promise.race wrapper, which would leave the socket open and would not
+ *  survive the drivers that monkeypatch window.fetch and forward ...args. */
+async function apiFetch(url, { budget = NET_TIMEOUT_MS.rpc, what = 'the wallet server', ...init } = {}) {
+  try {
+    // Defaulted above on purpose: AbortSignal.timeout(undefined) coerces to 0
+    // and aborts the request instantly, so a forgotten budget would break the
+    // call site rather than merely leaving it unbudgeted.
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(budget) });
+  } catch (err) {
+    // The flag, not the copy, is the machine-readable outcome: the broadcast
+    // classifier keys off it, so a copy edit here can never silently reclassify
+    // an ambiguous broadcast as a definite failure.
+    if (isTimeoutError(err)) {
+      const e = new Error(timeoutMessage(what));
+      e.transport = 'timeout';
+      throw e;
+    }
+    const e = new Error(`could not reach ${what} (${err.message})`);
+    e.transport = 'network';
+    throw e;
+  }
+}
+
 async function rpc(method, params = []) {
-  const res = await fetch('/api/rpc', {
+  const res = await apiFetch('/api/rpc', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ method, params }),
+    budget: NET_TIMEOUT_MS.rpc,
+    what: 'the node',
   });
   const json = await res.json();
   if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
@@ -49,13 +86,63 @@ async function rpc(method, params = []) {
 const fmtDGB = (n) => n.toLocaleString('en-US', { maximumFractionDigits: 2 });
 const fmtUSD = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// Records live in localStorage and outlive the tab: a crash between signing and
+// the node's answer must still leave a trace of what was signed (#C1).
+const broadcastLog = createBroadcastLog();
+
 // sendrawtransaction with Core's consensus reject strings translated (#62) —
-// "minting-frozen-volatility" is not an error a human can act on.
-async function broadcastTx(hex) {
+// "minting-frozen-volatility" is not an error a human can act on — and with the
+// signed bytes journalled first (#C1). `meta` is display-only: { kind, summary }.
+async function broadcastTx(hex, meta = { kind: 'send', summary: '' }) {
+  let txid = null;
+  try { txid = txidFromSignedHex(hex); } catch { /* never block a broadcast on the local txid */ }
+  if (txid) {
+    broadcastLog.record({
+      txid, hex, kind: meta.kind, summary: String(meta.summary || ''),
+      chain: chainState.netName, walletId: wallet.id, at: Date.now(),
+      state: 'pending', attempts: 1, lastError: null,
+    });
+  }
+  return await sendAndClassify(hex, txid);
+}
+
+/** Send, then decide whether the node actually answered. Shared with the
+ *  recovery card's Rebroadcast, which re-sends the IDENTICAL bytes. */
+async function sendAndClassify(hex, txid) {
   try {
-    return await rpc('sendrawtransaction', [hex]);
+    const nodeTxid = await rpc('sendrawtransaction', [hex]);
+    // A 200 IS mempool acceptance: the ambiguity the record exists to hold is
+    // gone. (The audit asked for records to clear only on confirmation or a
+    // definite reject; keeping one here would park a warning card over every
+    // successful send until it is mined.)
+    if (txid) broadcastLog.drop(txid);
+    renderRecoveryCard();
+    return nodeTxid;
   } catch (err) {
-    throw new Error(friendlyDDError(err.message) ?? err.message);
+    const c = classifyBroadcastError(err);
+    if (c.kind === 'already') {
+      // the node holds these exact bytes — that is the definition of sent
+      if (txid) broadcastLog.drop(txid);
+      renderRecoveryCard();
+      return txid ?? '';
+    }
+    if (c.kind === 'reject') {
+      // Nothing was broadcast, so nothing to recover. The message passes
+      // through UNMODIFIED — dderrors.js already made it human, and prefixing
+      // it would break the honest-quote contract on the mint freeze copy.
+      if (txid) broadcastLog.drop(txid);
+      renderRecoveryCard();
+      throw new Error(c.message);
+    }
+    if (txid) broadcastLog.markAmbiguous(txid, c.message);
+    renderRecoveryCard();
+    const e = new Error('The node did not answer, so this transaction MAY ALREADY have been broadcast. '
+      + 'Do not rebuild and send it again — that would create a second, conflicting transaction over the same '
+      + 'coins. Use “Check status” or “Rebroadcast” in the Unconfirmed broadcast panel above. '
+      + `(${c.message})`);
+    e.ambiguousTxid = txid;
+    e.ambiguous = true;
+    throw e;
   }
 }
 
@@ -265,6 +352,10 @@ window.addEventListener('scroll', () => {
 const ORACLE_POLL_MS = 60_000;
 const STATUS_POLL_MS = 60_000;
 const DCA_POLL_MS = 60_000;
+// The money poll is the fast one and by far the most expensive: each tick costs
+// 6 indexer requests per watched derivation.
+const MONEY_POLL_MS = 8_000;
+const PRICE_CHART_POLL_MS = 60_000;
 
 async function loadStatus() {
   // Rebuilt from scratch each poll: line ~301 APPENDS the deployment error, so
@@ -274,6 +365,9 @@ async function loadStatus() {
     const info = await rpc('getblockchaininfo');
     $('s-chain').textContent = info.chain;
     $('s-height').textContent = Number(info.blocks).toLocaleString('en-US');
+    // keep the NUMBER too (#H5) — reading it back off the DOM would parse a
+    // locale string with thousands separators
+    if (Number.isInteger(Number(info.blocks))) lastNodeHeight = Number(info.blocks);
     // derive receive addresses for the chain the node is actually on
     const net = { main: 'mainnet', test: 'testnet', regtest: 'regtest' }[info.chain];
     if (net) {
@@ -283,6 +377,17 @@ async function loadStatus() {
       // a wallet unlocked before the node named its chain has no addresses yet
       // — this is the first moment its chain can be scanned
       if (wallet.seed) { renderAddress(); syncReceiveIndex(); }
+      // The ONLY place netKnown flips true, and the recovery card is chain-
+      // scoped: an unconfirmed broadcast made on testnet must not be offered
+      // for rebroadcast against whatever node happens to answer now (#C1).
+      // Idempotent, so the 60s poll simply keeps it in step; never reached on a
+      // cross-wired deployment, where every RPC is refused and the card stays
+      // hidden — which is exactly right.
+      renderRecoveryCard();
+      // A ceremony opened before this answer landed is sealed (unknown fails
+      // strict). Now that the chain has a name, re-decide: testnet/regtest get
+      // their skip back, mainnet stays sealed (#C3). Idempotent, like the card.
+      renderBackupSkipGate();
     }
     // banner + tab title follow the node's chain — same build on every network
     const { title, banner, level, pill } = networkChrome(info.chain);
@@ -325,6 +430,14 @@ async function loadStatus() {
 let lastPriceUsd = null; // feeds the fiat equivalents in the hero and asset rows
 let lastPriceMicroUsd = null; // feeds the live mint collateral estimate
 let lastPriceAt = null; // Date.now() of the quote above — see PRICE_MAX_AGE_MS
+
+// Chain tips, from the two independent polls (#H5). The balance index can lag
+// the node — initial sync, catch-up after an outage — and a UTXO set even one
+// block behind can offer a coin that is already spent, so the confirm screens
+// say so. CHAIN-scoped, not wallet-scoped: a lock or a wallet switch does not
+// change which chain we are on, so resetWalletState leaves these alone.
+let lastNodeHeight = null; // node `blocks`, 60s status poll
+let lastIndexerTip = null; // indexer tipHeight, 8s money poll
 
 async function loadOracle() {
   try {
@@ -392,9 +505,33 @@ const wallet = {
   network: HD_NETWORKS.testnet, // refined from the node's `chain` once known
 };
 
+// The chain to gate on: the node's answer, or null while it has not answered.
+// NEVER pass chainState.netName raw — it defaults to the 'testnet' GUESS above,
+// so a mainnet deployment with a dead node would read as testnet and hand the
+// user a skip button for real money (#C3).
+function gateChain() {
+  return chainState.netKnown ? chainState.netName : null;
+}
+
 // The vault manager owns metadata + mnemonics (vault.js); keystore.js is its
 // browser storage. One master password for every wallet on this device.
 const vault = createVaultManager(keystore);
+
+// Browser storage protection (#C2). IndexedDB is evictable; ask for persistence
+// at the two moments a user gesture exists (vault create, unlock) and report
+// the answer honestly in Network. null = not probed yet.
+let persistState = null;
+function renderStorageProtection() {
+  const { level, label, detail } = persistenceCopy(persistState);
+  $('s-persist').innerHTML = `<span class="dot ${level}"></span>${esc(label)}`;
+  $('s-persist-hint').textContent = detail;
+}
+async function probePersistence({ request = false } = {}) {
+  const sm = globalThis.navigator?.storage;
+  persistState = request ? await ensurePersistence(sm) : await readPersistence(sm);
+  renderStorageProtection();
+  renderBackupStrip(); // the strip's urgency depends on this answer
+}
 
 let shownState = 'loading'; // what the app currently renders — cross-tab sync diffs against it
 function show(state) {
@@ -407,6 +544,14 @@ function show(state) {
   // EVM-style corner control: Connect when idle, address chip when connected
   const open = state === 'open';
   $('hero-guest').style.display = state === 'none' || state === 'locked' ? 'block' : 'none';
+  // Fresh install vs wiped vault (#C2). Keyed on 'none' ONLY — the same hero
+  // serves 'locked', and "your data is gone" over a healthy locked vault is a
+  // false alarm that pushes users to erase. The tombstone is read FRESH on every
+  // transition: a cross-tab erase clears it and reconcileVaultUi() lands here.
+  const wiped = state === 'none' && hadVault(globalThis.localStorage);
+  $('hero-recovery').style.display = wiped ? 'block' : 'none';
+  $('hero-guest-copy').style.display = wiped ? 'none' : 'block';
+  $('hero-connect').textContent = wiped ? 'Restore a wallet' : 'Connect wallet';
   $('w-connect').style.display = open || state === 'loading' ? 'none' : 'inline-block';
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   // backup-status surfaces belong to an OPEN wallet; renderBackupCta shows
@@ -532,15 +677,16 @@ function setConnectMode(mode) {
   $('w-backup-view').style.display = mode === 'backup' ? 'block' : 'none';
   $('w-quiz-view').style.display = mode === 'quiz' ? 'block' : 'none';
   $('w-backup-success').style.display = mode === 'backup-done' ? 'block' : 'none';
-  // Remind-me-later is shared by both ceremony steps (id kept stable — drivers
-  // dismiss the whole flow with one click on it)
-  $('w-backup-done').style.display = mode === 'backup' || mode === 'quiz' ? 'block' : 'none';
+  renderBackupSkipGate();
   document.querySelector('#w-connect-modal .modal-head h3').textContent =
     ['backup', 'quiz', 'backup-done'].includes(mode) ? 'Back up your seed phrase'
       : mode === 'erase' ? 'Erase all wallets' : 'Connect wallet';
   // real words live in the ceremony DOM only while its steps are open
   if (mode !== 'backup') $('w-backup-words').innerHTML = '';
   if (mode !== 'quiz') { $('w-quiz-slots').innerHTML = ''; $('w-quiz-chips').innerHTML = ''; $('w-quiz-err').textContent = ''; }
+  // "Saved diginaut-wallet-1-….json" must not follow one wallet's success beat
+  // into the next wallet's (#M1); closeConnectModal routes through here too.
+  if (mode !== 'backup-done') { $('w-backup-file-saved').style.display = 'none'; $('w-backup-file-err').textContent = ''; }
   $('w-none-err').textContent = '';
 }
 function openConnectModal() {
@@ -554,6 +700,35 @@ function closeConnectModal() {
   setConnectMode(vault.status === 'locked' ? 'unlock' : 'choice');
 }
 
+/** Skip/close visibility for the backup ceremony (#C3). Its own function, not
+ * an inline branch in setConnectMode, because the answer changes on a second
+ * clock: the node naming its chain. A ceremony opened before the first
+ * getblockchaininfo lands is sealed (unknown fails strict) and must UNSEAL the
+ * moment a testnet/regtest node answers — otherwise a slow node permanently
+ * removes the frictionless skip loadStatus was about to allow. */
+function renderBackupSkipGate() {
+  // Remind-me-later is shared by both ceremony steps (id kept stable — drivers
+  // dismiss the whole flow with one click on it). On mainnet — and on an
+  // unknown chain, which fails strict — there is no skip at all.
+  const skipOk = backupSkipAllowed(gateChain());
+  const onCeremony = connectMode === 'backup' || connectMode === 'quiz';
+  $('w-backup-done').style.display = skipOk && onCeremony ? 'block' : 'none';
+  // A ceremony opened straight off wallet creation is the one moment the skip
+  // protected; with no skip, Close must not be the skip in disguise.
+  const sealed = !skipOk && ceremony?.mandatory === true && onCeremony;
+  $('w-modal-close').style.display = sealed ? 'none' : '';
+  $('w-backup-sealed').style.display = sealed ? 'block' : 'none';
+}
+
+/** User-initiated dismiss. closeConnectModal() itself stays unguarded — show()
+ * and resetWalletState() call it as teardown on lock, switch and autolock, and
+ * those must never be blocked (#C3). */
+function requestCloseConnectModal() {
+  if (!backupSkipAllowed(gateChain()) && ceremony?.mandatory === true
+      && ['backup', 'quiz'].includes(connectMode)) return;
+  closeConnectModal();
+}
+
 // ---- v3 action modals: Send / Receive / Mint / Network ----
 const openModal = (id) => $(id).classList.add('open');
 // Closing a modal abandons whatever draft it held. Anything armed out-of-band
@@ -561,7 +736,13 @@ const openModal = (id) => $(id).classList.add('open');
 // or it silently applies to the next thing the user does.
 function onModalClosed(id) {
   if (id === 'net-modal') hideSeed(); // a revealed seed must not outlive the modal (§5)
-  if (id === 'send-modal') resetSend();
+  // #L3: every draft holds per-UTXO private keys AND an armed confirm screen
+  // the user could sign much later against a review-time quote — closing the
+  // modal abandons both. Only send-modal was covered, so a closed mint,
+  // transfer or consolidate kept its keys and its Confirm button alive.
+  if (id === 'send-modal') { resetSend(); resetTransfer(); } // both forms live in this one modal
+  if (id === 'mint-modal') resetMint();
+  if (id === 'consolidate-modal') resetConsolidate();
 }
 document.querySelectorAll('[data-close]').forEach((b) =>
   b.addEventListener('click', () => {
@@ -577,12 +758,15 @@ for (const id of ['send-modal', 'receive-modal', 'mint-modal', 'net-modal', 'dis
   });
 }
 $('footer-disclaimer').addEventListener('click', () => openModal('disclaimer-modal'));
-$('act-send').addEventListener('click', () => { $('send-modal').classList.remove('success'); openModal('send-modal'); });
+// #L3: re-arm from scratch on every open, so a close path the map above misses
+// still cannot present a stale, still-armed confirm screen (the shape
+// openConsolidateModal already uses).
+$('act-send').addEventListener('click', () => { resetSend(); resetTransfer(); $('send-modal').classList.remove('success'); openModal('send-modal'); });
 // both receive entry points go through the backup interception gate (spec §3)
 $('act-receive').addEventListener('click', openReceiveModal);
 $('w-no-indexer-receive').addEventListener('click', openReceiveModal);
-$('act-mint').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
-$('dd-mint-open').addEventListener('click', () => { $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
+$('act-mint').addEventListener('click', () => { resetMint(); $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
+$('dd-mint-open').addEventListener('click', () => { resetMint(); $('mint-modal').classList.remove('success'); openModal('mint-modal'); updateMintEstimate(); });
 $('net-btn').addEventListener('click', () => openModal('net-modal'));
 $('hero-connect').addEventListener('click', () => openConnectModal());
 // the asset dropdown decides which send form shows — via classes on the modal,
@@ -613,8 +797,8 @@ $('w-chip').addEventListener('keydown', (e) => {
   e.preventDefault(); // Space must not scroll the page
   openWalletModal();
 });
-$('w-modal-close').addEventListener('click', closeConnectModal);
-$('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) closeConnectModal(); });
+$('w-modal-close').addEventListener('click', requestCloseConnectModal);
+$('w-connect-modal').addEventListener('click', (e) => { if (e.target === $('w-connect-modal')) requestCloseConnectModal(); });
 $('w-disconnect').addEventListener('click', () => lockWallet());
 
 // Every script form this wallet will pay, by decodeAddress's `type` label.
@@ -899,10 +1083,15 @@ async function syncReceiveIndex() {
       used.forEach((isUsed, k) => { if (isUsed) { highest = batch[k]; gap = 0; } else gap += 1; });
     }
   } catch (e) {
+    receiveScanBusy = -1;
+    // Malformed data is not transient: re-asking every 2s cannot fix a bad
+    // payload and is a self-DoS against the proxy's rate limit (#H2). Leave
+    // receiveScanGen unset so the next openWallet (which bumps walletGen) still
+    // re-scans — this only declines the automatic retry ladder.
+    if (e.indexerData) { console.warn('receive-chain scan: ' + e.message); return; }
     // An indexer hiccup used to end rediscovery for the session. Retry with
     // backoff instead, and say so — the original complaint about this path was
     // as much that it failed invisibly as that it failed permanently.
-    receiveScanBusy = -1;
     const wait = RECEIVE_RETRY_MS[Math.min(receiveScanFails, RECEIVE_RETRY_MS.length - 1)];
     receiveScanFails += 1;
     console.warn(`receive-chain scan failed (attempt ${receiveScanFails}), retrying in ${wait}ms:`, e.message);
@@ -958,7 +1147,7 @@ function resetWalletState() {
   $('w-mint-out').textContent = '';
   $('w-tr-out').textContent = '';
   $('w-rd-out').textContent = '';
-  clearInterval(moneyTimer);
+  clearTimeout(moneyTimer); // the money poll is a setTimeout chain (#H1)
   $('w-money').style.display = 'none';
   // drop this wallet's Activity view so the next wallet doesn't inherit its
   // expanded page or see its rows flash before the first refresh (#69).
@@ -1064,12 +1253,17 @@ async function createWalletEntry({ name, mnemonic, backedUp = false, source = nu
     // duplicate-mnemonic contract: an existing seed comes back existed:true
     const { id, existed } = await vault.addWallet({ name, mnemonic, backedUp, source });
     await vault.setActive(id); // new or duplicate, it becomes the active wallet
+    markHadVault(globalThis.localStorage); // #C2: keep the tombstone true
     return { id, existed };
   }
   const pass = $(passId).value;
   if (pass.length < 8) throw new Error('password must be at least 8 characters');
   if (pass !== $(pass2Id).value) throw new Error('passwords do not match');
   const id = await vault.createVault(pass, { name, mnemonic, backedUp, source });
+  markHadVault(globalThis.localStorage); // #C2: this browser now holds a vault
+  // Fire-and-forget: persist() can prompt, and awaiting a possibly-denied or
+  // slow browser prompt inside busy() would freeze the create button (#C2).
+  probePersistence({ request: true });
   return { id, existed: false };
 }
 
@@ -1114,7 +1308,7 @@ $('w-create').addEventListener('click', (e) =>
     // click w-backup-done once to dismiss and find the wallet already open).
     // switchToWallet also resets the previous wallet's state (add-while-open).
     switchToWallet(id);
-    beginBackupCeremony(id, mnemonic);
+    beginBackupCeremony(id, mnemonic, { mandatory: true });
   }));
 
 $('w-show-restore').addEventListener('click', () => { setConnectMode('restore'); $('w-create-name').value = nextWalletName(); $('w-restore-seed').focus(); });
@@ -1411,6 +1605,11 @@ $('w-unlock').addEventListener('click', (e) =>
       throw err?.name === 'OperationError' ? new Error('wrong password') : err;
     }
     $('w-unlock-pass').value = '';
+    // #C2: an unlock is a user gesture, so this is one of the two moments the
+    // browser will honour a persist() request. Fire-and-forget — a denied or
+    // slow prompt must not sit on the unlock path.
+    markHadVault(globalThis.localStorage);
+    probePersistence({ request: true });
     // one password opens the whole vault; the switcher picks any other wallet
     openWallet(meta.activeId, vault.getMnemonic(meta.activeId));
   }));
@@ -1437,6 +1636,9 @@ $('w-erase-cancel').addEventListener('click', () => setConnectMode('unlock'));
 $('w-erase-go').addEventListener('click', (e) =>
   busy(e.target, 'w-erase-err', async () => {
     await keystore.deleteAllRecords();
+    // #C2: a deliberate erase is not an eviction. Clear BEFORE show(), or the
+    // recovery hero flashes at the user who just chose to erase.
+    clearHadVault(globalThis.localStorage);
     await vault.load();
     show('none'); // back to the guest hero; the modal drops to choice mode
   }));
@@ -1468,10 +1670,12 @@ $('w-faucet').addEventListener('click', (e) =>
   busy(e.target, 'w-open-err', async () => {
     $('w-faucet-out').textContent = 'Requesting…';
     try {
-      const res = await fetch('/api/faucet/claim', {
+      const res = await apiFetch('/api/faucet/claim', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: $('w-address').textContent }),
+        budget: NET_TIMEOUT_MS.faucet, // outlives the server's own 30s upstream budget
+        what: 'the faucet',
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
@@ -1489,9 +1693,15 @@ $('w-faucet').addEventListener('click', (e) =>
 // is honored ONLY in mock mode: on a live deployment a crafted link must not
 // silently disable (or stretch) auto-lock.
 function autolockDelayMs() {
-  if (appConfig.mock) {
+  // #L10: `mock` DEFAULTS to true (appConfig is a placeholder until /api/config
+  // answers) and boot's catch leaves that default in place when the fetch fails
+  // — so on a live deployment with a flaky config request, a crafted
+  // ?autolockSecs=86400 link used to stretch the lock to a day. Require a LOADED
+  // config that says mock, exactly like the #w-no-indexer gate in show(). The
+  // cap keeps even a mock-mode link from disabling the lock outright.
+  if (appConfig.loaded && appConfig.mock) {
     const secs = Number(new URLSearchParams(location.search).get('autolockSecs'));
-    if (Number.isFinite(secs) && secs > 0) return secs * 1000;
+    if (Number.isFinite(secs) && secs > 0 && secs <= 600) return secs * 1000;
   }
   let raw = null;
   try { raw = localStorage.getItem(AUTOLOCK_KEY); } catch { /* private mode → default */ }
@@ -1585,9 +1795,12 @@ function renderBackupGrid(revealed) {
   $('w-backup-words').innerHTML = wordGridHtml(revealed ? ceremony.words : randomBip39Words(ceremony.words.length));
   $('w-backup-reveal').classList.toggle('blurred', !revealed);
 }
-/** Open the reveal → quiz flow over the (already open) wallet. */
-function beginBackupCeremony(id, mnemonic) {
-  ceremony = { id, words: mnemonic.trim().split(/\s+/), quiz: null };
+/** Open the reveal → quiz flow over the (already open) wallet.
+ * `mandatory` marks the ONE ceremony that opens straight off wallet creation:
+ * on mainnet (or an unknown chain) that one cannot be dismissed at all (#C3).
+ * Re-entries stay dismissible — see reenterBackupCeremony. */
+function beginBackupCeremony(id, mnemonic, { mandatory = false } = {}) {
+  ceremony = { id, words: mnemonic.trim().split(/\s+/), quiz: null, mandatory };
   renderBackupGrid(false);
   setConnectMode('backup');
   $('w-connect-modal').classList.add('open');
@@ -1645,6 +1858,34 @@ $('w-quiz-verify').addEventListener('click', (e) =>
     setConnectMode('backup-done'); // success beat; Done closes
   }));
 
+// #M1: the encrypted backup file at the success beat, not only buried in the
+// switcher's ⋯ menu. Re-auth gated exactly like the switcher export: the typed
+// password IS the file's KDF input, so the prompt doubles as proof the user can
+// open what they are about to save. It does NOT set backedUp (spec §4) — the
+// quiz already did, and a file must never be what flips that flag.
+$('w-backup-file').addEventListener('click', (e) =>
+  busy(e.target, 'w-backup-file-err', async () => {
+    const id = ceremony?.id;
+    if (!id) throw new Error('this backup ceremony is no longer open');
+    const pass = await requireReauth('Confirm your password to save an encrypted copy of this wallet.');
+    if (!pass) return; // cancelled — no error, no file
+    // The await above is a real gap: autolock, a cross-tab erase or a wallet
+    // switch can have torn the vault down while the prompt was open. Re-check
+    // the ceremony id too — a cross-tab setActive must not export the wrong seed.
+    if (vault.status !== 'unlocked' || ceremony?.id !== id) throw new Error('the wallet was locked — unlock and try again');
+    const w = vault.meta().wallets.find((x) => x.id === id);
+    if (!w) throw new Error('this wallet is no longer in the vault');
+    downloadKeystoreFile(await keystore.buildKeystoreFile({
+      name: w.name,
+      network: chainState.netKnown ? chainState.netName : null,
+      mnemonic: vault.getMnemonic(id),
+      password: pass,
+    }));
+    const saved = $('w-backup-file-saved');
+    saved.textContent = `Saved ${keystore.keystoreFileName(w.name)} — it only opens with your master password.`;
+    saved.style.display = 'block';
+  }));
+
 // ---- Backup-status surfaces (spec §3) ----
 // The active wallet's backedUp flag drives the header badge, the net-modal
 // button and the balance-gated strip; all re-render on wallet switch
@@ -1666,30 +1907,46 @@ async function reenterBackupCeremony() {
   if (!wallet.id) return;
   if (!(await requireReauth('Confirm your password to back up this wallet.'))) return;
   $('net-modal').classList.remove('open');
+  // NOT mandatory (#C3): cancelling a re-entry returns the user to the state
+  // they were already in, so sealing it is pure friction with no custody gain —
+  // and it would trap anyone who taps the "Not backed up" badge just to look.
+  // The create-time seal is what removes the one-click "skip your only backup".
   beginBackupCeremony(wallet.id, vault.getMnemonic(wallet.id));
 }
 $('w-backup-now').addEventListener('click', reenterBackupCeremony);
 $('w-backup-badge').addEventListener('click', reenterBackupCeremony);
 
-// Balance-gated warning strip: the active wallet is not backed up AND holds
-// anything the indexer can see (confirmed DGB, spendable DD, or a locked
-// position). Dismiss is per wallet, per page load — the nag comes back next
-// session by design. A no-indexer deployment never learns the balance, so
-// the receive interception below is the only funds-arriving guard there.
+// Warning strip: the active wallet is not backed up AND either holds something
+// the indexer can see (confirmed DGB, spendable DD, a locked position) OR sits
+// in a store the browser has not marked persistent (#C2 — at zero balance the
+// eviction risk is the whole argument). Dismiss is per wallet, per page load —
+// the nag comes back next session by design. A no-indexer deployment never
+// learns the balance, so the receive interception below is the only
+// funds-arriving guard there.
 const stripDismissed = new Set(); // wallet ids dismissed this session
 function renderBackupStrip() {
   const m = vault.status === 'unlocked' ? vault.meta() : null;
   const active = m?.wallets.find((w) => w.id === wallet.id); // the wallet on display
   const funds = (lastConfirmedDgb ?? 0) > 0 || lastDdUsd > 0 || openPositions.size > 0;
-  const nag = Boolean(active && !active.backedUp && funds && !stripDismissed.has(active.id));
+  // #C2: an unprotected (evictable) store makes the missing backup urgent even
+  // at zero balance — the coins that arrive tomorrow die with the vault.
+  // Unknown/unsupported counts as unprotected: this nag is dismissible, a
+  // silently-evicted wallet is not.
+  const evictable = persistState?.persisted !== true;
+  const nag = Boolean(active && !active.backedUp && (funds || evictable) && !stripDismissed.has(active.id));
   if (nag) {
     // derived-aware copy (#129): the source wallet is a convenience door, not
     // a guaranteed backup — say so where the money pressure is.
     let brand = null;
     if (active.derived) { try { brand = vault.getSource(active.id)?.brand ?? null; } catch { /* mid-lock */ } }
+    const evictLine = evictable
+      ? ' This browser has not marked the wallet\'s storage as protected — it can be evicted without warning.'
+      : '';
     $('w-backup-strip-text').textContent = active.derived
-      ? `This wallet holds funds and is protected only by ${brand ?? 'your web3 wallet'} re-signing — back up the 24 words in case ${brand ?? 'it'} ever changes how it signs.`
-      : 'This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.';
+      ? `This wallet is protected only by ${brand ?? 'your web3 wallet'} re-signing — back up the 24 words in case ${brand ?? 'it'} ever changes how it signs.${evictLine}`
+      : (funds
+        ? `This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.${evictLine}`
+        : `This wallet has no backup.${evictLine} Back it up before any funds arrive.`);
   }
   $('w-backup-strip').style.display = nag ? 'block' : 'none';
 }
@@ -1949,6 +2206,7 @@ $('w-remove-go').addEventListener('click', (e) =>
     showRemoveView(null);
     if (vault.status === 'none') {
       // nothing left on this device — back to the guest hero
+      clearHadVault(globalThis.localStorage); // #C2: deliberate erase, not an eviction (before show)
       wallet.id = null; wallet.mnemonic = null; wallet.seed = null;
       resetWalletState();
       show('none');
@@ -1965,11 +2223,28 @@ $('w-remove-go').addEventListener('click', (e) =>
 // ---- Balance & history (#5): every query goes through the indexer seam ----
 const fmtSats = (sats) => fmtDGB(Number(sats) / 1e8);
 
+// Shape rules per endpoint (#H2). Strict-vs-tolerant is a property of the
+// SHAPE, not of the caller: /utxos and /dd-utxos each have a display caller and
+// a signing caller, and threading a `strict` flag from callers would guarantee
+// one gets missed. The path patterns deliberately mirror the proxy's own
+// allow-list in server.js so client and server cannot drift.
+const INDEXER_SHAPES = [
+  [/^\/address\/([a-z0-9]+)\/utxos$/, validateUtxosResponse],
+  [/^\/address\/([a-z0-9]+)\/history$/, validateHistoryResponse],
+  [/^\/address\/([a-z0-9]+)\/positions$/, validatePositionsResponse],
+  [/^\/address\/([a-z0-9]+)\/dd-utxos$/, validateDdUtxosResponse],
+  [/^\/tx\/([0-9a-f]{64})$/, (json) => validateTxDetail(json)],
+];
+
 async function fetchIndexer(path) {
-  const res = await fetch('/api/indexer' + path);
+  const res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
+  for (const [re, validate] of INDEXER_SHAPES) {
+    const m = re.exec(path);
+    if (m) return validate(json, m[1]);
+  }
+  throw new Error(`unrouted indexer path: ${path}`); // unreachable — the proxy path-restricts first
 }
 
 /** Every derivation the wallet watches: indices up to the current one, +2 lookahead. */
@@ -1999,13 +2274,21 @@ function renderPositions(perAddr) {
   const positions = perAddr.flatMap((r) => r.positions.positions.map((p) => ({ ...p, address: r.positions.address })))
     .filter((p) => (seen.has(p.txid) ? false : seen.add(p.txid)));
   openPositions = new Map(positions.map((p) => [p.txid, p]));
-  const tipHeight = Math.max(0, ...perAddr.map((r) => r.positions.tipHeight));
+  // the retained tip (#H5), same value this poll just installed. `?? 0` is not
+  // decoration: without it blocksLeft becomes NaN, NaN > 0 is false, and every
+  // still-locked position silently swaps its "locked until…" line for a Redeem
+  // button that consensus (CLTV) would reject.
+  const tipHeight = lastIndexerTip ?? 0;
   const totalCents = positions.reduce((n, p) => n + Number(p.ddCents), 0);
   $('w-dd-total').textContent = positions.length ? fmtUSD(totalCents / 100) : '';
   if (!positions.length) {
     $('w-positions').textContent = 'No open positions.';
     return;
   }
+  // unlockHeight is an integer height by the time it gets here — validate.js
+  // enforces it at the fetch boundary, which is also the gate the redeem SIGNER
+  // depends on (it becomes the tx's nLockTime). Validating only for the render
+  // would have been half a fix (#L5).
   $('w-positions').innerHTML = positions.map((p) => {
     const blocksLeft = p.unlockHeight - tipHeight;
     // AC (#16): a still-locked position says exactly when it opens instead of
@@ -2016,6 +2299,32 @@ function renderPositions(perAddr) {
     return `<div>${fmtUSD(Number(p.ddCents) / 100)} · ${esc(p.tierLabel)} · ` +
       `locked ${fmtSats(BigInt(p.collateralSats))} DGB · ${state}</div>`;
   }).join('');
+}
+
+// The node height comes from the 60s status poll and the indexer tip from the
+// 8s money poll, so the two readings are skewed by up to one block at a block
+// boundary. Two or more blocks of lag is real lag, not poll skew (#H5).
+const STALE_TIP_LAG_BLOCKS = 2;
+
+function indexerLagBlocks() {
+  if (!Number.isInteger(lastNodeHeight) || !Number.isInteger(lastIndexerTip)) return null;
+  return lastNodeHeight - lastIndexerTip;
+}
+
+/** Warn on a confirm screen when the balance index is behind the node. Written
+ *  at REVIEW time from the retained poll state — never re-read inside the
+ *  confirm handler, which must sign exactly what was reviewed. Advisory only:
+ *  it never gates the Confirm button, or a permanently-behind index would
+ *  strand the user's funds. */
+function renderStaleTipWarning(id) {
+  const el = $(id);
+  const lag = indexerLagBlocks();
+  const stale = lag != null && lag >= STALE_TIP_LAG_BLOCKS;
+  el.textContent = stale
+    ? `The balance index is ${lag.toLocaleString('en-US')} blocks behind the node. Your DGB balance and `
+      + 'DigiDollar positions may be out of date — wait for it to catch up and re-check before confirming.'
+    : '';
+  el.style.display = stale ? 'block' : 'none';
 }
 
 async function refreshMoney() {
@@ -2048,6 +2357,11 @@ async function refreshMoney() {
     // while we were fetching — either way this answer is not about the wallet
     // the user is looking at
     if (!wallet.seed || walletGen !== gen) return;
+    // AFTER the guard on purpose (#H5): a switched-away wallet's in-flight poll
+    // must not install a tip. The `h > 0` filter drops the non-DD stubs above,
+    // which carry tipHeight 0 — same effect as the old Math.max(0, …).
+    const tips = perAddr.map((r) => r.positions?.tipHeight).filter((h) => Number.isInteger(h) && h > 0);
+    if (tips.length) lastIndexerTip = Math.max(...tips);
     // Which derivations have actually seen money — for the receive view's
     // address list. Both forms of an index count as that index: a payer who
     // used the compat twin paid the same address as far as the user is
@@ -2087,8 +2401,9 @@ async function refreshMoney() {
     $('w-dd-balance').textContent = lastDdUsd.toLocaleString('en-US', { minimumFractionDigits: 2 });
     renderPositions(perAddr);
     renderBackupStrip(); // balance-gated (§3): fresh funds may summon the backup nag
-    // a transient indexer hiccup shouldn't leave a stale error after recovery
-    if ($('w-open-err').textContent.startsWith('indexer:')) $('w-open-err').textContent = '';
+    // a transient indexer hiccup shouldn't leave a stale error after recovery —
+    // 'indexer' (not 'indexer:') so the malformed-data copy clears too (#H2)
+    if ($('w-open-err').textContent.startsWith('indexer')) $('w-open-err').textContent = '';
     const firstShow = $('w-money').style.display === 'none';
     $('loading-veil').style.display = 'none';
     $('w-money').style.display = 'grid';
@@ -2101,9 +2416,14 @@ async function refreshMoney() {
     // (openWallet → startMoneyPolling), which hides the veil on either outcome.
     if (walletGen !== gen) return;
     $('loading-veil').style.display = 'none';
+    // Malformed data is neither a hiccup nor a sync lag, and the message already
+    // names the problem — don't prefix it again (#H2).
+    if (e.indexerData) { $('w-open-err').textContent = e.message; return; }
     // transport-level failures mean the index isn't serving yet (e.g. initial
-    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED
-    $('w-open-err').textContent = /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
+    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED. The regex
+    // only ever matched errors the SERVER produced; e.transport covers the
+    // client-side timeout/dead-hop cases, whose copy matches none of these (#H1).
+    $('w-open-err').textContent = e.transport || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
       ? 'indexer: the balance index is still syncing — balances and history will appear once it catches up (your on-chain funds are unaffected)'
       : 'indexer: ' + e.message;
   }
@@ -2124,8 +2444,11 @@ function relTime(unixSec) {
 
 function txExplorerLink(txid) {
   const short = txid.slice(0, 12) + '…';
+  // esc() as well as the boundary scheme filter (#L5): the prefix is operator
+  // config, but it lands inside a double-quoted href, where an unescaped " ends
+  // the attribute. A falsy prefix degrades to a plain txid — regtest behaviour.
   return appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)
-    ? `<a href="${appConfig.explorerTxUrl}${txid}" target="_blank" rel="noopener">${short}</a>`
+    ? `<a href="${esc(appConfig.explorerTxUrl)}${txid}" target="_blank" rel="noopener">${short}</a>`
     : `<span class="mono">${esc(short)}</span>`;
 }
 
@@ -2258,7 +2581,9 @@ $('w-mint-tier').addEventListener('change', updateMintEstimate);
 let lastPriceSeries = null; // cached so re-docking/resizing can re-render
 async function loadPriceChart() {
   try {
-    const { series } = await (await fetch('/api/price-history')).json();
+    const { series } = await (await apiFetch('/api/price-history', {
+      budget: NET_TIMEOUT_MS.priceHistory, what: 'the price history',
+    })).json();
     lastPriceSeries = series;
     renderSparkline(series);
   } catch { /* chart is decorative — never block the wallet on it */ }
@@ -2405,6 +2730,7 @@ function resetSend() {
   // silently turning "send 10" into "send everything I now hold".
   sendMaxArmed = false;
   $('w-send-amount').value = '';
+  $('w-send-c-stale').style.display = 'none'; // a re-opened confirm must not flash stale copy (#H5)
   updateSendEq();
 }
 
@@ -2625,6 +2951,7 @@ $('w-send-review').addEventListener('click', (e) =>
     $('w-send-c-amount').textContent = satsToDgb(amountSats);
     $('w-send-c-amount-usd').textContent = usd != null ? `  ≈ ${fmtUSD(usd)}` : '';
     $('w-send-c-fee').textContent = satsToDgb(plan.feeSats);
+    renderStaleTipWarning('w-send-c-stale'); // #H5 — the coins this plan spends may already be gone
     $('w-send-confirm').style.display = 'block';
     $('w-send-review').disabled = true;
   }));
@@ -2633,7 +2960,7 @@ $('w-send-cancel').addEventListener('click', resetSend);
 
 $('w-send-go').addEventListener('click', (e) =>
   busy(e.target, 'w-send-err', async () => {
-    const { plan, recipientScriptHex, amountSats } = pendingSend;
+    const { plan, recipientScriptHex, amountSats, address } = pendingSend;
     if (!wallet.seed) throw new Error('wallet is locked');
     // change returns to the wallet's current receive address
     const changeAddress = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
@@ -2644,7 +2971,9 @@ $('w-send-go').addEventListener('click', (e) =>
       changeScriptHex: scriptPubKeyFromAddress(changeAddress),
       feeSats: plan.feeSats,
     });
-    const txid = await broadcastTx(hex);
+    // formatted strings only: a BigInt in the record would make JSON.stringify
+    // throw and the journal entry would be silently lost (#C1)
+    const txid = await broadcastTx(hex, { kind: 'send', summary: `${satsToDgb(amountSats)} DGB to ${address}` });
     resetSend(); // clears the amount, disarms Max, refreshes the ≈-line
     $('w-send-to').value = '';
     $('w-send-amount-eq').style.display = 'none';
@@ -2673,6 +3002,7 @@ let pendingConsolidate = null; // { plan, toAddress } — plan.inputs hold per-U
 
 function resetConsolidate() {
   pendingConsolidate = null;
+  $('w-cons-c-stale').style.display = 'none'; // a re-opened confirm must not flash stale copy (#H5)
   $('consolidate-modal').classList.remove('open');
 }
 
@@ -2711,6 +3041,7 @@ async function openConsolidateModal() {
     $('w-cons-c-amount').textContent = satsToDgb(plan.amountSats);
     $('w-cons-c-to').textContent = toAddress;
     $('w-cons-c-fee').textContent = satsToDgb(plan.feeSats);
+    renderStaleTipWarning('w-cons-c-stale'); // #H5
     $('w-cons-confirm').style.display = 'block';
   } catch (e) {
     $('w-cons-err').textContent = surfaceError(e);
@@ -2733,7 +3064,10 @@ $('w-cons-go').addEventListener('click', (e) =>
       changeScriptHex: script, // zero change by construction (max plan) — same address either way
       feeSats: plan.feeSats,
     });
-    const txid = await broadcastTx(hex);
+    const txid = await broadcastTx(hex, {
+      kind: 'consolidate',
+      summary: `consolidate ${plan.inputs.length} coins into ${satsToDgb(plan.amountSats)} DGB`,
+    });
     pendingConsolidate = null;
     showTxSuccess('consolidate-modal', txid, 'Consolidation sent',
       'Once the next block confirms it, retry the action that failed — your DGB will be one coin.');
@@ -2785,6 +3119,7 @@ let pendingMint = null; // { utxo (with privKeyHex!), ddCents, tierId, priceMicr
 function resetMint() {
   pendingMint = null;
   $('w-mint-confirm').style.display = 'none';
+  $('w-mint-c-stale').style.display = 'none'; // a re-opened confirm must not flash stale copy (#H5)
   $('w-mint-review').disabled = false;
 }
 
@@ -2862,6 +3197,9 @@ $('w-mint-review').addEventListener('click', (e) =>
         : new Error(`insufficient funds: this mint needs ${fmtSats(needSats)} DGB (collateral + fee), you have ${fmtSats(totalSats)} DGB`);
     }
     const { blocks: tipHeight } = await rpc('getblockchaininfo');
+    // free freshness for the staleness warning below — this flow already pays
+    // for the RPC, so its node height is the newest one in the app (#H5)
+    if (Number.isInteger(tipHeight)) lastNodeHeight = tipHeight;
     const unlockHeight = tipHeight + 1 + MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS + tier.lockBlocks;
     pendingMint = { utxo, ddCents, tierId, priceMicroUsd, dcaMultiplierBps };
     $('w-mint-c-dd').textContent = (Number(ddCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
@@ -2875,6 +3213,7 @@ $('w-mint-review').addEventListener('click', (e) =>
     $('w-mint-c-price').textContent = '$' + (Number(priceMicroUsd) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' / DGB';
     $('w-mint-c-fee').textContent = fmtSats(MINT_FEE_SATS);
     $('w-mint-c-unlock').textContent = `≈ ${blocksToDate(unlockHeight - tipHeight)} (block ${unlockHeight.toLocaleString('en-US')})`;
+    renderStaleTipWarning('w-mint-c-stale'); // #H5
     $('w-mint-confirm').style.display = 'block';
     $('w-mint-review').disabled = true;
   }));
@@ -2886,6 +3225,7 @@ $('w-mint-go').addEventListener('click', (e) =>
     const { utxo, ddCents, tierId, priceMicroUsd, dcaMultiplierBps } = pendingMint;
     if (!wallet.seed) throw new Error('wallet is locked');
     const { blocks: tipHeight } = await rpc('getblockchaininfo'); // fresh height at sign time
+    if (Number.isInteger(tipHeight)) lastNodeHeight = tipHeight; // #H5
     const { hex } = buildSignedMintTx({
       utxo,
       privKeyHex: utxo.privKeyHex,
@@ -2896,7 +3236,10 @@ $('w-mint-go').addEventListener('click', (e) =>
       tipHeight,
       feeSats: MINT_FEE_SATS,
     });
-    const txid = await broadcastTx(hex);
+    const txid = await broadcastTx(hex, {
+      kind: 'mint',
+      summary: `mint $${(Number(ddCents) / 100).toFixed(2)} DigiDollar`,
+    });
     resetMint();
     $('w-mint-amount').value = '';
     $('w-mint-out').textContent = `Minted — tx ${txid.slice(0, 16)}… The position appears below once confirmed.`;
@@ -2929,6 +3272,7 @@ let pendingTransfer = null; // { ddUtxo, feeUtxo (both hold keys!), cents, outpu
 function resetTransfer() {
   pendingTransfer = null;
   $('w-tr-confirm').style.display = 'none';
+  $('w-tr-c-stale').style.display = 'none'; // a re-opened confirm must not flash stale copy (#H5)
   $('w-tr-review').disabled = false;
 }
 
@@ -3000,6 +3344,7 @@ $('w-tr-review').addEventListener('click', (e) =>
     $('w-tr-c-dd').textContent = (Number(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     $('w-tr-c-change').textContent = (Number(ddUtxo.ddCents - cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
     $('w-tr-c-fee').textContent = fmtSats(TRANSFER_FEE_SATS);
+    renderStaleTipWarning('w-tr-c-stale'); // #H5
     $('w-tr-confirm').style.display = 'block';
     $('w-tr-review').disabled = true;
   }));
@@ -3008,7 +3353,7 @@ $('w-tr-cancel').addEventListener('click', resetTransfer);
 
 $('w-tr-go').addEventListener('click', (e) =>
   busy(e.target, 'w-tr-err', async () => {
-    const { ddUtxo, feeUtxo, cents, outputKeyHex } = pendingTransfer;
+    const { ddUtxo, feeUtxo, cents, outputKeyHex, address } = pendingTransfer;
     if (!wallet.seed) throw new Error('wallet is locked');
     const { hex } = buildSignedTransferTx({
       ddUtxo: { txidHex: ddUtxo.txidHex, vout: ddUtxo.vout, ddCents: ddUtxo.ddCents },
@@ -3019,7 +3364,10 @@ $('w-tr-go').addEventListener('click', (e) =>
       // fee change back to the WATCHED address (default P2WPKH would vanish from view)
       dgbChangeScriptHex: scriptPubKeyFromAddress(ddUtxo.address),
     });
-    const txid = await broadcastTx(hex);
+    const txid = await broadcastTx(hex, {
+      kind: 'transfer',
+      summary: `transfer $${(Number(cents) / 100).toFixed(2)} DigiDollar to ${address}`,
+    });
     resetTransfer();
     $('w-tr-to').value = '';
     $('w-tr-amount').value = '';
@@ -3039,6 +3387,7 @@ let pendingRedeem = null; // { position, ddUtxos, feeUtxo (keys inside!) } while
 function resetRedeem() {
   pendingRedeem = null;
   $('w-redeem-confirm').style.display = 'none';
+  $('w-rd-c-stale').style.display = 'none'; // a re-opened confirm must not flash stale copy (#H5)
 }
 
 $('w-positions').addEventListener('click', (e) => {
@@ -3084,6 +3433,9 @@ $('w-positions').addEventListener('click', (e) => {
     $('w-rd-c-dd').textContent = fmtDD(needCents);
     $('w-rd-c-coll').textContent = fmtSats(BigInt(p.collateralSats));
     $('w-rd-c-fee').textContent = fmtSats(REDEEM_FEE_SATS);
+    // #H5 — a stale index is exactly the case where this position may already
+    // have been spent, and the redeem builder consumes the same payload
+    renderStaleTipWarning('w-rd-c-stale');
     $('w-redeem-confirm').style.display = 'block';
   });
 });
@@ -3105,22 +3457,36 @@ $('w-rd-go').addEventListener('click', (e) =>
       feeSats: REDEEM_FEE_SATS,
       dgbChangeScriptHex: scriptPubKeyFromAddress(p.address), // keep change visible
     });
-    const txid = await broadcastTx(hex);
+    const txid = await broadcastTx(hex, {
+      kind: 'redeem',
+      summary: `redeem $${(Number(p.ddCents) / 100).toFixed(2)} DigiDollar (position ${p.txid.slice(0, 12)}…)`,
+    });
     resetRedeem();
     const short = txid.slice(0, 16) + '…';
+    // the prefix is scheme-filtered at the /api/config boundary and escaped
+    // here — an href sink gets both, never one (#L5)
     const label = appConfig.explorerTxUrl && /^[0-9a-f]{64}$/.test(txid)
-      ? `<a href="${appConfig.explorerTxUrl}${txid}" target="_blank" rel="noopener" class="mono">${short}</a>`
+      ? `<a href="${esc(appConfig.explorerTxUrl)}${txid}" target="_blank" rel="noopener" class="mono">${short}</a>`
       : `<span class="mono">${esc(short)}</span>`;
     $('w-rd-out').innerHTML = `Redeemed — tx ${label} The collateral returns to your DGB balance once confirmed.`;
     refreshMoney();
   }));
 
 let moneyTimer = null;
+// A self-rescheduling chain, not setInterval (#H1): a tick can now take up to
+// the indexer budget, and an interval would stack concurrent generations of the
+// heaviest poll in the app on a slow index. A chain cannot overlap itself.
 function startMoneyPolling() {
   if (!appConfig.indexer) return;
-  refreshMoney();
-  clearInterval(moneyTimer);
-  moneyTimer = setInterval(refreshMoney, 8000);
+  clearTimeout(moneyTimer);
+  // Which wallet this chain belongs to: without the guard a switch would leave
+  // the outgoing wallet's chain polling forever beside the incoming one (#122).
+  const gen = walletGen;
+  (async function moneyLoop() {
+    await refreshMoney(); // never rejects — its try/catch spans the whole body
+    if (walletGen !== gen || !wallet.seed) return; // switched or locked: this chain ends
+    moneyTimer = setTimeout(moneyLoop, MONEY_POLL_MS);
+  })();
 }
 
 // The boot card doubles as the fatal-boot surface. A dead boot is not a wait,
@@ -3136,7 +3502,11 @@ async function bootWallet() {
   try {
     // 'locked' covers both a v2 vault and a not-yet-migrated v1 record — the
     // unlock path migrates transparently on the first successful password.
-    show(await vault.load() === 'none' ? 'none' : 'locked');
+    const st = await vault.load();
+    // #C2: stamp the tombstone BEFORE show(), so the hero decision is made
+    // against the fresh value. A locked vault counts — it is a vault.
+    if (st !== 'none') markHadVault(globalThis.localStorage);
+    show(st === 'none' ? 'none' : 'locked');
   } catch (e) {
     bootStuck('wallet storage unavailable: ' + e.message);
   }
@@ -3159,6 +3529,153 @@ function renderCrossWire(cfg) {
   return true;
 }
 
+/** The explorer prefix is operator config (EXPLORER_TX_URL), but it lands in an
+ *  href — including one built by property assignment (showTxSuccess), where no
+ *  amount of escaping helps and a `javascript:` value would execute on click
+ *  with no CSP involvement. Admit only an absolute http(s) URL and drop anything
+ *  else rather than trusting the env var (#L5). NOT encodeURIComponent: the
+ *  prefix legitimately contains `://` and `/`. Applied at EVERY point /api/config
+ *  is absorbed — boot and the status-loop recovery (#H1) both install a fresh
+ *  cfg, so a single boot-time filter would no longer cover it. */
+function withSafeExplorer(cfg) {
+  const url = String(cfg?.explorerTxUrl ?? '');
+  return { ...cfg, explorerTxUrl: /^https?:\/\/[^\s"'<>]+$/.test(url) ? url : '' };
+}
+
+/** Chrome that only /api/config can decide. Factored out because it runs twice:
+ *  at boot, and again if boot's fetch timed out and the status loop recovered
+ *  the config later (#H1) — a wallet stuck on the "loading…" badge with no
+ *  faucet button is exactly the silent degradation that fix is about. */
+function applyConfigChrome(cfg) {
+  const badge = $('modeBadge');
+  badge.className = cfg.mock ? 'badge mock' : 'badge real';
+  badge.textContent = cfg.mock ? 'MOCK MODE' : 'LIVE NODE';
+  if (cfg.faucet) $('w-faucet').style.display = 'block';
+  if (cfg.version) $('app-version').textContent = cfg.version; // which build this domain runs
+}
+
+// ---- Unconfirmed-broadcast recovery card (#C1) ----
+// The card is a SIBLING of every wallet state surface, so show(), lockWallet()
+// and resetWalletState() never touch it: a signed transaction whose fate is
+// unknown outlives the session it was signed in, and the record needs only the
+// hex and the txid — not wallet.seed.
+// txid → { line, summary }: the answer the user's last click produced. It has
+// to outlive the RECORD, not just the re-render — resolving the ambiguity
+// (Check status finds the tx, or a Rebroadcast is accepted) deletes the record,
+// and rendering only live records would take the verdict off screen in the same
+// frame it was written, leaving a user who clicked "Check status" watching the
+// row vanish with no answer at all.
+const recoveryStatus = new Map();
+
+/** One row. `rec` is null for a verdict whose record is already gone: nothing
+ *  is left to check, rebroadcast or copy, so only Dismiss remains. */
+function recoveryRowHtml(txid, title, line, rec) {
+  // every interpolation through esc(); the bare data-rec-* values are the
+  // txid, regex-validated by the caller, so they cannot carry markup
+  const actions = rec
+    ? `<button class="secondary" data-rec-check="${txid}">Check status</button>
+       <button class="secondary" data-rec-resend="${txid}">Rebroadcast</button>
+       <button class="secondary" data-rec-copy="${txid}">Copy raw transaction</button>`
+    : '';
+  return `
+    <div style="border-top:1px solid var(--line);padding-top:8px;margin-top:8px">
+      <div class="row"><span class="k">${esc(title)}</span><span class="v mono">${esc(txid.slice(0, 16))}…</span></div>
+      <div class="hint">${esc(line)}</div>
+      <div class="grid">${actions}
+        <button class="secondary" data-rec-dismiss="${txid}">Dismiss</button>
+      </div>
+    </div>`;
+}
+
+function renderRecoveryCard() {
+  const card = $('w-recovery');
+  // netKnown gate: the record is chain-scoped, and before the node names its
+  // chain we cannot say whether a testnet record belongs on screen — nor could
+  // Check-status query the right indexer.
+  if (!chainState.netKnown) { card.style.display = 'none'; return; }
+  const recs = broadcastLog.list().filter((r) => r.chain === chainState.netName && /^[0-9a-f]{64}$/.test(r.txid));
+  const live = new Set(recs.map((r) => r.txid));
+  const resolved = [...recoveryStatus].filter(([txid]) => !live.has(txid));
+  if (!recs.length && !resolved.length) {
+    card.style.display = 'none';
+    $('w-recovery-list').innerHTML = '';
+    return;
+  }
+  $('w-recovery-list').innerHTML = [
+    ...recs.map((r) => recoveryRowHtml(r.txid, r.summary || r.kind, recoveryStatus.get(r.txid)?.line ?? r.lastError ?? '', r)),
+    ...resolved.map(([txid, s]) => recoveryRowHtml(txid, s.summary, s.line, null)),
+  ].join('');
+  card.style.display = 'block';
+}
+
+$('w-recovery-list').addEventListener('click', (e) => {
+  const d = e.target?.dataset ?? {};
+  const txid = d.recCheck || d.recResend || d.recCopy || d.recDismiss;
+  if (!txid) return;
+  // Dismiss is the ONLY action a resolved row still offers, so it must work
+  // without a record — that is exactly the row whose record is already gone.
+  if (d.recDismiss) { broadcastLog.drop(txid); recoveryStatus.delete(txid); renderRecoveryCard(); return; }
+  const rec = broadcastLog.get(txid);
+  if (!rec) { renderRecoveryCard(); return; } // another tab resolved it
+  const title = rec.summary || rec.kind;
+  const note = (line) => recoveryStatus.set(txid, { line, summary: title });
+  if (d.recCopy) {
+    // the way out when this deployment's node is the broken hop: the signed
+    // bytes are self-contained and any explorer's broadcast form will take them
+    navigator.clipboard?.writeText(rec.hex);
+    note('Raw transaction copied — you can paste it into a block explorer’s broadcast form.');
+    renderRecoveryCard();
+    return;
+  }
+  if (d.recCheck) {
+    busy(e.target, 'w-recovery-err', async () => {
+      if (!appConfig.indexer) {
+        throw new Error('this deployment has no indexer — look the transaction up in a block explorer before doing anything else');
+      }
+      try {
+        const tx = await fetchIndexer(`/tx/${txid}`);
+        const c = Number(tx.confirmations) || 0;
+        note(c > 0
+          ? `Confirmed on chain (${c} confirmation${c === 1 ? '' : 's'}) — it went through.`
+          : 'In the mempool, waiting for a block — it WAS broadcast. Do not send it again.');
+        // The ambiguity is resolved: the transaction exists. The record goes,
+        // the verdict stays on screen until the user dismisses it.
+        broadcastLog.drop(txid);
+      } catch (err) {
+        if (/No such mempool or blockchain transaction|unknown path|HTTP 404/i.test(err.message)) {
+          note('The indexer has never seen this transaction — it most likely never reached the network. Rebroadcast is safe.');
+        } else {
+          throw err; // a real indexer outage answers nothing — keep the record
+        }
+      }
+      renderRecoveryCard();
+    });
+    return;
+  }
+  if (d.recResend) {
+    busy(e.target, 'w-recovery-err', async () => {
+      broadcastLog.bumpAttempt(txid);
+      try {
+        // The IDENTICAL bytes, never a rebuild: Core re-relays a transaction it
+        // already holds, and isAlreadyBroadcast() covers the relays that error
+        // instead — so a duplicate send is a no-op, not a second conflicting tx.
+        const nodeTxid = await sendAndClassify(rec.hex, txid);
+        note(`Accepted by the node — tx ${String(nodeTxid || txid).slice(0, 16)}…`);
+        refreshMoney();
+      } catch (err) {
+        // Deliberately not rethrown. busy() would paint this into
+        // #w-recovery-err, which lives INSIDE the card — and a definite reject
+        // has just dropped the record, so the card would be hidden by the time
+        // the text landed. The row is the surface that is always still there:
+        // a verdict when the record is gone, r.lastError when it survived
+        // (the ambiguous case, where markAmbiguous already stored the reason).
+        if (!broadcastLog.get(txid)) note(err.message);
+      }
+      renderRecoveryCard();
+    });
+  }
+});
+
 // ---- Boot ----
 async function boot() {
   initCalculator();
@@ -3177,42 +3694,74 @@ async function boot() {
     if (ladder.includes(choice)) $('w-autolock').value = choice;
   } catch { /* private mode → default */ }
   enhanceSelect('w-autolock');
-  loadPriceChart();
-  setInterval(loadPriceChart, 60_000);
+  // chain, not setInterval (#H1): loadPriceChart now awaits a budgeted fetch
+  (async function chartLoop() {
+    await loadPriceChart();
+    setTimeout(chartLoop, PRICE_CHART_POLL_MS);
+  })();
   try {
-    const cfg = await (await fetch('/api/config')).json();
-    appConfig = { ...cfg, loaded: true };
-    const badge = $('modeBadge');
-    if (cfg.mock) {
-      badge.className = 'badge mock';
-      badge.textContent = 'MOCK MODE';
-    } else {
-      badge.className = 'badge real';
-      badge.textContent = 'LIVE NODE';
-    }
-    if (cfg.faucet) $('w-faucet').style.display = 'block';
-    if (cfg.version) $('app-version').textContent = cfg.version; // which build this domain runs
+    const cfg = await (await apiFetch('/api/config', {
+      budget: NET_TIMEOUT_MS.config, what: 'the wallet server',
+    })).json();
+    appConfig = withSafeExplorer({ ...cfg, loaded: true });
+    applyConfigChrome(cfg);
     // Cross-wired backend (#64): the server refuses everything, so no flow
     // can work — say exactly why in the loudest chrome we have and stop.
     if (renderCrossWire(cfg)) return; // no wallet boot, no status/oracle loops
-  } catch { /* ignore */ }
+  } catch (e) {
+    // Never fatal — the wallet still opens (bootStuck is for a dead vault and
+    // for the cross-wire refusal, not for a degraded config). But a swallowed
+    // config leaves appConfig.loaded false, which hides #w-no-indexer and makes
+    // startMoneyPolling return early: an open wallet with a blank money panel
+    // and no stated reason. Say it on the Network card's error line, which
+    // loadStatus rebuilds each poll, so this cannot accumulate (#H1).
+    $('s-err').textContent = 'config: ' + e.message;
+  }
   bootWallet();
+  // #C2: READ-ONLY at boot. ensurePersistence() here would fire Firefox's
+  // persistent-storage permission prompt on a cold page load with no gesture —
+  // user-hostile, and a denial would permanently escalate the backup strip.
+  // Not awaited: boot must not block on it.
+  probePersistence();
   // retry until the node names its chain: a transient boot failure must not
   // strand the UI network-unknown (no addresses, no testnet banner) forever.
   // The retry also re-checks the cross-wire flag — a page loaded before the
   // server's first chain probe must still lock up once the mismatch is known.
   (async function statusLoop() {
     await loadStatus();
-    if (chainState.netKnown) {
+    // Re-fetch /api/config while EITHER answer is still missing: the chain (the
+    // cross-wire re-check this loop was written for) or the config itself — a
+    // boot whose config fetch timed out leaves a wallet that can never show
+    // money, because appConfig.indexer gates startMoneyPolling (#H1).
+    if (chainState.netKnown && appConfig.loaded) {
       // The chain is known, but height, softfork state and node reachability
       // all keep moving, and the header presents them as live. Keep polling —
       // slower, since this is no longer the boot retry.
       setTimeout(statusLoop, STATUS_POLL_MS);
       return;
     }
-    const cfg = await fetch('/api/config').then((r) => r.json()).catch(() => null);
-    if (cfg?.chainMismatch) { appConfig = { ...appConfig, ...cfg }; renderCrossWire(cfg); return; }
-    setTimeout(statusLoop, 5000);
+    const cfg = await apiFetch('/api/config', { budget: NET_TIMEOUT_MS.config, what: 'the wallet server' })
+      .then((r) => r.json()).catch(() => null);
+    if (cfg?.chainMismatch) { appConfig = withSafeExplorer({ ...appConfig, ...cfg }); renderCrossWire(cfg); return; }
+    if (cfg && !appConfig.loaded) {
+      appConfig = withSafeExplorer({ ...cfg, loaded: true });
+      applyConfigChrome(cfg);
+      // Only an OPEN wallet renders anything appConfig-gated (#w-no-indexer and
+      // the loading veil), and repainting the other states would reset the
+      // connect modal under a user who is mid-unlock.
+      if (shownState === 'open') {
+        show('open');
+        // the poll appConfig.indexer refused at openWallet; nothing is running
+        // yet (that early return is the only way here), so this starts one chain
+        if (wallet.seed) startMoneyPolling();
+      }
+    } else if (!appConfig.loaded) {
+      // loadStatus rebuilds this line every poll, so an un-restated reason
+      // vanishes after one tick — append (never accumulate) instead.
+      $('s-err').textContent += ($('s-err').textContent ? ' · ' : '')
+        + 'config: the wallet server did not answer — balances stay hidden until it does';
+    }
+    setTimeout(statusLoop, chainState.netKnown ? STATUS_POLL_MS : 5000);
   })();
   // The oracle price was fetched once here and then presented as live for the
   // rest of the session. Everything downstream trusted it: the header figure,

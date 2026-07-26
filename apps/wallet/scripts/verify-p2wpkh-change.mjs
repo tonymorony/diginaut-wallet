@@ -8,10 +8,11 @@
 // Setup: same as verify-mint.mjs (indexer 8789, wallet 8791,
 // headless Chrome CDP on 9224 with a FRESH profile).
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500';
 
 async function nodeRpc(method, params = [], wallet) {
