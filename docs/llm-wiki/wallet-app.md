@@ -160,6 +160,14 @@ then the CTA/recovery/banner copy pass).
   where an unrecoverable wallet costs nothing. Do not "restore consistency" by deleting the seal:
   the failure mode is the extension changing how it signs (`showWeb3Mismatch`), and the 24 words
   are the only way back.
+- **Ungating the door meant ungating TWO gates.** `#w-web3-group`'s display was only the visible
+  one; `openWeb3Picker()` carried a second, functional refusal keyed on
+  `chainState.netName === 'mainnet'`. Removing the first and leaving the second gives a door that
+  renders and then refuses — caught by `verify-web3-mainnet`, not by review. That belt is now
+  keyed on **`!chainState.netKnown`**, which is both the original boot-race intent and strictly
+  safer: `s2dForChain()` falls back to v1 for an unknown chain, so a click landing before the
+  chain poll resolves would derive the *testnet* wallet against a mainnet node — fundable, and
+  never re-derivable from this door.
 - **Never reach for a neighbour by DOM position.** `loadStatus()` gated the web3 door with
   `$('w-web3-choice').nextElementSibling` (the hint `<p>`). #138 folded that copy into the
   door, the walk hit `null`, the throw was swallowed by the surrounding `catch` — and took

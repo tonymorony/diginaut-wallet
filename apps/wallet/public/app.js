@@ -1489,11 +1489,16 @@ function renderWeb3VerifySteps(stage) {
 }
 
 async function openWeb3Picker() {
-  // belt for the boot race: the button is hidden on mainnet, but a click that
-  // lands before the chain poll resolves must still refuse (ADR 0005)
-  if (chainState.netName === 'mainnet') {
+  // Belt for the boot race, re-aimed for the mainnet rollout. It used to refuse
+  // mainnet outright; now that mainnet is supported the danger has moved, and
+  // it is worse: WHICH network we are on selects the frozen derivation bytes
+  // (ADR 0005), and s2dForChain falls back to v1 for an unknown chain. A click
+  // landing before the chain poll resolves would therefore derive the TESTNET
+  // wallet against a mainnet node — a wallet the user could fund and then never
+  // re-derive from this door. So the guard is netKnown, not the chain's name.
+  if (!chainState.netKnown) {
     setConnectMode('choice');
-    $('w-none-err').textContent = 'Connecting a web3 wallet is testnet-only for now.';
+    $('w-none-err').textContent = 'Still checking which network this node is on. Try again in a moment.';
     return;
   }
   setConnectMode('web3-pick');
