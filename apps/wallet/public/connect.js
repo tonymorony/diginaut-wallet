@@ -13,9 +13,20 @@ import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { base58 } from '@scure/base';
 
-// The frozen v1 derivation message. Consensus-grade: any byte change derives a
-// DIFFERENT wallet for every user (test pins the SHA-256). Mainnet gets a v2
-// message with its own bytes — derived seeds never span networks (ADR 0005).
+// The frozen derivation messages. Consensus-grade: any byte change derives a
+// DIFFERENT wallet for every user (tests pin the SHA-256 of each).
+//
+// ADR 0005 — the bytes name their network, so a signature produced on one
+// network can NEVER be replayed against the other's funds. That is the whole
+// point and it is not a copy detail: the derivation signature is phishable by
+// construction (any site can present the same bytes), so a testnet-era
+// signature captured anywhere must be worthless against mainnet. Reusing v1 on
+// mainnet would also ask a user standing on diginaut.ludere.space to sign a
+// message whose own last line tells them to refuse exactly that.
+//
+// The cost, accepted in ADR 0005: one source wallet derives two unrelated
+// Diginaut wallets, one per network. That asymmetry with restored mnemonics is
+// deliberate.
 export const S2D_VERSION = 1;
 export const S2D_MESSAGE = [
   'Diginaut sign-to-derive v1',
@@ -26,6 +37,42 @@ export const S2D_MESSAGE = [
   'Anyone who obtains this signature can steal your DigiByte funds.',
   'Only sign this message on https://dgb.ludere.space. If any other site asks for this signature, refuse.',
 ].join('\n');
+
+// v2 = mainnet. Same shape as v1, every network-naming line re-pointed; the two
+// risk sentences are byte-identical on purpose, so a reader who has seen one
+// recognises the other.
+export const S2D_VERSION_MAIN = 2;
+export const S2D_MESSAGE_MAIN = [
+  'Diginaut sign-to-derive v2',
+  'Network: DigiByte mainnet',
+  'Origin: https://diginaut.ludere.space',
+  '',
+  'This signature generates the private keys of your DigiByte wallet.',
+  'Anyone who obtains this signature can steal your DigiByte funds.',
+  'Only sign this message on https://diginaut.ludere.space. If any other site asks for this signature, refuse.',
+].join('\n');
+
+/** The frozen message a CHAIN derives from — first derive only.
+ *  BOTH spellings, for the same reason betaCapError takes both: the node says
+ *  'main', the wallet's netName says 'mainnet', and a mixed-up caller here would
+ *  silently derive the testnet wallet on mainnet. Allow-list, never a deny-list —
+ *  an unknown chain falls to v1, which cannot touch mainnet funds. */
+export function s2dForChain(chain) {
+  return chain === 'main' || chain === 'mainnet'
+    ? { version: S2D_VERSION_MAIN, message: S2D_MESSAGE_MAIN }
+    : { version: S2D_VERSION, message: S2D_MESSAGE };
+}
+
+/** The frozen message a STORED wallet was derived from. Re-derivation must use
+ *  the version on the source record, not the current chain: verifying "does
+ *  this extension still reproduce THIS wallet" has to re-sign the same bytes
+ *  that made it, or a v1 wallet inspected on mainnet would report a mismatch
+ *  that is really just the other network's message. */
+export function s2dForVersion(version) {
+  return Number(version) === S2D_VERSION_MAIN
+    ? { version: S2D_VERSION_MAIN, message: S2D_MESSAGE_MAIN }
+    : { version: S2D_VERSION, message: S2D_MESSAGE };
+}
 
 const te = new TextEncoder();
 const SECP_N = secp256k1.Point.Fn.ORDER;
@@ -141,21 +188,28 @@ export function discoverProviders({ timeoutMs = 400 } = {}) {
 
 /** One signature from the source, chain-appropriately. Returns the 64 canonical
  * bytes that feed everything downstream, after the structural admission checks. */
-async function signOnce(entry, address) {
+async function signOnce(entry, address, message) {
+  // Explicit, never defaulted: a missing argument here would silently sign the
+  // testnet bytes on mainnet, which is the one mistake ADR 0005 exists to stop.
+  if (typeof message !== 'string' || !message) throw new Error('internal: no derivation message for this network');
+  const msgBytes = te.encode(message);
   if (entry.kind === 'evm') {
-    const hexMsg = '0x' + bytesToHex(te.encode(S2D_MESSAGE));
+    const hexMsg = '0x' + bytesToHex(msgBytes);
     const sigHex = await entry.provider.request({ method: 'personal_sign', params: [hexMsg, address] });
     const { rs, recid } = canonicalizeEvmSignature(sigHex);
-    const recovered = recoverEthAddress(rs, recid);
+    // The digest MUST be of the bytes we just asked them to sign. recoverEthAddress
+    // defaults to the v1 message, so omitting this recovers a different address on
+    // mainnet and fails every honest signer with the smart-account refusal.
+    const recovered = recoverEthAddress(rs, recid, eip191Digest(msgBytes));
     if (recovered !== String(address).toLowerCase()) {
       throw new Error('the connected account is a smart account or did not sign itself — only plain key wallets can derive');
     }
     return rs;
   }
-  const res = await entry.provider.signMessage(te.encode(S2D_MESSAGE), 'utf8');
+  const res = await entry.provider.signMessage(msgBytes, 'utf8');
   const sig = res?.signature instanceof Uint8Array ? res.signature
     : res?.signature ? Uint8Array.from(Object.values(res.signature)) : null;
-  if (!sig || !verifySolanaSignature(sig, address)) throw new Error('Phantom returned an invalid signature');
+  if (!sig || !verifySolanaSignature(sig, address, msgBytes)) throw new Error('Phantom returned an invalid signature');
   return sig;
 }
 
@@ -179,14 +233,17 @@ export async function connectAccount(entry) {
 
 // Signature bytes and entropy are key material: derive everything, then zero
 // the buffers (best-effort in JS). Nothing in this module is ever logged.
-async function packageDerived(entry, address, canonical) {
+async function packageDerived(entry, address, canonical, msgVersion) {
   const entropy = await entropyFromSignature(canonical);
   try {
     const mnemonic = mnemonicFromEntropy(entropy);
     const fp = await fingerprintOfEntropy(entropy);
     return {
       mnemonic,
-      source: { kind: entry.kind, rdns: entry.rdns, brand: entry.brand, address, msgVersion: S2D_VERSION, fp },
+      // msgVersion is what makes a derived wallet re-derivable years later: it
+      // records WHICH frozen bytes produced this seed, so a reconnect re-signs
+      // the same message even if the user is on the other network.
+      source: { kind: entry.kind, rdns: entry.rdns, brand: entry.brand, address, msgVersion, fp },
     };
   } finally {
     entropy.fill(0);
@@ -195,10 +252,11 @@ async function packageDerived(entry, address, canonical) {
 
 /** Reconnect verification (#129, spec §8): ONE signature, no ceremony — the
  * stored fingerprint is the cross-check on this path, not the double-sign. */
-export async function deriveOnce(entry, address) {
-  const sig = await signOnce(entry, address);
+export async function deriveOnce(entry, address, msgVersion = S2D_VERSION) {
+  const { version, message } = s2dForVersion(msgVersion);
+  const sig = await signOnce(entry, address, message);
   try {
-    return await packageDerived(entry, address, sig);
+    return await packageDerived(entry, address, sig, version);
   } finally {
     sig.fill(0);
   }
@@ -207,13 +265,16 @@ export async function deriveOnce(entry, address) {
 /** The full first-derive ceremony. onStep(name) fires as the wizard advances
  * ('sign1' | 'sign2' | 'verify') so the UI can render the step machine.
  * Resolves { mnemonic, source } or throws with user-facing copy. */
-export async function deriveFromSource(entry, { onStep = () => {}, address = null } = {}) {
+export async function deriveFromSource(entry, { onStep = () => {}, address = null, chain = null } = {}) {
+  // First derive picks by CHAIN — this is the moment the wallet is born, and
+  // which network it is born on decides which frozen bytes own it forever.
+  const { version, message } = s2dForChain(chain);
   const account = address ?? await connectAccount(entry);
   onStep('sign1');
-  const first = await signOnce(entry, account);
+  const first = await signOnce(entry, account, message);
   try {
     onStep('sign2');
-    const second = await signOnce(entry, account);
+    const second = await signOnce(entry, account, message);
     const secondMatches = sameBytes(first, second);
     second.fill(0);
     onStep('verify');
@@ -223,7 +284,7 @@ export async function deriveFromSource(entry, { onStep = () => {}, address = nul
       // once would strand the funds behind a signature that never comes back.
       throw new Error(`${entry.brand} does not sign deterministically (this is typical of MPC wallets). It cannot derive a recoverable wallet.`);
     }
-    return await packageDerived(entry, account, first);
+    return await packageDerived(entry, account, first, version);
   } finally {
     first.fill(0);
   }

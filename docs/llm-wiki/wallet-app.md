@@ -149,6 +149,17 @@ then the CTA/recovery/banner copy pass).
   give a second door primary weight.
 - Door ids are load-bearing: `w-create-choice` / `w-show-restore` / `w-show-import` /
   `w-web3-choice` are clicked **by id** in 13 drivers. Restyle freely, never rename.
+- **The web3 door is on every network since 2026-07-27** (`#w-web3-group` no longer toggled by
+  chain). Two things make that safe and both are load-bearing: the derivation bytes are
+  per-network (**ADR 0005**; `s2dForChain` on first derive, `s2dForVersion` on reconnect), so a
+  testnet-era signature can never be replayed against mainnet funds; and the mainnet save path
+  runs the **sealed** ceremony — `w-web3-save-go` now calls
+  `beginBackupCeremony(id, mnemonic, { mandatory: true })` when `!backupSkipAllowed(gateChain())`.
+  That reverses #129's *"no forced reveal — the badge + strip carry the backup pressure"* **for
+  mainnet only**; testnet keeps the light flow. #129 was decided while the door was testnet-only,
+  where an unrecoverable wallet costs nothing. Do not "restore consistency" by deleting the seal:
+  the failure mode is the extension changing how it signs (`showWeb3Mismatch`), and the 24 words
+  are the only way back.
 - **Never reach for a neighbour by DOM position.** `loadStatus()` gated the web3 door with
   `$('w-web3-choice').nextElementSibling` (the hint `<p>`). #138 folded that copy into the
   door, the walk hit `null`, the throw was swallowed by the surrounding `catch` — and took

@@ -12,7 +12,7 @@ import {
 } from '/lib/index.js';
 import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
-import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress } from '/connect.js';
+import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
@@ -449,7 +449,12 @@ async function loadStatus() {
     // null — which threw, was swallowed by the catch below, and took
     // maybeShowMainnetAck() with it. A mainnet user then reached the wallet with
     // no risk interstitial at all. Never reach for a neighbour by DOM position.
-    $('w-web3-group').style.display = info.chain === 'main' ? 'none' : '';
+    // Mainnet rollout: the door is open on every network now. Its bytes are
+    // per-network (ADR 0005), so a signature made here can never be replayed
+    // against the other chain's funds, and on mainnet the save path runs the
+    // SEALED backup ceremony — a derived wallet cannot hold real funds without
+    // its 24 words written down.
+    $('w-web3-group').style.display = '';
     maybeShowMainnetAck(info.chain);
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
@@ -1555,7 +1560,10 @@ $('w-web3-list').addEventListener('click', async (e) => {
 // then run the FULL ceremony — one signature has not proven determinism.
 async function verifyReconnect(entry, address, run) {
   renderWeb3VerifySteps('sign');
-  const derived = await deriveOnce(entry, address);
+  // Reconnect is chain-scoped: on mainnet you are re-deriving your MAINNET
+  // wallet, so sign that network's bytes. A testnet wallet legitimately fails
+  // to match here — per ADR 0005 it is a different wallet, not a mismatch.
+  const derived = await deriveOnce(entry, address, s2dForChain(gateChain()).version);
   if (run !== web3Run) return;
   renderWeb3VerifySteps('done');
   const exact = vault.findSource(derived.source.kind, derived.source.address, derived.source.fp);
@@ -1590,7 +1598,8 @@ $('w-web3-go').addEventListener('click', (e) =>
     $('w-web3-disclose').style.display = 'none';
     let derived;
     try {
-      derived = await deriveFromSource(entry, { onStep: renderWeb3Steps, address: web3Address });
+      // chain decides which frozen message this wallet is born from (ADR 0005)
+      derived = await deriveFromSource(entry, { onStep: renderWeb3Steps, address: web3Address, chain: gateChain() });
     } catch (err) {
       if (run !== web3Run) return; // ceremony abandoned — a late popup must not resurface it
       // refusal or user-rejected popup: back to the armed disclosure, error below
@@ -1647,8 +1656,9 @@ $('w-web3-save-go').addEventListener('click', (e) =>
     if (!web3Pending) throw new Error('the ceremony expired — start again');
     const brand = web3Pending.source.brand;
     const name = $('w-web3-name').value.trim() || `${brand} wallet`;
+    const mnemonic = web3Pending.mnemonic; // capture before the pending slot is cleared
     const { id, existed } = await createWalletEntry(
-      { name, mnemonic: web3Pending.mnemonic, backedUp: false, source: web3Pending.source },
+      { name, mnemonic, backedUp: false, source: web3Pending.source },
       { passId: 'w-web3-pass', pass2Id: 'w-web3-pass2' },
     );
     web3Pending = null;
@@ -1656,6 +1666,14 @@ $('w-web3-save-go').addEventListener('click', (e) =>
     if (existed) {
       const w = vault.meta().wallets.find((x) => x.id === id);
       openWalletModal(`You already have this wallet (${w.name}) — switched to it.`);
+    } else if (!backupSkipAllowed(gateChain())) {
+      // Mainnet: the same SEALED ceremony Create runs (#C3). #129's "no forced
+      // reveal — the badge + strip carry the backup pressure" was decided while
+      // this door was testnet-only, where an unrecoverable wallet costs nothing.
+      // On real funds the pressure has to be a gate: the whole failure mode here
+      // is the extension changing how it signs (showWeb3Mismatch), and the 24
+      // words are the only way back. Two doors to a mainnet wallet, one seal.
+      beginBackupCeremony(id, mnemonic, { mandatory: true });
     } else {
       // no forced reveal (#129): the badge + strip carry the backup pressure
       openWalletModal(`Derived from ${brand}. Back up its 24 words when you’re ready — the badge will remind you.`);
