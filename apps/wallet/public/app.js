@@ -42,6 +42,18 @@ const ORACLE_MAX_PRICE_MICRO_USD = 100_000_000n; // $100 / DGB
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** Markup for one sprite icon (#138). The shapes live in index.html's #ic-sprite,
+ *  so a fix lands everywhere at once and app.js never carries path data.
+ *  Both arguments are literals at every call site. The strip makes that
+ *  structural rather than a convention someone has to remember: an id or class
+ *  can only ever be [a-z0-9- ], so no future caller can turn this into an
+ *  injection sink by threading a brand name or an indexer field through it.
+ *  Decorative by default: every caller either sits next to a visible label or
+ *  puts aria-label on the control. */
+const safeIcName = (s) => String(s).replace(/[^a-z0-9- ]/g, '');
+const icon = (name, cls = '') =>
+  `<svg class="ic${cls ? ' ' + safeIcName(cls) : ''}" aria-hidden="true"><use href="#ic-${safeIcName(name)}"/></svg>`;
+
 /** Every frontend fetch goes through here (#H1). A bare fetch against a stalled
  *  hop never settles: busy() only re-enables its button in `finally`, and every
  *  poll chain awaits before rescheduling — so one hung socket disables the UI
@@ -236,7 +248,7 @@ function enhanceSelect(id) {
   const trig = document.createElement('button');
   trig.type = 'button';
   trig.className = 'dd-trigger';
-  trig.innerHTML = '<span class="dd-label"></span><svg class="dd-caret" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 6l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  trig.innerHTML = '<span class="dd-label"></span>' + icon('chevron-down', 'ic-s dd-caret');
   const list = document.createElement('div');
   list.className = 'dd-list';
   wrap.append(trig, list);
@@ -247,7 +259,10 @@ function enhanceSelect(id) {
     for (const o of sel.options) {
       const el = document.createElement('div');
       el.className = 'dd-option' + (o.value === sel.value ? ' selected' : '');
-      el.textContent = o.textContent;
+      // option text is textContent (never innerHTML — it can carry a wallet
+      // name); the tick is a separate node so the label stays untrusted-safe
+      el.append(o.textContent);
+      el.insertAdjacentHTML('beforeend', icon('check', 'ic-s dd-tick'));
       el.addEventListener('click', () => {
         sel.value = o.value;
         sel.dispatchEvent(new Event('input', { bubbles: true }));
@@ -333,6 +348,20 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('mainnet-ack-modal').classList.contains('open')) e.preventDefault();
 }, true);
 
+/** Focus containment for the connect modal (#138). It carries aria-modal, which
+ *  tells assistive tech the rest of the page is inert — so Tab must not walk out
+ *  of it into the wallet behind, or the promise is a lie. Same shape as the
+ *  mainnet-ack trap above, with two differences: this modal is dismissible, so
+ *  Escape is NOT swallowed; and its close button can be hidden (a sealed backup
+ *  ceremony), so focus snaps to the first VISIBLE control rather than a fixed id. */
+document.addEventListener('focusin', (e) => {
+  const modal = $('w-connect-modal');
+  if (!modal.classList.contains('open') || modal.contains(e.target)) return;
+  const focusable = [...modal.querySelectorAll('button, input, textarea, select, [tabindex]')]
+    .find((el) => el.offsetParent !== null && !el.disabled);
+  (focusable || modal.querySelector('.modal')).focus();
+});
+
 // The network pill must survive scroll (#54): once the topbar scrolls away it
 // floats to a fixed corner just below the sticky banner. Two subtleties, both
 // mobile-borne: the threshold is the header's real bottom edge (a fixed 64px
@@ -414,9 +443,12 @@ async function loadStatus() {
     // Sign-to-derive is TESTNET-ONLY (#126 destination, ADR 0005): the frozen
     // v1 message names the testnet, so the same bundle on a mainnet node must
     // not offer the door at all — hide it the moment the chain says main.
-    const web3Gate = info.chain === 'main' ? 'none' : '';
-    $('w-web3-choice').style.display = web3Gate;
-    $('w-web3-choice').nextElementSibling.style.display = web3Gate; // its hint line
+    // ONE node, not the button plus a .nextElementSibling walk: the sibling was
+    // the hint line, and when #138 folded that copy into the door the walk hit
+    // null — which threw, was swallowed by the catch below, and took
+    // maybeShowMainnetAck() with it. A mainnet user then reached the wallet with
+    // no risk interstitial at all. Never reach for a neighbour by DOM position.
+    $('w-web3-group').style.display = info.chain === 'main' ? 'none' : '';
     maybeShowMainnetAck(info.chain);
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
@@ -693,9 +725,18 @@ function setConnectMode(mode) {
   $('w-quiz-view').style.display = mode === 'quiz' ? 'block' : 'none';
   $('w-backup-success').style.display = mode === 'backup-done' ? 'block' : 'none';
   renderBackupSkipGate();
-  document.querySelector('#w-connect-modal .modal-head h3').textContent =
-    ['backup', 'quiz', 'backup-done'].includes(mode) ? 'Back up your seed phrase'
-      : mode === 'erase' ? 'Erase all wallets' : 'Connect wallet';
+  // The sheet is not always a "connect": with a vault already open it is an ADD,
+  // and it said "Connect wallet" over a connected wallet. The title has to name
+  // the state the modal is actually in, or the header contradicts the chrome
+  // behind it (#138).
+  const [title, sub] = ['backup', 'quiz', 'backup-done'].includes(mode)
+    ? ['Back up your seed phrase', 'Write the words down before you fund this wallet']
+    : mode === 'erase' ? ['Erase all wallets', 'This cannot be undone']
+      : mode === 'unlock' ? ['Unlock your wallets', 'One master password for every wallet on this device']
+        : vault.status === 'unlocked' ? ['Add a wallet', 'Your vault is unlocked — no password needed to add']
+          : ['Connect a wallet', 'Non-custodial — the keys never leave this browser'];
+  $('w-connect-title').textContent = title;
+  $('w-connect-sub').textContent = sub;
   // real words live in the ceremony DOM only while its steps are open
   if (mode !== 'backup') $('w-backup-words').innerHTML = '';
   if (mode !== 'quiz') { $('w-quiz-slots').innerHTML = ''; $('w-quiz-chips').innerHTML = ''; $('w-quiz-err').textContent = ''; }
@@ -705,8 +746,20 @@ function setConnectMode(mode) {
   $('w-none-err').textContent = '';
 }
 function openConnectModal() {
-  setConnectMode(vault.status === 'locked' ? 'unlock' : 'choice');
+  const locked = vault.status === 'locked';
+  setConnectMode(locked ? 'unlock' : 'choice');
   $('w-connect-modal').classList.add('open');
+  // Pull focus into the dialog so a keyboard user lands on the thing the modal
+  // is asking for, not on whatever was behind it. Deferred a frame: the element
+  // has to be laid out (display flipped by setConnectMode) before it can take
+  // focus. Never throw here — a failed focus must not abort opening.
+  requestAnimationFrame(() => {
+    if (!$('w-connect-modal').classList.contains('open')) return;
+    // re-read the status: an autolock landing inside this one frame flips the
+    // sheet to 'unlock', and the captured value would aim at a hidden door
+    const target = vault.status === 'locked' ? 'w-unlock-pass' : 'w-create-choice';
+    try { $(target).focus(); } catch { /* not laid out */ }
+  });
 }
 function closeConnectModal() {
   $('w-connect-modal').classList.remove('open');
@@ -917,8 +970,8 @@ $('rx-tab-dd').addEventListener('click', () => setReceiveTab('dd'));
 // ---- Copy affordance on the address boxes ----
 // data-copy names the element holding the text; data-copy-text carries it
 // directly (the previous-address rows, which are built as markup).
-const COPY_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 3.5A1.5 1.5 0 0 0 9 2H4a2 2 0 0 0-2 2v5a1.5 1.5 0 0 0 1.5 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-const DONE_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const COPY_ICON = icon('copy', 'ic-s');
+const DONE_ICON = icon('check', 'ic-s');
 for (const el of document.querySelectorAll('.icon-btn')) el.innerHTML = COPY_ICON;
 const copyTimers = new WeakMap(); // button → pending revert timer
 const copyLabels = new WeakMap(); // button → its resting aria-label
@@ -1369,7 +1422,7 @@ function renderWeb3Steps(stage) {
     const ok = i < idx;
     const on = !ok && i === idx && stage !== 'disclose';
     const body = on ? `<span class="w3-wait">${label}${active}</span>` : `<span>${label}</span>`;
-    return `<div class="w3-step${on ? ' on' : ''}${ok ? ' ok' : ''}"><span class="n">${ok ? '✓' : i + 1}</span>${body}</div>`;
+    return `<div class="w3-step${on ? ' on' : ''}${ok ? ' ok' : ''}"><span class="n">${ok ? icon('check', 'ic-s') : i + 1}</span>${body}</div>`;
   }).join('');
 }
 
@@ -1377,11 +1430,12 @@ function renderWeb3Steps(stage) {
 function renderWeb3VerifySteps(stage) {
   const brand = esc(web3Entry?.brand ?? '');
   const done = stage === 'done';
+  const tick = icon('check', 'ic-s');
   $('w-web3-steps').innerHTML =
-    `<div class="w3-step${done ? ' ok' : ' on'}"><span class="n">${done ? '✓' : '1'}</span>`
+    `<div class="w3-step${done ? ' ok' : ' on'}"><span class="n">${done ? tick : '1'}</span>`
     + (done ? '<span>Signature received</span>' : `<span class="w3-wait">Known account — one signature to verify, check the ${brand} popup…</span>`)
     + '</div>'
-    + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? '✓' : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
+    + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? tick : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
 }
 
 async function openWeb3Picker() {
@@ -1399,19 +1453,25 @@ async function openWeb3Picker() {
   if (connectMode !== 'web3-pick') return; // user navigated away while we listened
   web3Found = found;
   if (!found.length) {
-    listEl.innerHTML = '<div class="w3-row" style="opacity:.65"><span class="w3-fallback-ic">✕</span>'
+    listEl.innerHTML = `<div class="w3-row" style="opacity:.65"><span class="w3-fallback-ic">${icon('puzzle', 'ic-s')}</span>`
       + '<span><span class="w3-name">No wallet extensions detected</span><br/>'
       + '<span class="w3-sub">Install MetaMask, Phantom, OKX or any EIP-6963 wallet extension, then reload this page.</span></span></div>';
     return;
   }
   listEl.innerHTML = found.map((w, i) => {
-    // EIP-6963 icons are wallet-supplied — admit data:image URIs only
-    const icon = typeof w.icon === 'string' && /^data:image\//.test(w.icon)
+    // EIP-6963 icons are wallet-supplied — admit data:image URIs only.
+    // Named brandIcon, not icon: a local `icon` here would shadow the sprite
+    // helper for the whole callback.
+    const brandIcon = typeof w.icon === 'string' && /^data:image\//.test(w.icon)
       ? `<img src="${esc(w.icon)}" alt="" />`
       : `<span class="w3-fallback-ic">${esc((w.brand || '?').slice(0, 1).toUpperCase())}</span>`;
-    const sub = w.kind === 'sol' ? 'Solana signature (Ed25519)' : 'detected extension';
-    return `<button type="button" class="w3-row" data-web3-pick="${i}">${icon}`
-      + `<span><span class="w3-name">${esc(w.brand)}</span><br/><span class="w3-sub">${sub}</span></span></button>`;
+    // symmetric copy: the old EVM row said "detected extension", which named the
+    // discovery mechanism rather than the curve the signature will use
+    const sol = w.kind === 'sol';
+    const sub = sol ? 'Solana signature (Ed25519)' : 'EVM signature (secp256k1)';
+    return `<button type="button" class="w3-row" data-web3-pick="${i}">${brandIcon}`
+      + `<span class="w3-txt"><span class="w3-name">${esc(w.brand)}</span><br/><span class="w3-sub">${sub}</span></span>`
+      + `<span class="chainpill">${sol ? 'SOL' : 'EVM'}</span></button>`;
   }).join('');
 }
 
@@ -1916,7 +1976,9 @@ function renderBackupCta() {
   const active = m?.wallets.find((w) => w.id === wallet.id);
   const nag = Boolean(active && !active.backedUp);
   $('w-backup-now').style.display = nag ? 'block' : 'none';
-  $('w-backup-badge').style.display = nag ? 'inline-block' : 'none';
+  // inline-FLEX, not inline-block: the badge carries an icon beside its label
+  // now, and an inline style beats the stylesheet's display (#138)
+  $('w-backup-badge').style.display = nag ? 'inline-flex' : 'none';
   renderBackupStrip();
 }
 
@@ -2080,9 +2142,9 @@ function renderWalletList() {
     return `<div class="wal-row">` +
       `<button type="button" class="wal-pick" data-switch="${esc(w.id)}">` +
       `<span><span class="wal-name">${esc(w.name)}</span>${dot}${via}${sub}</span>` +
-      (active ? '<span class="wal-check">✓</span>' : '') +
+      (active ? `<span class="wal-check">${icon('check', 'ic-s')}</span>` : '') +
       `</button>` +
-      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove">⋯</button>` +
+      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove" aria-label="Rename or remove">${icon('more', 'ic-s')}</button>` +
       `</div>` +
       (managingId === w.id ? walletEditHtml(w) : '');
   }).join('');
@@ -2479,7 +2541,9 @@ function historyRow(h) {
     const conf = h.height === 0
       ? '<span class="tx-conf pending">pending</span>'
       : '<span class="tx-conf partial">confirmed</span>';
-    return `<div class="tx"><div class="tx-icon out">·</div>` +
+    // 'more', not a '·' glyph: direction is unknown until enrichment lands, and
+    // .tx-icon no longer carries the font-size/weight a bare character needs
+    return `<div class="tx"><div class="tx-icon out">${icon('more')}</div>` +
       `<div class="tx-main"><div class="tx-title">Transaction</div><div class="tx-sub">${link}</div></div>` +
       `<div class="tx-right">${conf}</div></div>`;
   }
@@ -2503,22 +2567,22 @@ function historyRow(h) {
   const extOut = vout.find((o) => o.address && !isMine(o.address) && sat(o.valueSats) > 0n);
   const extIn = vin.find((v) => v.address && !isMine(v.address));
 
-  let title, iconCls, icon, cp = '', amt;
+  let title, iconCls, glyph, cp = '', amt;
   if (detail.type !== 'dgb') {
     // The DGB shown for a DD tx is the collateral movement: a mint locks it
     // (out), a redeem frees it (back to us); a DD-only transfer is DGB-neutral
     // (just the fee), so no DGB amount — the label carries the meaning.
     title = DD_LABEL[detail.type] || 'DigiDollar';
-    iconCls = 'dd'; icon = '◆';
+    iconCls = 'dd'; glyph = icon('diamond');
     amt = detail.type === 'mint' ? -toOthers : detail.type === 'redeem' ? toMine : 0n;
     cp = sent && extOut ? `to ${truncAddr(extOut.address)}` : (extIn ? `from ${truncAddr(extIn.address)}` : '');
   } else if (sent) {
     title = toOthers > 0n ? 'Sent' : 'Sent to self';
-    iconCls = 'out'; icon = '↑'; amt = -toOthers;
+    iconCls = 'out'; glyph = icon('tx-out'); amt = -toOthers;
     cp = extOut ? `to ${truncAddr(extOut.address)}` : '';
   } else {
     title = coinbase ? 'Mined' : 'Received';
-    iconCls = 'in'; icon = '↓'; amt = toMine;
+    iconCls = 'in'; glyph = icon('tx-in'); amt = toMine;
     cp = !coinbase && extIn ? `from ${truncAddr(extIn.address)}` : '';
   }
 
@@ -2528,14 +2592,14 @@ function historyRow(h) {
   const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
   const conf = (c <= 0 || h.height === 0)
     ? '<span class="tx-conf pending">pending</span>'
-    : c >= FINAL_CONF ? '<span class="tx-conf final">✓ final</span>'
+    : c >= FINAL_CONF ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
       : `<span class="tx-conf partial">${c} conf</span>`;
   const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
   const time = Number(detail.time) || 0;
   const sub = [cp, relTime(time), feeStr].filter(Boolean).join(' · ');
 
   return `<div class="tx">` +
-    `<div class="tx-icon ${iconCls}">${icon}</div>` +
+    `<div class="tx-icon ${iconCls}">${glyph}</div>` +
     `<div class="tx-main"><div class="tx-title">${esc(title)}</div>` +
     `<div class="tx-sub">${esc(sub)}${sub ? ' · ' : ''}${link}</div></div>` +
     `<div class="tx-right"><div class="tx-amt ${amtCls}">${amtStr}</div>${conf}</div></div>`;

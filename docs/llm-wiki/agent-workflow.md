@@ -11,6 +11,11 @@ already-open PR may silently not pick up new commits — check the PR actually u
 2. Spawn a Code Reviewer agent for a genuine review; post the verdict (FIX-FIRST / SHIP) as a
    PR comment. Reviewers: treat a behavior-changing PR with no wiki delta and no stated
    reason as a FIX-FIRST item.
+2b. **Touched a user-facing string? Also spawn `ux-writer`** (`.claude/agents/ux-writer.md`,
+   Opus) — in parallel with the code review, they answer different questions. Its first test
+   is not tone but truth: does the label describe what the handler does? Load-bearing strings
+   that must never be reworded alone (`S2D_MESSAGE`, the proxy refusals `broadcastlog.js`
+   string-matches, a node's raw reject text) are tabulated in the agent definition.
 3. **Stop. The user merges.** Agent self-merge is classifier-blocked in auto mode (direct and
    via spawned reviewer).
 4. Never `--delete-branch` on a stacked PR's base (dependents get closed unrecoverably).
@@ -58,6 +63,11 @@ Split work by phase: **Fable 5 thinks, Opus 5 agents execute.**
 - `verify-wallet-switch` was the CI flake; **fixed 2026-07-27** (it asserted `w-address ===`
   the funded wallet's address after switching back, racing the receive-index rotation — see
   `testing-and-drivers.md` gotchas). Full gate green 11/11 locally since.
+- **Registered ≠ existing.** `verify-beta-posture` and `verify-mainnet-bringup` were
+  self-contained but absent from `SELF_CONTAINED`, so no CI run ever drove a mainnet-shaped
+  node. #138 killed the blocking mainnet interstitial and the gate still went 11/11 green.
+  Both registered since (13/13). Writing a driver is not the same as wiring it in — check the
+  arrays in `run-drivers.sh` when a whole posture appears untested.
 - CI does **not** build Docker images — `.nvmrc` is the only runtime CI tests. A Dockerfile
   Node line ahead of `.nvmrc` means prod runs an untested Node (how Dependabot's node:26 got
   under a signing wallet; policy since #123: Active LTS, ignore docker majors).

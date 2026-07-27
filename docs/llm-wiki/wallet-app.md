@@ -1,6 +1,6 @@
 # apps/wallet
 
-Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit changeset).
+Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138 icon system + connect modal).
 
 ## Layout
 
@@ -134,6 +134,36 @@ Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit 
 - `?autolockSecs=` requires `appConfig.loaded && appConfig.mock` and is capped at 600 s —
   `appConfig.mock` defaults to `true` before `/api/config` answers, so the bare check failed
   open on a live deployment with a flaky config fetch (#L10).
+
+## Connect modal + icons (#138)
+
+- `#w-choice` is four **doors** (`.door`), exactly ONE of them `.primary`. The old sheet
+  painted create AND the EXPERIMENTAL web3 door solid black — two defaults, one risky. Never
+  give a second door primary weight.
+- Door ids are load-bearing: `w-create-choice` / `w-show-restore` / `w-show-import` /
+  `w-web3-choice` are clicked **by id** in 13 drivers. Restyle freely, never rename.
+- **Never reach for a neighbour by DOM position.** `loadStatus()` gated the web3 door with
+  `$('w-web3-choice').nextElementSibling` (the hint `<p>`). #138 folded that copy into the
+  door, the walk hit `null`, the throw was swallowed by the surrounding `catch` — and took
+  `maybeShowMainnetAck()` with it, so **mainnet served no risk interstitial**. Now one node,
+  `#w-web3-group`. No driver in `run-drivers.sh`'s registered set covers this; only
+  `verify-mainnet-live` / `verify-beta-posture` do, and neither is registered.
+- Title is a state, not a constant: `setConnectMode()` → *Back up your seed phrase* / *Erase
+  all wallets* / *Unlock your wallets* / *Add a wallet* (vault unlocked) / *Connect a wallet*.
+  Writes `#w-connect-title` + `#w-connect-sub`; the `querySelector('.modal-head h3')` is gone.
+- `openConnectModal()` focuses inside a `requestAnimationFrame` (display flips in the same
+  tick; an unlaid-out element cannot take focus) and **re-reads `vault.status` in the
+  callback** — an autolock inside that frame would otherwise aim at a hidden door.
+- Focus trap: `focusin` containment, since `aria-modal` claims the page is inert. Unlike the
+  mainnet-ack trap it does **not** swallow Escape (this modal is dismissible) and snaps to the
+  first *visible* control, because Close is hidden while a backup ceremony is sealed.
+  `#mainnet-ack-modal` (role=`alertdialog`) is the only other trapped modal — `#disclaimer-modal`
+  has none.
+- **Driver gotcha, cost an hour:** every node here ships in the first paint, so
+  `waitFor(getElementById('w-create-choice'))` returns *immediately*, the click lands mid-boot,
+  and `show()` resets the mode under it. Wait on **visibility**, never presence.
+- Icon sprite rules, the two visual tiers, and the `<svg>`-is-not-in-`textContent` trap:
+  **`design-system.md`**.
 
 ## Tests
 

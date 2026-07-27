@@ -28,6 +28,11 @@ re-derive hard-won facts every session.
 - **Model routing:** Fable 5 plans, researches, and pathfinds; coding, code review, and
   security review go to **Opus 5 subagents** (`model: "opus"` when spawning). Details:
   `docs/llm-wiki/agent-workflow.md` § Model routing.
+- **Copy is reviewed like code.** A PR that adds or changes any string a user reads also gets
+  a `ux-writer` pass (`.claude/agents/ux-writer.md`), alongside the code review. A label that
+  names a different security model than the code implements is a **defect**, not a style note
+  — "Connect wallet" over a wallet this app *generates*, "Disconnect" over a plain lock.
+  Conventions and load-bearing strings: `docs/llm-wiki/design-system.md`.
 - **Wiki write-back is part of every task, not optional.** Before opening a PR (or ending a
   session that produced findings), run the wiki checklist in
   `docs/llm-wiki/agent-workflow.md` and include the wiki edits in the same branch/PR.

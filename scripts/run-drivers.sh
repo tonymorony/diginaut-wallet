@@ -34,7 +34,12 @@ node --version
 
 # Drivers that stand up everything they need. The rest want a wallet server on
 # 8791 and a fake indexer on 8799 (see each driver's header).
-SELF_CONTAINED=(verify-autolock-default verify-crosswire verify-wallet-mgmt verify-receive-index verify-receive-ui verify-send-amount verify-wallet-switch verify-oracle-refresh verify-connect-derive)
+# verify-beta-posture and verify-mainnet-bringup were self-contained all along
+# but unregistered, so nothing in CI drove a MAINNET-shaped node. #138 broke the
+# blocking mainnet interstitial — a mainnet user reached the wallet with no risk
+# acknowledgement — and the full local gate still went 11/11 green. Registered
+# now: the mainnet posture is exactly the thing that must never regress silently.
+SELF_CONTAINED=(verify-autolock-default verify-crosswire verify-wallet-mgmt verify-receive-index verify-receive-ui verify-send-amount verify-wallet-switch verify-oracle-refresh verify-connect-derive verify-beta-posture verify-mainnet-bringup)
 NEEDS_STACK=(verify-ui verify-receive-compat)
 
 reap() {
