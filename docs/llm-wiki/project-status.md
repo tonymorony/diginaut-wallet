@@ -1,7 +1,7 @@
 # Project status
 
-Verified: 2026-07-26 (later), branch `audit/2026-07-26-external-audit`, main @ `afcee01`
-(#134 connect-wallet + #135 llm-wiki merged).
+Verified: 2026-07-27, branch `design/copy-truthful-labels`, main @ `67004d8`
+(#134 connect-wallet, #135 llm-wiki, #137 external audit, #138 icons + connect modal merged).
 This page rots fastest — reconcile with `git log` + the tracker before acting on it.
 
 ## Shipped
@@ -17,7 +17,21 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
   `docs/runbooks/server-migration-2026-07.md` exists locally but is **untracked** (user
   decision pending) — don't treat it as reachable from a fresh clone.
 
-## Active: external-audit changeset (branch `audit/2026-07-26-external-audit`)
+## Active: copy pass (branch `design/copy-truthful-labels`)
+
+- Follows the #138 community report. Fixes where a label named a different security model than
+  the handler implements: the guest/header CTA (three states — the **locked** case was the
+  worst, offering "Connect wallet" over a wallet already on the device), the recovery card's
+  destructive *Dismiss*, and the mainnet banner's unqualified "no backup". "Connect" now
+  survives only on the web3 door, where it is true. Conventions: `design-system.md` § UX copy.
+- Baseline at branch point: **192 wallet tests, 13/13 drivers** — unchanged by this branch.
+- Deferred to a follow-up (audited but not fixed): the trust line hides with `#w-choice` the
+  moment restore opens; the post-eviction sheet still paints *create* as the sole `.door.primary`;
+  autolock is silent; `#w-recovery`'s *Unconfirmed broadcast* `<h2>` reads as routine to a
+  BTC/LTC/DGB holder; `rederiveHint` promises re-derivation "any time" without `CONTEXT.md`'s
+  convenience-door hedge; ~14 tone/glossary items (e.g. "Burning" on redeem confirm).
+
+## Shipped since: external-audit changeset (#137, merged `5d79c61`)
 
 - An external security audit (AUDIT.md, delivered outside the repo) described fixes that
   were never landed here. Every claim was re-verified against this tree: all 11 FIXED
@@ -30,7 +44,7 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
   keys surviving modal close, L10 fail-open `?autolockSecs=`, L5 two unhardened sinks.
 - Deliberate deferrals: L10 FIX B (mock-mode proxy refusal — would break the NEEDS_STACK
   driver harness), L3 STEP 3 (mint quote-age gate), WASM keystore for L3 memory hardening.
-- PR pending user merge. Deploy notes: TLS/dual overlays now set TRUST_PROXY=1 + HSTS=1;
+- Merged 2026-07-27. Deploy notes: TLS/dual overlays now set TRUST_PROXY=1 + HSTS=1;
   the faucet cooldown becomes per-user (was accidentally per-deployment behind Caddy).
 
 ## Recently shipped: map #126 — "Connect a web3 wallet" (sign-to-derive), TESTNET only
@@ -55,7 +69,8 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
 - Launch map #50: only **#59 real-funds verification** remains (needs user's DGB + non-zero
   oracle price; oracle showed price 0 at activation).
 - PR #132 (driver assertion fixes) — merged 2026-07-26 (`4125fe4`).
-- `verify-wallet-switch` is **flaky in CI** — fix before making CI a required check.
+- `verify-wallet-switch` CI flake **fixed 2026-07-27** (see `agent-workflow.md` § CI); the
+  registered driver set is now 13 (both mainnet-shaped drivers wired in by #138).
 - Prod drift: as of 2026-07-26 testnet ran `7e76a4a` while mainnet was deliberately left one
   build behind (`da3fde2`) — testnet-first at user request. Check `/api/config` `version`.
 - Untracked clutter in repo root: driver screenshots + brand PNGs (pending user decision).

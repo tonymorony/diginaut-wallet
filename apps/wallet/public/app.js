@@ -593,7 +593,19 @@ function show(state) {
   const wiped = state === 'none' && hadVault(globalThis.localStorage);
   $('hero-recovery').style.display = wiped ? 'block' : 'none';
   $('hero-guest-copy').style.display = wiped ? 'none' : 'block';
-  $('hero-connect').textContent = wiped ? 'Restore a wallet' : 'Connect wallet';
+  // The CTA names the outcome of the click, and the click has three outcomes.
+  // "Connect wallet" is the EVM phrase for GRANT THIS SITE ACCESS to a wallet
+  // you already hold — the default door here grants nothing and generates a
+  // keypair in this browser. Worse, the same label rode the 'locked' state, so
+  // a returning user (and every autolock) was offered a "connect" over a wallet
+  // already on the device, opening a sheet correctly titled "Unlock your
+  // wallets". A label that names a different security model than the handler
+  // implements is a defect — see design-system.md § UX copy.
+  const [heroCta, chipCta] = state === 'locked' ? ['Unlock', 'Unlock']
+    : wiped ? ['Restore a wallet', 'Restore']
+      : ['Create or restore a wallet', 'Create or restore'];
+  $('hero-connect').textContent = heroCta;
+  $('w-connect').textContent = chipCta; // same promise, a header chip's worth of room
   $('w-connect').style.display = open || state === 'loading' ? 'none' : 'inline-block';
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   // backup-status surfaces belong to an OPEN wallet; renderBackupCta shows
@@ -734,7 +746,7 @@ function setConnectMode(mode) {
     : mode === 'erase' ? ['Erase all wallets', 'This cannot be undone']
       : mode === 'unlock' ? ['Unlock your wallets', 'One master password for every wallet on this device']
         : vault.status === 'unlocked' ? ['Add a wallet', 'Your vault is unlocked — no password needed to add']
-          : ['Connect a wallet', 'Non-custodial — the keys never leave this browser'];
+          : ['Create or restore a wallet', 'Non-custodial — the keys never leave this browser'];
   $('w-connect-title').textContent = title;
   $('w-connect-sub').textContent = sub;
   // real words live in the ceremony DOM only while its steps are open
@@ -3651,7 +3663,15 @@ function applyConfigChrome(cfg) {
 const recoveryStatus = new Map();
 
 /** One row. `rec` is null for a verdict whose record is already gone: nothing
- *  is left to check, rebroadcast or copy, so only Dismiss remains. */
+ *  is left to check, rebroadcast or copy, so only the dismiss button remains.
+ *
+ *  That is also why the dismiss button is labelled twice. On a resolved row it
+ *  closes a verdict and "Dismiss" is true. On a LIVE row the same click runs
+ *  broadcastLog.drop(), which permanently deletes the signed hex — the only
+ *  artifact Rebroadcast and Copy raw transaction can work from, for a
+ *  transaction whose fate is by definition still unknown. "Dismiss" there reads
+ *  as "close this notice" and names the wrong consequence, so the live row says
+ *  what the handler does instead. */
 function recoveryRowHtml(txid, title, line, rec) {
   // every interpolation through esc(); the bare data-rec-* values are the
   // txid, regex-validated by the caller, so they cannot carry markup
@@ -3665,7 +3685,7 @@ function recoveryRowHtml(txid, title, line, rec) {
       <div class="row"><span class="k">${esc(title)}</span><span class="v mono">${esc(txid.slice(0, 16))}…</span></div>
       <div class="hint">${esc(line)}</div>
       <div class="grid">${actions}
-        <button class="secondary" data-rec-dismiss="${txid}">Dismiss</button>
+        <button class="secondary" data-rec-dismiss="${txid}">${rec ? 'Delete saved transaction' : 'Dismiss'}</button>
       </div>
     </div>`;
 }

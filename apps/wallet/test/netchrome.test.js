@@ -10,7 +10,10 @@ test('mainnet: red beta banner with the #54 copy, MAINNET pill', () => {
   const c = networkChrome('main');
   assert.match(c.banner, /MAINNET BETA/);
   assert.match(c.banner, /real funds at risk/);
-  assert.match(c.banner, /no backup/);
+  // the qualifier is load-bearing, not decoration: the app ships a mandatory
+  // seed ceremony + encrypted file export, so a bare "no backup" is false on
+  // the only chain that holds real funds. Pin what is absent — OUR copy.
+  assert.match(c.banner, /no backup on our servers/);
   assert.ok(c.banner.includes(`$${BETA_TX_CAP_USD}/tx cap`), 'banner quotes the cap');
   assert.equal(c.level, 'danger');
   assert.equal(c.pill, 'MAINNET');
