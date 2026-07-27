@@ -7,6 +7,7 @@ Agent-facing knowledge base. Protocol: see root `CLAUDE.md`. Load only what the 
 | [project-status.md](project-status.md) | "where are we", picking up work, branch/PR/frontier state. **Rots fastest — check stamp.** |
 | [architecture.md](architecture.md) | any code change; system map, data flow, invariants, ADR digest |
 | [wallet-app.md](wallet-app.md) | `apps/wallet` — UI, server proxy, vault, sign-to-derive |
+| [design-system.md](design-system.md) | icons, the two visual tiers, UX copy — anything a user sees or reads |
 | [protocol-lib.md](protocol-lib.md) | `packages/digidollar-js` — tx building, addresses, consensus arithmetic |
 | [backend-and-deploy.md](backend-and-deploy.md) | indexer, faucet, `deploy/`, `scripts/`, self-hosting |
 | [consensus-facts.md](consensus-facts.md) | mint/transfer/redeem rules, DD addresses, oracle — facts earned from Core source |

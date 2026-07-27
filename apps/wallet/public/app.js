@@ -44,11 +44,15 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
 
 /** Markup for one sprite icon (#138). The shapes live in index.html's #ic-sprite,
  *  so a fix lands everywhere at once and app.js never carries path data.
- *  `name` is always a literal at the call site — never user or node input, which
- *  is why it goes into the string unescaped. Decorative by default: every caller
- *  either sits next to a visible label or puts aria-label on the control. */
+ *  Both arguments are literals at every call site. The strip makes that
+ *  structural rather than a convention someone has to remember: an id or class
+ *  can only ever be [a-z0-9- ], so no future caller can turn this into an
+ *  injection sink by threading a brand name or an indexer field through it.
+ *  Decorative by default: every caller either sits next to a visible label or
+ *  puts aria-label on the control. */
+const safeIcName = (s) => String(s).replace(/[^a-z0-9- ]/g, '');
 const icon = (name, cls = '') =>
-  `<svg class="ic${cls ? ' ' + cls : ''}" aria-hidden="true"><use href="#ic-${name}"/></svg>`;
+  `<svg class="ic${cls ? ' ' + safeIcName(cls) : ''}" aria-hidden="true"><use href="#ic-${safeIcName(name)}"/></svg>`;
 
 /** Every frontend fetch goes through here (#H1). A bare fetch against a stalled
  *  hop never settles: busy() only re-enables its button in `finally`, and every
@@ -344,6 +348,20 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('mainnet-ack-modal').classList.contains('open')) e.preventDefault();
 }, true);
 
+/** Focus containment for the connect modal (#138). It carries aria-modal, which
+ *  tells assistive tech the rest of the page is inert — so Tab must not walk out
+ *  of it into the wallet behind, or the promise is a lie. Same shape as the
+ *  mainnet-ack trap above, with two differences: this modal is dismissible, so
+ *  Escape is NOT swallowed; and its close button can be hidden (a sealed backup
+ *  ceremony), so focus snaps to the first VISIBLE control rather than a fixed id. */
+document.addEventListener('focusin', (e) => {
+  const modal = $('w-connect-modal');
+  if (!modal.classList.contains('open') || modal.contains(e.target)) return;
+  const focusable = [...modal.querySelectorAll('button, input, textarea, select, [tabindex]')]
+    .find((el) => el.offsetParent !== null && !el.disabled);
+  (focusable || modal.querySelector('.modal')).focus();
+});
+
 // The network pill must survive scroll (#54): once the topbar scrolls away it
 // floats to a fixed corner just below the sticky banner. Two subtleties, both
 // mobile-borne: the threshold is the header's real bottom edge (a fixed 64px
@@ -425,9 +443,12 @@ async function loadStatus() {
     // Sign-to-derive is TESTNET-ONLY (#126 destination, ADR 0005): the frozen
     // v1 message names the testnet, so the same bundle on a mainnet node must
     // not offer the door at all — hide it the moment the chain says main.
-    const web3Gate = info.chain === 'main' ? 'none' : '';
-    $('w-web3-choice').style.display = web3Gate;
-    $('w-web3-choice').nextElementSibling.style.display = web3Gate; // its hint line
+    // ONE node, not the button plus a .nextElementSibling walk: the sibling was
+    // the hint line, and when #138 folded that copy into the door the walk hit
+    // null — which threw, was swallowed by the catch below, and took
+    // maybeShowMainnetAck() with it. A mainnet user then reached the wallet with
+    // no risk interstitial at all. Never reach for a neighbour by DOM position.
+    $('w-web3-group').style.display = info.chain === 'main' ? 'none' : '';
     maybeShowMainnetAck(info.chain);
   } catch (e) {
     $('s-err').textContent = 'blockchain: ' + e.message;
@@ -734,7 +755,10 @@ function openConnectModal() {
   // focus. Never throw here — a failed focus must not abort opening.
   requestAnimationFrame(() => {
     if (!$('w-connect-modal').classList.contains('open')) return;
-    try { (locked ? $('w-unlock-pass') : $('w-create-choice')).focus(); } catch { /* not laid out */ }
+    // re-read the status: an autolock landing inside this one frame flips the
+    // sheet to 'unlock', and the captured value would aim at a hidden door
+    const target = vault.status === 'locked' ? 'w-unlock-pass' : 'w-create-choice';
+    try { $(target).focus(); } catch { /* not laid out */ }
   });
 }
 function closeConnectModal() {
@@ -2517,7 +2541,9 @@ function historyRow(h) {
     const conf = h.height === 0
       ? '<span class="tx-conf pending">pending</span>'
       : '<span class="tx-conf partial">confirmed</span>';
-    return `<div class="tx"><div class="tx-icon out">·</div>` +
+    // 'more', not a '·' glyph: direction is unknown until enrichment lands, and
+    // .tx-icon no longer carries the font-size/weight a bare character needs
+    return `<div class="tx"><div class="tx-icon out">${icon('more')}</div>` +
       `<div class="tx-main"><div class="tx-title">Transaction</div><div class="tx-sub">${link}</div></div>` +
       `<div class="tx-right">${conf}</div></div>`;
   }

@@ -1,6 +1,6 @@
 # apps/wallet
 
-Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit changeset).
+Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138 icon system + connect modal).
 
 ## Layout
 
@@ -135,58 +135,35 @@ Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit 
   `appConfig.mock` defaults to `true` before `/api/config` answers, so the bare check failed
   open on a live deployment with a flaky config fetch (#L10).
 
-## Connect modal (#138)
+## Connect modal + icons (#138)
 
-- `#w-choice` is four **doors** (`.door`), not four stacked buttons. The ids are load-bearing
-  and unchanged — `w-create-choice` / `w-show-restore` / `w-show-import` / `w-web3-choice` are
-  clicked **by id** across ~14 drivers. Restyle freely; renaming an id breaks all of them.
-- Exactly ONE primary (`.door.primary`, accent tint). The old sheet painted both "create" and
-  the EXPERIMENTAL web3 door solid black — two defaults, one of them the risky one. Never
+- `#w-choice` is four **doors** (`.door`), exactly ONE of them `.primary`. The old sheet
+  painted create AND the EXPERIMENTAL web3 door solid black — two defaults, one risky. Never
   give a second door primary weight.
-- The title is a state, not a constant: `setConnectMode()` picks between *Back up your seed
-  phrase* / *Erase all wallets* / *Unlock your wallets* / ***Add a wallet*** (vault already
-  unlocked) / *Connect a wallet*. It shipped saying "Connect wallet" over a connected wallet.
-  Title + subtitle are `#w-connect-title` / `#w-connect-sub` — the old
-  `querySelector('.modal-head h3')` write is gone.
-- `openConnectModal()` pulls focus (unlock → `w-unlock-pass`, else the first door) inside a
-  `requestAnimationFrame`: `setConnectMode` flips `display` in the same tick, and an unlaid-out
-  element cannot take focus. Wrapped in try/catch — a failed focus must never abort the open.
-- `role="dialog"` + `aria-modal` + `aria-labelledby` now match the mainnet-ack and disclaimer
-  modals. There is still **no focus trap** on this modal (those two have one) — open follow-up.
-- **Driver gotcha, cost an hour:** every node in this modal ships in the first paint, so
-  `waitFor(document.getElementById('w-create-choice'))` returns *immediately* — the click then
-  lands mid-boot and `show()` resets the mode out from under it. Wait on **visibility**
-  (`#hero-guest`'s `style.display`, `#w-connect-modal.classList.contains('open')`,
-  `#w-form`'s `style.display`), never on presence.
-
-## Iconography (#138)
-
-- **One sprite, one source.** `#ic-sprite` at the top of `index.html` `<body>` holds every
-  `<symbol>`; markup uses `<svg class="ic"><use href="#ic-NAME"/></svg>`, and `app.js` builds
-  the same string through `icon(name, cls)` (defined beside `esc()`). Never inline a new path
-  at a call site — add a symbol.
-- Grid 24×24, stroke 1.75, round cap/join, `fill:none`, **`currentColor` only** — an icon
-  never carries its own hex, it inherits from the control it sits in. `.ic` 20px, `.ic-s`
-  16px, `.ic-l` 24px; stroke is renormalised per size so optical weight stays flat.
-- `icon()` interpolates `name` **unescaped** — it is always a literal at the call site. Never
-  pass it node/indexer/user data.
-- **No text glyphs as icons.** `↑ ↓ ◆ ✓ ✕ ⋯` are gone from `historyRow()`, the wallet list,
-  the w3 steps and the backup strip. They shifted the baseline, changed shape with the
-  platform font, and could not be tinted apart from their label.
-- **Consequence for drivers:** an icon is an `<svg>`, so it is NOT in `textContent`. The
-  confirmation badge now reads `final`, not `✓ final` — `verify-balance` and `verify-send`
-  match the bare word. Any new assertion on a glyph will silently never match.
-- **Inline `style.display` beats the stylesheet.** `#w-backup-badge` is `inline-flex` in CSS,
-  but `renderBackupNag()` writes `style.display` — so it sets `'inline-flex'`, not
-  `'inline-block'`. Same trap for anything else JS shows that now holds an icon.
-- `#w-modal-close` keeps its id **and** its `style.display` toggle: `renderBackupSkipGate()`
-  hides it to seal a mandatory ceremony, and `verify-beta-posture` / `verify-mainnet-live` /
-  `verify-mainnet-bringup` all assert exactly that. It is `.xbtn` now, not a text chip.
-- Brand marks (MetaMask/Phantom/OKX) are **not** in the sprite — they arrive as `data:` URIs
-  on the extension's own EIP-6963 announcement, admitted only if `/^data:image\//`.
-- Raster illustration (`hero-art.png`, `asset-*.png`) is a **separate tier**: emotional beats
-  only (hero, empty states, success). Never a 3D render inside a control, never a line icon
-  as a hero.
+- Door ids are load-bearing: `w-create-choice` / `w-show-restore` / `w-show-import` /
+  `w-web3-choice` are clicked **by id** in 13 drivers. Restyle freely, never rename.
+- **Never reach for a neighbour by DOM position.** `loadStatus()` gated the web3 door with
+  `$('w-web3-choice').nextElementSibling` (the hint `<p>`). #138 folded that copy into the
+  door, the walk hit `null`, the throw was swallowed by the surrounding `catch` — and took
+  `maybeShowMainnetAck()` with it, so **mainnet served no risk interstitial**. Now one node,
+  `#w-web3-group`. No driver in `run-drivers.sh`'s registered set covers this; only
+  `verify-mainnet-live` / `verify-beta-posture` do, and neither is registered.
+- Title is a state, not a constant: `setConnectMode()` → *Back up your seed phrase* / *Erase
+  all wallets* / *Unlock your wallets* / *Add a wallet* (vault unlocked) / *Connect a wallet*.
+  Writes `#w-connect-title` + `#w-connect-sub`; the `querySelector('.modal-head h3')` is gone.
+- `openConnectModal()` focuses inside a `requestAnimationFrame` (display flips in the same
+  tick; an unlaid-out element cannot take focus) and **re-reads `vault.status` in the
+  callback** — an autolock inside that frame would otherwise aim at a hidden door.
+- Focus trap: `focusin` containment, since `aria-modal` claims the page is inert. Unlike the
+  mainnet-ack trap it does **not** swallow Escape (this modal is dismissible) and snaps to the
+  first *visible* control, because Close is hidden while a backup ceremony is sealed.
+  `#mainnet-ack-modal` (role=`alertdialog`) is the only other trapped modal — `#disclaimer-modal`
+  has none.
+- **Driver gotcha, cost an hour:** every node here ships in the first paint, so
+  `waitFor(getElementById('w-create-choice'))` returns *immediately*, the click lands mid-boot,
+  and `show()` resets the mode under it. Wait on **visibility**, never presence.
+- Icon sprite rules, the two visual tiers, and the `<svg>`-is-not-in-`textContent` trap:
+  **`design-system.md`**.
 
 ## Tests
 

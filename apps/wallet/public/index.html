@@ -395,7 +395,7 @@
        TWO painted primary — so the modal had no default, and the one that was
        EXPERIMENTAL looked as endorsed as the safe one. One row shape now; the
        hierarchy is carried by tint, and every door states its consequence.
-       The ids are unchanged: fourteen drivers click w-create-choice /
+       The ids are unchanged: 13 drivers click w-create-choice /
        w-show-restore / w-show-import / w-web3-choice by id. */
     .trust { display: flex; align-items: center; gap: 8px; margin: 16px 0 4px; padding: 9px 12px;
       background: var(--good-bg); color: #0d7c3e; border-radius: var(--radius-s);
@@ -688,7 +688,9 @@
 
     <!-- Connect modal: create / restore / unlock (EVM-style corner flow) -->
     <div id="w-connect-modal" class="modal-backdrop">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="w-connect-title">
+      <!-- tabindex so the focusin trap in app.js has somewhere to land when the
+           sheet has no visible control (a sealed backup ceremony hides Close) -->
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="w-connect-title" tabindex="-1">
       <div class="modal-head">
         <div><h3 id="w-connect-title">Connect wallet</h3><p class="msub" id="w-connect-sub"></p></div>
         <button id="w-modal-close" class="xbtn" title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button>
@@ -732,7 +734,12 @@
 
           <!-- sign-to-derive (#130, variant A). Still a co-equal door — it is not
                hidden — but dashed and amber, so it no longer reads as endorsed as
-               the safe path just because both were painted black. -->
+               the safe path just because both were painted black.
+               The label and the door are ONE node (#w-web3-group) because the
+               mainnet gate hides them together: loadStatus() used to reach the
+               hint line with .nextElementSibling, which breaks the instant the
+               markup around it moves. Toggle the group, never a sibling walk. -->
+          <div id="w-web3-group">
           <span class="grouplabel">No seed phrase today</span>
           <button id="w-web3-choice" class="door exp">
             <span class="door-ic"><svg class="ic" aria-hidden="true"><use href="#ic-puzzle"/></svg></span>
@@ -742,6 +749,7 @@
             </span>
             <svg class="ic door-go" aria-hidden="true"><use href="#ic-chevron-right"/></svg>
           </button>
+          </div>
         </div>
         <div id="w-form" style="display:none">
           <div id="w-restore" style="display:none">
@@ -901,7 +909,7 @@
     </div>
 
     <!-- Wallet switcher (spec §7): opened by clicking the header address chip.
-         List rows switch the active wallet; per-row ⋯ expands inline rename,
+         List rows switch the active wallet; the per-row overflow control expands inline rename,
          the keystore-file export (§4) and the remove ceremony; Add wallet
          reuses the connect modal while the app stays open (§2 modal-mode
          decoupling). -->
