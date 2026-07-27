@@ -41,10 +41,16 @@ they are not authorable on the sprite's contract. Not licence for any other rast
 - **A symbol carries no presentation attributes** — no `stroke-width`, no `stroke`, no `fill`.
   Weight comes from the size class, so a value baked onto the symbol follows the shape into
   every context it renders in and cannot be overridden by the component owning the slot.
-  No symbol is exempt — `icon-sprite.test.js` fails the build on any of the three. When a shape
-  genuinely cannot follow the ladder, it opts out by **class**: `ic-more` is three dots whose
-  stroke *is* their diameter, so it carries `.ic.ic-dots` at both call sites. Doubled selector,
-  because opting out of the ladder means opting out everywhere, including inside `.tx-icon .ic`.
+  `icon-sprite.test.js` fails the build on any of the three, on the `<symbol>` tag **and** in
+  its body — the first cut scanned only the body, which is the same hole the bug came through.
+  When a shape genuinely cannot follow the ladder it opts out by **class**: `ic-more` is three
+  dots whose stroke *is* their diameter, so it carries `.ic.ic-dots` at both call sites.
+  **The selector list is not decoration and is not complete by construction.** `.ic.ic-dots` is
+  (0,2,0) and so is `.tx-icon .ic` — a tie that source order settles for the component, so the
+  rule is written `.ic.ic-dots, .tx-icon .ic.ic-dots`. Without the second selector the history
+  row renders its dots at 2.1, i.e. the one call site the class exists for silently keeps the
+  bug. Any future component that sizes its own `.ic` **and** hosts `ic-more` must be added to
+  that list; there is no cascade trick that covers them all, and no test catches the omission.
   (It shipped with `stroke-width="2.6"` baked on the path until the coverage sweep; that
   silently outranked every size class, which is the failure this rule names.)
 - **A component may size its own mark; a call site may not.** `.tx-icon .ic` 15px/2.1,
@@ -118,12 +124,24 @@ The topbar is the tightest row in the app: at 430px it has **398px** and the gue
   must stay the **rendered** state: dismissing the strip brings the badge back, because then it
   is the only surface left saying it. `!important` because `renderBackupCta()` writes
   `style.display` inline. Dismissed → the header is 2 rows again, and that is correct.
-- `#modeBadge { display: none }` (83px). Every state it carries has a louder partner: MOCK MODE
-  needs *absent* RPC creds so it cannot reach a deployment, LIVE NODE is informational, and
-  CROSS-WIRED ships a red *SERVER MISCONFIGURED* banner naming both chains **plus a blocked
-  wallet boot** (`verify-crosswire`). Its `textContent` is untouched, so the two strict-equality
-  driver assertions on it are unaffected.
-- **Known limit, measured:** the header is one row from **~494px**. Below that — 390/414/430 —
+- `#modeBadge.real { display: none }` (83px) — **LIVE NODE only.** The first cut of this rule
+  hid the badge in every state on the reasoning that "MOCK MODE is dev-only, it cannot reach a
+  deployment". That is false, and the correction is the load-bearing fact here: `server.js`
+  decides `mockMode = !config.rpc.user || !config.rpc.pass`, so **one unset env var on a
+  redeploy** serves synthetic balances and fabricated txids, with no boot refusal (contrast
+  `vendor.lock`, which `bootStuck`s). Mock also skips `startChainGuard()`, so `chainMismatch`
+  stays false forever and **CROSS-WIRED can never fire in mock** — the partner that would have
+  covered it is structurally unreachable in exactly the state that needs it. Mock reports chain
+  `test`, painting the ordinary amber TESTNET banner, and `#net-modal` has no row naming the
+  data source. So `#modeBadge` is the *only* surface separating synthetic data from a live node,
+  and it stays. `applyConfigChrome` writes `badge real` for LIVE NODE alone; MOCK MODE,
+  CROSS-WIRED and the static `loading…` all carry `badge mock`, which makes `.real` an exact
+  split. `textContent` is untouched either way, so the two strict-equality driver assertions on
+  it are unaffected.
+- **Known limit, measured:** the header is one row from **~494px** *on a deployment* (LIVE NODE,
+  badge hidden). Under MOCK MODE or CROSS-WIRED the badge is back and costs that row — correct
+  by construction: the warning outranks the layout, and the clean header is what production
+  gets. Below ~494 — 390/414/430 —
   the unlocked corner still wraps, because the address chip alone is 258px and logo + chip +
   globe + gaps is 447 against 398. Getting iPhone widths to one row means cutting the address
   *tail* (the only part that distinguishes wallets — every testnet taproot address starts

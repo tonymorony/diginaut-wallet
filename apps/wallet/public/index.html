@@ -70,10 +70,13 @@
     /* A dot glyph has no line to renormalise — its stroke IS its diameter, so it
        opts out of the size ladder by CLASS, never by a stroke-width baked onto
        the symbol (which would defeat the ladder everywhere it renders).
-       Doubled selector on purpose: it has to outrank the component overrides
-       (.tx-icon .ic is 0,2,0), because opting out of the ladder means opting
-       out everywhere, not just where no component has an opinion. */
-    .ic.ic-dots { stroke-width: 2.6; }
+       The second selector is NOT decoration. `.ic.ic-dots` is (0,2,0) and so is
+       `.tx-icon .ic` below — a tie that source order settles in the component's
+       favour, since it comes later. Without the descendant form the history
+       row's dots render at 2.1, i.e. the one call site this class exists for
+       silently keeps the bug the presentation attribute had. Any future
+       component that sizes its own `.ic` and hosts ic-more needs adding here. */
+    .ic.ic-dots, .tx-icon .ic.ic-dots { stroke-width: 2.6; }
     #ic-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
     label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-700); margin: 14px 0 6px; }
     input, select, textarea {
@@ -285,13 +288,20 @@
          the banner is ever made dismissible or non-sticky, this rule has to go
          with it — that pairing is the whole argument. */
       .net-pill { display: none; }
-      /* Same trade, same reasoning, 83px more: every state this badge carries has
-         a louder partner that survives. MOCK MODE is dev-only (it needs absent
-         RPC creds, so it cannot reach a deployment). LIVE NODE is informational.
-         CROSS-WIRED — the one that matters — comes with a red SERVER
-         MISCONFIGURED banner naming both chains AND a blocked wallet boot, so
-         the badge is nowhere near the only thing saying it. */
-      #modeBadge { display: none; }
+      /* 83px more, but ONLY from the state with nothing to warn about. LIVE NODE
+         is informational, so it goes; every other state stays.
+         MOCK MODE is emphatically NOT dev-only: server.js decides it as
+         `!config.rpc.user || !config.rpc.pass`, so one unset env var on a
+         redeploy serves synthetic balances and fabricated txids — and there is
+         no boot refusal for it the way vendor.lock has one. It also skips
+         startChainGuard(), so chainMismatch stays false forever and CROSS-WIRED
+         can never fire in mock. Mock reports chain 'test', which paints the
+         ordinary amber TESTNET banner, and #net-modal has no row naming the
+         data source. This badge is the ONLY surface distinguishing synthetic
+         data from a live node — it does not get hidden.
+         applyConfigChrome writes 'badge real' for LIVE NODE alone; MOCK MODE,
+         CROSS-WIRED and the static loading… state all carry 'badge mock'. */
+      #modeBadge.real { display: none; }
       /* Badge and strip are the same warning; the strip only ever shows when the
          badge would too, and says it in full with the CTA. At 430px the corner
          wants 450 of its 398, so while the strip is up the badge is the row that
@@ -445,7 +455,7 @@
        border (solid once .filled), so the mark only has to be an invitation. */
     .quiz-slot .mono { display: block; min-height: 1.25em; }
     .quiz-slot:not(.filled) .mono::after { content: ''; display: block; width: 22px; height: 2px;
-      margin: calc(.625em - 1px) auto; background: var(--gray-300); border-radius: 1px; }
+      margin: calc(.625em - 1px) auto; background: var(--gray-400); border-radius: 1px; }
     .quiz-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .quiz-chip { width: auto; margin: 0; padding: 6px 13px; border-radius: 999px; font-size: 13px; }
     .quiz-chip:disabled { opacity: .35; }
@@ -1068,7 +1078,7 @@
             <div class="amt-head">
               <label for="w-send-amount" id="w-send-amount-label">Amount (DGB)</label>
               <div class="amt-tools">
-                <button type="button" id="w-send-ccy" class="amt-btn secondary" title="Enter the amount in USD instead"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-swap"/></svg>USD</button>
+                <button type="button" id="w-send-ccy" class="amt-btn secondary" title="Enter the amount in USD instead" aria-label="Enter the amount in USD instead"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-swap"/></svg>USD</button>
                 <button type="button" id="w-send-max" class="amt-btn secondary" title="Send the entire spendable balance">Max</button>
               </div>
             </div>

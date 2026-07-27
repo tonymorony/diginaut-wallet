@@ -611,7 +611,15 @@ function show(state) {
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   // backup-status surfaces belong to an OPEN wallet; renderBackupCta shows
   // them again (or not) once openWallet knows the active wallet's flag
-  if (!open) { $('w-backup-badge').style.display = 'none'; $('w-backup-strip').style.display = 'none'; }
+  // The mirrored class has to die with the strip it mirrors: this path hides the
+  // strip inline without going through renderBackupStrip(), so leaving the class
+  // behind would put <body> in has-backup-strip with no strip rendered — the
+  // exact lie the invariant forbids. Benign only by accident today (the same
+  // line force-hides the badge, so nothing observes it).
+  if (!open) {
+    $('w-backup-badge').style.display = 'none'; $('w-backup-strip').style.display = 'none';
+    document.body.classList.remove('has-backup-strip');
+  }
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
   // no indexer on this deployment: the money grid never loads, so say why (#61).
@@ -2987,6 +2995,13 @@ function updateSendEq() {
   el.style.display = out ? 'block' : 'none';
 }
 
+/** title AND aria-label, always together. The button's content is a decorative
+ *  icon plus a bare currency, so name-from-content reads just "USD" — a noun with
+ *  no action, sitting next to Max in a send form — and `title` is never consulted
+ *  for the accessible name when an element has content. Three call sites write
+ *  this hint; a helper is what stops them drifting apart. */
+const setCcyHint = (t) => { const b = $('w-send-ccy'); b.title = t; b.setAttribute('aria-label', t); };
+
 function setSendCcy(ccy) {
   sendCcy = ccy;
   $('w-send-amount-label').textContent = `Amount (${ccy})`;
@@ -2995,7 +3010,7 @@ function setSendCcy(ccy) {
   // back. Both operands are literals; #w-send-ccy's gap comes from CSS, so no
   // separator character belongs in this string.
   $('w-send-ccy').innerHTML = icon('swap', 'ic-s') + (ccy === 'DGB' ? 'USD' : 'DGB');
-  $('w-send-ccy').title = ccy === 'DGB' ? 'Enter the amount in USD instead' : 'Enter the amount in DGB instead';
+  setCcyHint(ccy === 'DGB' ? 'Enter the amount in USD instead' : 'Enter the amount in DGB instead');
   $('w-send-amount').placeholder = ccy === 'USD' ? '0.00' : '';
   updateSendEq();
 }
@@ -3006,7 +3021,7 @@ function syncSendPriceGate() {
   const ok = priceUsable();
   $('w-send-ccy').disabled = !ok;
   if (!ok) {
-    $('w-send-ccy').title = 'USD entry needs a fresh oracle price';
+    setCcyHint('USD entry needs a fresh oracle price');
     if (sendCcy === 'USD') {
       // Demoting USD→DGB re-reads the SAME digits in a different currency —
       // the #116 bug class, now fired by a timer instead of a paste. So the
@@ -3020,7 +3035,7 @@ function syncSendPriceGate() {
       setSendCcy('DGB'); // refreshes the ≈-line last, so it describes the cleared field
     }
   } else if (sendCcy === 'DGB') {
-    $('w-send-ccy').title = 'Enter the amount in USD instead';
+    setCcyHint('Enter the amount in USD instead');
   }
 }
 

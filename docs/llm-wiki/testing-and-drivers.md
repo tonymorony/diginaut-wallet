@@ -2,8 +2,10 @@
 
 Verified: 2026-07-27 @ branch `audit/2026-07-26-external-audit`. Baselines drift — run and
 compare, don't quote stale counts.
-Last known green: all 11 registered CDP drivers (`scripts/run-drivers.sh`, no args) + all unit
-suites, 2026-07-27 — the first fully green gate since `verify-wallet-switch` was fixed.
+Last known green: all **13** registered CDP drivers (`scripts/run-drivers.sh`, no args) + all
+unit suites, 2026-07-27. (Was 11 until `verify-beta-posture` and `verify-mainnet-bringup` were
+registered — both were self-contained but unwired, so no CI run had ever driven a
+mainnet-shaped node. Count the arrays in `run-drivers.sh`, don't quote this line.)
 Regtest: 8 of the 9 drivers (98 checks) vs main, 2026-07-26 — `verify-fold-shapes` was proven
 separately (PR #124), not part of that run.
 
@@ -28,9 +30,10 @@ separately (PR #124), not part of that run.
   NEEDS_STACK (runner starts fake-indexer 8799 + wallet 8791): `verify-ui`
   (create/lock/unlock/restore), `verify-receive-compat`.
 - **Manual mock/stub drivers — NOT in the runner or CI, run them by name when touching
-  their area**: `verify-beta-posture`, `verify-honest-quotes` (MOCK_SYSTEM_HEALTH),
-  `verify-oracle-bounds`, `verify-history`, `verify-fiat-sendmax`, `verify-disclaimer`,
-  `verify-mainnet-bringup`.
+  their area**: `verify-honest-quotes` (MOCK_SYSTEM_HEALTH), `verify-oracle-bounds`,
+  `verify-history`, `verify-fiat-sendmax`, `verify-disclaimer`.
+  (`verify-beta-posture` and `verify-mainnet-bringup` used to be listed here; both are
+  REGISTERED in `run-drivers.sh` now and run in CI.)
 - Regtest stack (manual, need the stand): `verify-balance`, `verify-send`, `verify-mint`,
   `verify-positions`, `verify-transfer`, `verify-redeem`, `verify-p2wpkh-change`,
   `verify-walkthrough` (release gate), `verify-fold-shapes` (#118 shapes via
