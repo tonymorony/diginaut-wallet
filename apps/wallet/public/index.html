@@ -47,6 +47,17 @@
     .row .v { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
     .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
     .dot.good { background: var(--good); } .dot.bad { background: var(--bad); } .dot.warn { background: var(--warn); }
+    /* Icon system (#138). One <symbol> sprite at the top of <body>; every icon is
+       <svg class="ic"><use href="#ic-name"/></svg>. Pure markup, so it costs
+       nothing under the script-src CSP. Authored on a 24x24 grid, stroke 1.75,
+       round cap/join, fill none, currentColor ONLY — an icon never carries its
+       own hex, it inherits from whatever it sits in. Stroke is nudged per size
+       so the optical weight stays constant from 16px to 24px. */
+    .ic { display: block; flex: none; width: 20px; height: 20px; stroke: currentColor;
+      stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    .ic-s { width: 16px; height: 16px; stroke-width: 2; }
+    .ic-l { width: 24px; height: 24px; stroke-width: 1.6; }
+    #ic-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
     label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-700); margin: 14px 0 6px; }
     input, select, textarea {
       width: 100%; padding: 12px 16px; border-radius: var(--radius-s); border: 1px solid var(--border);
@@ -75,7 +86,9 @@
     #w-history { margin: 0; }
     .tx { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--gray-100); }
     .tx:first-child { padding-top: 2px; } .tx:last-of-type { border-bottom: 0; }
-    .tx-icon { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+    .tx-icon { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; }
+    .tx-icon .ic { width: 15px; height: 15px; stroke-width: 2.1; }
+    .tx-icon.dd .ic { fill: currentColor; stroke-width: 0; width: 11px; height: 11px; }
     .tx-icon.in { background: var(--good-bg); color: var(--good); }
     .tx-icon.out { background: var(--gray-100); color: var(--gray-700); }
     .tx-icon.dd { background: var(--accent-5); color: var(--accent); }
@@ -86,7 +99,8 @@
     .tx-right { flex: 0 0 auto; text-align: right; }
     .tx-amt { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
     .tx-amt.in { color: var(--good); } .tx-amt.out { color: var(--text); }
-    .tx-conf { font-size: 11px; margin-top: 1px; }
+    .tx-conf { display: inline-flex; align-items: center; gap: 3px; justify-content: flex-end; font-size: 11px; margin-top: 1px; }
+    .tx-conf .ic { width: 12px; height: 12px; stroke-width: 2.4; }
     .tx-conf.pending { color: var(--warn); } .tx-conf.partial { color: var(--muted); } .tx-conf.final { color: var(--good); }
     #w-history-more { width: auto; margin: 10px auto 0; display: block; padding: 5px 14px; font-size: 12px; }
     /* amount entry header: label on the left, currency toggle + Max on the right (#70) */
@@ -127,7 +141,8 @@
     #w-chip .chip-btn { border-radius: 999px; padding: 7px 12px; }
     /* backup-status chip (spec §3): red "Not backed up" next to the address
        chip, cleared only by a quiz pass. Click re-enters the backup ceremony. */
-    #w-backup-badge { width: auto; margin: 0; padding: 8px 12px; font-size: 12px; white-space: nowrap;
+    #w-backup-badge { display: inline-flex; align-items: center; gap: 5px; width: auto; margin: 0;
+      padding: 8px 12px; font-size: 12px; white-space: nowrap;
       background: var(--bad-bg); color: var(--bad); border-radius: 999px; }
     #w-backup-badge:hover { background: var(--primary-300); }
     /* balance-gated warning strip (spec §3): funds but no backup, under the header */
@@ -163,8 +178,17 @@
     .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(21,24,30,.45); z-index: 50; }
     .modal-backdrop.open { display: grid; place-items: center; }
     .modal { background: #fff; border-radius: var(--radius); padding: 22px; width: min(460px, calc(100vw - 32px)); max-height: 86vh; max-height: 86dvh; overflow: auto; overscroll-behavior: contain; box-shadow: 0 18px 50px rgba(21,24,30,.25); }
-    .modal-head { display: flex; justify-content: space-between; align-items: center; }
-    .modal-head h3 { margin: 0; font-size: 16px; font-weight: 600; }
+    .modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+    .modal-head h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+    .modal-head .msub { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+    /* dismiss is an affordance, not a decision — an icon target, not a filled
+       chip competing with the modal's real buttons. #w-modal-close keeps its id
+       AND its inline style.display toggle: renderBackupSkipGate() hides it to
+       seal a mandatory backup ceremony, and three drivers assert exactly that. */
+    .xbtn { flex: none; width: 32px; height: 32px; margin: -2px -2px 0 0; padding: 0; border: 0;
+      border-radius: 999px; background: var(--gray-100); color: var(--gray-600);
+      display: grid; place-items: center; cursor: pointer; transition: background .12s, color .12s; }
+    .xbtn:hover { background: var(--gray-200); color: var(--text); }
     /* kit Dropdown: white r8 trigger, floating white r8 list (shadow 0 1px 5px) */
     .dd { position: relative; }
     .dd > select { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; }
@@ -182,7 +206,10 @@
     .dd-option { border-radius: 8px; padding: 9px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
     .dd-option:hover { background: var(--gray-100); }
     .dd-option.selected { background: #f6fbff; font-weight: 600; }
-    .dd-option.selected::after { content: '✓'; color: var(--accent); font-weight: 700; }
+    /* the tick is markup, not a ::after glyph — buildDropdown() appends it, so it
+       scales and tints with the rest of the set instead of riding the text font */
+    .dd-option .dd-tick { color: var(--accent); visibility: hidden; }
+    .dd-option.selected .dd-tick { visibility: visible; }
     /* confirmation screens sit on gray like the kit's modal inner blocks */
     #w-mint-confirm, #w-tr-confirm, #w-send-confirm, #w-redeem-confirm {
       background: var(--gray-100); border-radius: var(--radius-s); padding: 8px 16px 14px; margin-top: 14px;
@@ -354,9 +381,9 @@
     .wal-pick:hover { background: var(--gray-100); }
     .wal-name { font-weight: 600; }
     .wal-sub { font-size: 11.5px; color: var(--muted); font-weight: 400; }
-    .wal-check { margin-left: auto; color: var(--accent); font-weight: 700; }
+    .wal-check { margin-left: auto; color: var(--accent); display: flex; }
     .wal-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); vertical-align: 1px; }
-    .wal-manage { flex: none; width: auto; margin: 0; padding: 6px 12px; font-size: 14px; line-height: 1.2; }
+    .wal-manage { flex: none; width: auto; margin: 0; padding: 8px 12px; line-height: 1; display: flex; align-items: center; }
     .wal-edit { padding: 2px 0 12px; border-bottom: 1px solid var(--gray-100); }
     .wal-edit .grid button { margin-top: 10px; }
     button.danger { background: var(--primary-700); }
@@ -375,6 +402,7 @@
     .w3-step.on { background: var(--accent-5); } .w3-step.ok { background: var(--good-bg); }
     .w3-step .n { flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--gray-300); color: #fff; font-size: 11px; font-weight: 700;
       display: flex; align-items: center; justify-content: center; }
+    .w3-step .n .ic { width: 12px; height: 12px; stroke-width: 2.6; }
     .w3-step.on .n { background: var(--accent); } .w3-step.ok .n { background: var(--good); }
     .w3-step.on .w3-wait { animation: w3pulse 1.2s ease-in-out infinite; }
     @keyframes w3pulse { 50% { opacity: .45; } }
@@ -385,6 +413,57 @@
   </style>
 </head>
 <body>
+  <!-- Icon sprite (#138). Every icon in the app resolves here, including the ones
+       app.js writes into innerHTML — so a shape is defined ONCE and a fix lands
+       everywhere it renders. Rules, so the set stays a set:
+         · 24x24 grid, stroke 1.75, round cap/join, fill:none, currentColor only.
+         · An icon never appears alone: it is paired with a visible label, or the
+           control carries aria-label + title. Decorative uses get aria-hidden.
+         · No emoji, no text glyphs. Those shift the baseline, change shape with
+           the platform font, and cannot be tinted apart from their label.
+         · Brand marks (MetaMask, Phantom, OKX) are NOT in here — they arrive as
+           data: URIs on the extension's own EIP-6963 announcement. -->
+  <svg id="ic-sprite" aria-hidden="true"><defs>
+    <symbol id="ic-sparkle" viewBox="0 0 24 24"><path d="M11 3.2l1.7 4.6 4.6 1.7-4.6 1.7L11 15.8 9.3 11.2 4.7 9.5l4.6-1.7z"/><path d="M17.8 14.2l.85 2.15 2.15.85-2.15.85-.85 2.15-.85-2.15-2.15-.85 2.15-.85z"/></symbol>
+    <symbol id="ic-key" viewBox="0 0 24 24"><circle cx="8.75" cy="8.75" r="4.25"/><path d="M11.8 11.8L20 20"/><path d="M17.2 17.2l-1.9 1.9"/><path d="M20 20l1.3-1.3"/></symbol>
+    <symbol id="ic-file-lock" viewBox="0 0 24 24"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M13.5 3v5.5H19"/><circle cx="12" cy="14.2" r="1.5"/><path d="M12 15.7v1.8"/></symbol>
+    <symbol id="ic-puzzle" viewBox="0 0 24 24"><path d="M9.6 4.6a2.2 2.2 0 0 1 4.4 0V6h2.5A1.5 1.5 0 0 1 18 7.5V10h1.4a2.2 2.2 0 0 1 0 4.4H18v2.1a1.5 1.5 0 0 1-1.5 1.5H14v-1.4a2.2 2.2 0 0 0-4.4 0V18H7.5A1.5 1.5 0 0 1 6 16.5V14H4.6a2.2 2.2 0 0 1 0-4.4H6V7.5A1.5 1.5 0 0 1 7.5 6h2.1z"/></symbol>
+    <symbol id="ic-signature" viewBox="0 0 24 24"><path d="M3.4 15.9c2.4 0 2.9-8.6 4.8-8.6s1.4 8.6 3.8 8.6 2.9-4.3 4.8-4.3c1.2 0 1.9.9 2.6 1.7"/><path d="M4 20.2h16"/></symbol>
+    <symbol id="ic-shield-check" viewBox="0 0 24 24"><path d="M12 3.2l7.3 2.9v5.4c0 4.3-2.9 8-7.3 9.3-4.4-1.3-7.3-5-7.3-9.3V6.1z"/><path d="M9.1 12l2.1 2.1 4-4"/></symbol>
+    <symbol id="ic-alert" viewBox="0 0 24 24"><path d="M10.3 4.8a2 2 0 0 1 3.4 0l7.1 12.3a2 2 0 0 1-1.7 3H4.9a2 2 0 0 1-1.7-3z"/><path d="M12 9.8v4.1"/><path d="M12 17.2h.01"/></symbol>
+    <symbol id="ic-lock" viewBox="0 0 24 24"><rect x="4.6" y="10.2" width="14.8" height="10.2" rx="2.6"/><path d="M8.1 10.2V7.6a3.9 3.9 0 0 1 7.8 0v2.6"/></symbol>
+    <symbol id="ic-unlock" viewBox="0 0 24 24"><rect x="4.6" y="10.2" width="14.8" height="10.2" rx="2.6"/><path d="M8.1 10.2V7.6a3.9 3.9 0 0 1 7.4-1.8"/></symbol>
+    <symbol id="ic-eye" viewBox="0 0 24 24"><path d="M2.8 12S6.3 5.9 12 5.9 21.2 12 21.2 12 17.7 18.1 12 18.1 2.8 12 2.8 12z"/><circle cx="12" cy="12" r="2.9"/></symbol>
+    <symbol id="ic-eye-off" viewBox="0 0 24 24"><path d="M9.6 6.4A9.6 9.6 0 0 1 12 6.1c5.7 0 9.2 5.9 9.2 5.9a17 17 0 0 1-2.8 3.5"/><path d="M6.2 8.2A16.6 16.6 0 0 0 2.8 12S6.3 17.9 12 17.9a9.4 9.4 0 0 0 3.3-.6"/><path d="M10.1 10.1a2.9 2.9 0 0 0 4 4"/><path d="M4.2 4.2l15.6 15.6"/></symbol>
+    <symbol id="ic-send" viewBox="0 0 24 24"><path d="M6.6 17.4L17.4 6.6"/><path d="M8.8 6.6h8.6v8.6"/></symbol>
+    <symbol id="ic-receive" viewBox="0 0 24 24"><path d="M17.4 6.6L6.6 17.4"/><path d="M15.2 17.4H6.6V8.8"/></symbol>
+    <symbol id="ic-mint" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 8.3v7.4M8.3 12h7.4"/></symbol>
+    <symbol id="ic-dollar" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M14.9 9.4a2.6 2.6 0 0 0-2.5-1.7h-.9a2.3 2.3 0 0 0 0 4.6h1a2.3 2.3 0 0 1 0 4.6h-.9a2.6 2.6 0 0 1-2.5-1.7"/><path d="M12 6.1v11.8"/></symbol>
+    <symbol id="ic-coins" viewBox="0 0 24 24"><ellipse cx="12" cy="6.6" rx="7.4" ry="2.9"/><path d="M4.6 6.6v5c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-5"/><path d="M4.6 11.6v5c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9v-5"/></symbol>
+    <symbol id="ic-qr" viewBox="0 0 24 24"><rect x="4" y="4" width="6.4" height="6.4" rx="1.6"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.6"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.6"/><path d="M13.6 13.6h2.8v2.8h-2.8z"/><path d="M20 13.6v2.6M20 20h-3.4M13.6 20h.01"/></symbol>
+    <symbol id="ic-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M15.6 6.3A2.5 2.5 0 0 0 13.1 4H6.5A2.5 2.5 0 0 0 4 6.5v6.6a2.5 2.5 0 0 0 2.3 2.5"/></symbol>
+    <symbol id="ic-check" viewBox="0 0 24 24"><path d="M5 12.6l4.4 4.4L19 7.4"/></symbol>
+    <symbol id="ic-x" viewBox="0 0 24 24"><path d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6"/></symbol>
+    <symbol id="ic-chevron-right" viewBox="0 0 24 24"><path d="M9.6 5.6L16 12l-6.4 6.4"/></symbol>
+    <symbol id="ic-chevron-down" viewBox="0 0 24 24"><path d="M5.6 9L12 15.4 18.4 9"/></symbol>
+    <symbol id="ic-arrow-left" viewBox="0 0 24 24"><path d="M14.4 5.6L8 12l6.4 6.4"/></symbol>
+    <symbol id="ic-tx-in" viewBox="0 0 24 24"><path d="M12 5.4v13.2"/><path d="M6.6 13.2L12 18.6l5.4-5.4"/></symbol>
+    <symbol id="ic-tx-out" viewBox="0 0 24 24"><path d="M12 18.6V5.4"/><path d="M6.6 10.8L12 5.4l5.4 5.4"/></symbol>
+    <symbol id="ic-diamond" viewBox="0 0 24 24"><path d="M10.6 3.9a2 2 0 0 1 2.8 0l6.7 6.7a2 2 0 0 1 0 2.8l-6.7 6.7a2 2 0 0 1-2.8 0l-6.7-6.7a2 2 0 0 1 0-2.8z"/></symbol>
+    <symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8"/><path d="M12 3.6c2.1 2.3 3.3 5.3 3.3 8.4S14.1 18.1 12 20.4c-2.1-2.3-3.3-5.3-3.3-8.4S9.9 5.9 12 3.6z"/></symbol>
+    <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.1v5.2l3.4 2"/></symbol>
+    <symbol id="ic-refresh" viewBox="0 0 24 24"><path d="M20.2 5.6v5h-5"/><path d="M19.4 10.6a7.6 7.6 0 1 0-.4 5.4"/></symbol>
+    <symbol id="ic-external" viewBox="0 0 24 24"><path d="M14.2 4.4h5.4v5.4"/><path d="M19.6 4.4L11.4 12.6"/><path d="M18 14.4v4.1a1.6 1.6 0 0 1-1.6 1.6H5.6A1.6 1.6 0 0 1 4 18.5V7.7a1.6 1.6 0 0 1 1.6-1.6h4.1"/></symbol>
+    <symbol id="ic-download" viewBox="0 0 24 24"><path d="M12 3.8v10.9"/><path d="M7.6 10.4L12 14.8l4.4-4.4"/><path d="M4.4 16.8v1.6a2 2 0 0 0 2 2h11.2a2 2 0 0 0 2-2v-1.6"/></symbol>
+    <symbol id="ic-upload" viewBox="0 0 24 24"><path d="M12 14.8V3.9"/><path d="M7.6 8.3L12 3.9l4.4 4.4"/><path d="M4.4 16.8v1.6a2 2 0 0 0 2 2h11.2a2 2 0 0 0 2-2v-1.6"/></symbol>
+    <symbol id="ic-wallets" viewBox="0 0 24 24"><rect x="3.4" y="7.6" width="13.8" height="9.8" rx="2.4"/><path d="M6.9 5.6h11.1a2.4 2.4 0 0 1 2.4 2.4v7.6"/><circle cx="13.6" cy="12.5" r="1.2"/></symbol>
+    <symbol id="ic-pencil" viewBox="0 0 24 24"><path d="M4.6 19.4l.7-3.6L15.6 5.5a2.1 2.1 0 0 1 3 3L8.2 18.7z"/><path d="M14.2 6.9l3 3"/></symbol>
+    <symbol id="ic-trash" viewBox="0 0 24 24"><path d="M4.6 6.9h14.8"/><path d="M9.7 6.9V5.6A1.6 1.6 0 0 1 11.3 4h1.4a1.6 1.6 0 0 1 1.6 1.6v1.3"/><path d="M6.6 6.9l.8 11.6a2 2 0 0 0 2 1.9h5.2a2 2 0 0 0 2-1.9l.8-11.6"/></symbol>
+    <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 11.2v5.2"/><path d="M12 7.9h.01"/></symbol>
+    <symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5.4v13.2M5.4 12h13.2"/></symbol>
+    <symbol id="ic-more" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></symbol>
+  </defs></svg>
+
   <!-- populated at runtime from the node's chain (netchrome.js, #61) -->
   <div class="net-banner" id="net-banner" hidden></div>
   <header>
@@ -398,12 +477,12 @@
         <span id="net-pill" class="net-pill" hidden></span>
         <!-- backup-status chip (spec §3): shown while the ACTIVE wallet has no
              verified backup; click re-enters the backup ceremony -->
-        <button id="w-backup-badge" style="display:none" title="Back up this wallet's seed phrase">Not backed up</button>
+        <button id="w-backup-badge" style="display:none" title="Back up this wallet's seed phrase"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-alert"/></svg>Not backed up</button>
         <!-- role/tabindex, not a <button>: it nests the real Disconnect button,
              and a button inside a button is invalid HTML (browsers re-parent it) -->
         <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
-        <button id="net-btn" title="Network status"><span id="net-dot" class="dot warn"></span>Network</button>
+        <button id="net-btn" title="Network status"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-globe"/></svg><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
     </div>
   </header>
@@ -414,7 +493,7 @@
     <div class="backup-strip-inner">
       <span id="w-backup-strip-text">This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.</span>
       <button id="w-backup-strip-go" type="button">Back up now</button>
-      <button id="w-backup-strip-dismiss" type="button" class="secondary" title="Dismiss for this session" aria-label="Dismiss for this session">✕</button>
+      <button id="w-backup-strip-dismiss" type="button" class="secondary" title="Dismiss for this session" aria-label="Dismiss for this session"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-x"/></svg></button>
     </div>
   </div>
 
@@ -480,13 +559,13 @@
         <div id="price-slot-hero"></div>
         <div class="actions">
           <button class="action" id="act-send" type="button">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M3 13L13 3M13 3H6M13 3v7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="ic" aria-hidden="true"><use href="#ic-send"/></svg>
             Send</button>
           <button class="action" id="act-receive" type="button">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M13 3L3 13M3 13h7M3 13V6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg class="ic" aria-hidden="true"><use href="#ic-receive"/></svg>
             Receive</button>
           <button class="action" id="act-mint" type="button">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2"/><path d="M8 5.5v5M5.5 8h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <svg class="ic" aria-hidden="true"><use href="#ic-mint"/></svg>
             Mint DigiDollar</button>
         </div>
         <button id="w-faucet" class="secondary" style="display:none">Get testnet DGB</button>
@@ -572,7 +651,10 @@
     <!-- Connect modal: create / restore / unlock (EVM-style corner flow) -->
     <div id="w-connect-modal" class="modal-backdrop">
       <div class="modal">
-      <div class="modal-head"><h3>Connect wallet</h3><button id="w-modal-close" class="secondary chip-btn">Close</button></div>
+      <div class="modal-head">
+        <div><h3 id="w-connect-title">Connect wallet</h3><p class="msub" id="w-connect-sub"></p></div>
+        <button id="w-modal-close" class="xbtn" title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button>
+      </div>
 
       <!-- no wallet yet: step 1 choose, step 2 fill -->
       <div id="w-none" style="display:none">
@@ -749,7 +831,7 @@
          decoupling). -->
     <div id="wallet-modal" class="modal-backdrop">
       <div class="modal">
-        <div class="modal-head"><h3>Wallets</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3>Wallets</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <div id="w-wallet-main">
           <p class="hint" id="w-wallet-note" style="display:none"></p>
           <div id="w-wallet-list" style="margin-top:10px"></div>
@@ -776,7 +858,7 @@
     <!-- Send modal: one flow, the asset dropdown picks DGB (#6) or DigiDollar (#15) -->
     <div id="send-modal" class="modal-backdrop asset-dgb">
       <div class="modal">
-        <div class="modal-head"><h3>Send</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3>Send</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <label for="send-asset">Asset</label>
         <select id="send-asset">
           <option value="dgb">DigiByte (DGB)</option>
@@ -860,7 +942,7 @@
     <!-- Receive modal -->
     <div id="receive-modal" class="modal-backdrop">
       <div class="modal">
-        <div class="modal-head"><h3>Receive</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3>Receive</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <!-- backup interception (spec §3, BlueWallet pattern): shown on EVERY
              open until this wallet passes the quiz. "Continue anyway" swaps in
              the normal receive view for that open only. -->
@@ -942,7 +1024,7 @@
          Transfer and Redeem as one unit (ADR-0002, release gate #17). -->
     <div id="mint-modal" class="modal-backdrop">
       <div class="modal">
-        <div class="modal-head"><h3>Mint DigiDollar</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3>Mint DigiDollar</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <div id="w-mint">
           <label for="w-mint-amount">Amount (DD)</label>
           <input id="w-mint-amount" inputmode="decimal" autocomplete="off" placeholder="100" />
@@ -990,7 +1072,7 @@
     <!-- Network modal: chain / softfork / oracle detail, plus wallet security -->
     <div id="net-modal" class="modal-backdrop">
       <div class="modal">
-        <div class="modal-head"><h3>Network</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3>Network</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <div class="row"><span class="k">Chain</span><span class="v" id="s-chain">—</span></div>
         <div class="row"><span class="k">Block height</span><span class="v" id="s-height">—</span></div>
         <div class="row"><span class="k">DigiDollar softfork</span><span class="v" id="s-dd">—</span></div>
@@ -1048,7 +1130,7 @@
          BEFORE reauth/mainnet-ack, which must stay on top of everything. -->
     <div id="consolidate-modal" class="modal-backdrop">
       <div class="modal">
-        <div class="modal-head"><h3>Consolidate coins</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3>Consolidate coins</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <div id="w-consolidate">
           <p class="hint" style="margin-top:0">Your balance is spread across several coins, and the action you tried needs one coin big enough on its own. This merges every confirmed DGB coin into a single coin at your current receive address — only the network fee is spent, the funds stay yours.</p>
           <div id="w-cons-confirm" style="display:none">
@@ -1119,7 +1201,7 @@
     <!-- Disclaimer modal: demo/educational, no warranty, user bears all risk (#79) -->
     <div id="disclaimer-modal" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="disclaimer-title">
-        <div class="modal-head"><h3 id="disclaimer-title">Disclaimer</h3><button class="secondary chip-btn" data-close>Close</button></div>
+        <div class="modal-head"><h3 id="disclaimer-title">Disclaimer</h3><button class="xbtn" data-close title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button></div>
         <div class="disclaimer-body" style="margin-top:14px">
           <p>Diginaut is provided <strong>for demonstration and educational purposes only</strong>. It is not a commercial product or a custodial service.</p>
           <p>The software is provided <strong>“as is”, with no warranty of any kind</strong>, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.</p>

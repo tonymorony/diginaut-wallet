@@ -42,6 +42,14 @@ const ORACLE_MAX_PRICE_MICRO_USD = 100_000_000n; // $100 / DGB
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/** Markup for one sprite icon (#138). The shapes live in index.html's #ic-sprite,
+ *  so a fix lands everywhere at once and app.js never carries path data.
+ *  `name` is always a literal at the call site — never user or node input, which
+ *  is why it goes into the string unescaped. Decorative by default: every caller
+ *  either sits next to a visible label or puts aria-label on the control. */
+const icon = (name, cls = '') =>
+  `<svg class="ic${cls ? ' ' + cls : ''}" aria-hidden="true"><use href="#ic-${name}"/></svg>`;
+
 /** Every frontend fetch goes through here (#H1). A bare fetch against a stalled
  *  hop never settles: busy() only re-enables its button in `finally`, and every
  *  poll chain awaits before rescheduling — so one hung socket disables the UI
@@ -236,7 +244,7 @@ function enhanceSelect(id) {
   const trig = document.createElement('button');
   trig.type = 'button';
   trig.className = 'dd-trigger';
-  trig.innerHTML = '<span class="dd-label"></span><svg class="dd-caret" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 6l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  trig.innerHTML = '<span class="dd-label"></span>' + icon('chevron-down', 'ic-s dd-caret');
   const list = document.createElement('div');
   list.className = 'dd-list';
   wrap.append(trig, list);
@@ -247,7 +255,10 @@ function enhanceSelect(id) {
     for (const o of sel.options) {
       const el = document.createElement('div');
       el.className = 'dd-option' + (o.value === sel.value ? ' selected' : '');
-      el.textContent = o.textContent;
+      // option text is textContent (never innerHTML — it can carry a wallet
+      // name); the tick is a separate node so the label stays untrusted-safe
+      el.append(o.textContent);
+      el.insertAdjacentHTML('beforeend', icon('check', 'ic-s dd-tick'));
       el.addEventListener('click', () => {
         sel.value = o.value;
         sel.dispatchEvent(new Event('input', { bubbles: true }));
@@ -917,8 +928,8 @@ $('rx-tab-dd').addEventListener('click', () => setReceiveTab('dd'));
 // ---- Copy affordance on the address boxes ----
 // data-copy names the element holding the text; data-copy-text carries it
 // directly (the previous-address rows, which are built as markup).
-const COPY_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 3.5A1.5 1.5 0 0 0 9 2H4a2 2 0 0 0-2 2v5a1.5 1.5 0 0 0 1.5 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-const DONE_ICON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const COPY_ICON = icon('copy', 'ic-s');
+const DONE_ICON = icon('check', 'ic-s');
 for (const el of document.querySelectorAll('.icon-btn')) el.innerHTML = COPY_ICON;
 const copyTimers = new WeakMap(); // button → pending revert timer
 const copyLabels = new WeakMap(); // button → its resting aria-label
@@ -1369,7 +1380,7 @@ function renderWeb3Steps(stage) {
     const ok = i < idx;
     const on = !ok && i === idx && stage !== 'disclose';
     const body = on ? `<span class="w3-wait">${label}${active}</span>` : `<span>${label}</span>`;
-    return `<div class="w3-step${on ? ' on' : ''}${ok ? ' ok' : ''}"><span class="n">${ok ? '✓' : i + 1}</span>${body}</div>`;
+    return `<div class="w3-step${on ? ' on' : ''}${ok ? ' ok' : ''}"><span class="n">${ok ? icon('check', 'ic-s') : i + 1}</span>${body}</div>`;
   }).join('');
 }
 
@@ -1377,11 +1388,12 @@ function renderWeb3Steps(stage) {
 function renderWeb3VerifySteps(stage) {
   const brand = esc(web3Entry?.brand ?? '');
   const done = stage === 'done';
+  const tick = icon('check', 'ic-s');
   $('w-web3-steps').innerHTML =
-    `<div class="w3-step${done ? ' ok' : ' on'}"><span class="n">${done ? '✓' : '1'}</span>`
+    `<div class="w3-step${done ? ' ok' : ' on'}"><span class="n">${done ? tick : '1'}</span>`
     + (done ? '<span>Signature received</span>' : `<span class="w3-wait">Known account — one signature to verify, check the ${brand} popup…</span>`)
     + '</div>'
-    + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? '✓' : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
+    + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? tick : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
 }
 
 async function openWeb3Picker() {
@@ -1399,7 +1411,7 @@ async function openWeb3Picker() {
   if (connectMode !== 'web3-pick') return; // user navigated away while we listened
   web3Found = found;
   if (!found.length) {
-    listEl.innerHTML = '<div class="w3-row" style="opacity:.65"><span class="w3-fallback-ic">✕</span>'
+    listEl.innerHTML = `<div class="w3-row" style="opacity:.65"><span class="w3-fallback-ic">${icon('puzzle', 'ic-s')}</span>`
       + '<span><span class="w3-name">No wallet extensions detected</span><br/>'
       + '<span class="w3-sub">Install MetaMask, Phantom, OKX or any EIP-6963 wallet extension, then reload this page.</span></span></div>';
     return;
@@ -1916,7 +1928,9 @@ function renderBackupCta() {
   const active = m?.wallets.find((w) => w.id === wallet.id);
   const nag = Boolean(active && !active.backedUp);
   $('w-backup-now').style.display = nag ? 'block' : 'none';
-  $('w-backup-badge').style.display = nag ? 'inline-block' : 'none';
+  // inline-FLEX, not inline-block: the badge carries an icon beside its label
+  // now, and an inline style beats the stylesheet's display (#138)
+  $('w-backup-badge').style.display = nag ? 'inline-flex' : 'none';
   renderBackupStrip();
 }
 
@@ -2080,9 +2094,9 @@ function renderWalletList() {
     return `<div class="wal-row">` +
       `<button type="button" class="wal-pick" data-switch="${esc(w.id)}">` +
       `<span><span class="wal-name">${esc(w.name)}</span>${dot}${via}${sub}</span>` +
-      (active ? '<span class="wal-check">✓</span>' : '') +
+      (active ? `<span class="wal-check">${icon('check', 'ic-s')}</span>` : '') +
       `</button>` +
-      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove">⋯</button>` +
+      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove" aria-label="Rename or remove">${icon('more', 'ic-s')}</button>` +
       `</div>` +
       (managingId === w.id ? walletEditHtml(w) : '');
   }).join('');
@@ -2503,22 +2517,22 @@ function historyRow(h) {
   const extOut = vout.find((o) => o.address && !isMine(o.address) && sat(o.valueSats) > 0n);
   const extIn = vin.find((v) => v.address && !isMine(v.address));
 
-  let title, iconCls, icon, cp = '', amt;
+  let title, iconCls, glyph, cp = '', amt;
   if (detail.type !== 'dgb') {
     // The DGB shown for a DD tx is the collateral movement: a mint locks it
     // (out), a redeem frees it (back to us); a DD-only transfer is DGB-neutral
     // (just the fee), so no DGB amount — the label carries the meaning.
     title = DD_LABEL[detail.type] || 'DigiDollar';
-    iconCls = 'dd'; icon = '◆';
+    iconCls = 'dd'; glyph = icon('diamond');
     amt = detail.type === 'mint' ? -toOthers : detail.type === 'redeem' ? toMine : 0n;
     cp = sent && extOut ? `to ${truncAddr(extOut.address)}` : (extIn ? `from ${truncAddr(extIn.address)}` : '');
   } else if (sent) {
     title = toOthers > 0n ? 'Sent' : 'Sent to self';
-    iconCls = 'out'; icon = '↑'; amt = -toOthers;
+    iconCls = 'out'; glyph = icon('tx-out'); amt = -toOthers;
     cp = extOut ? `to ${truncAddr(extOut.address)}` : '';
   } else {
     title = coinbase ? 'Mined' : 'Received';
-    iconCls = 'in'; icon = '↓'; amt = toMine;
+    iconCls = 'in'; glyph = icon('tx-in'); amt = toMine;
     cp = !coinbase && extIn ? `from ${truncAddr(extIn.address)}` : '';
   }
 
@@ -2528,14 +2542,14 @@ function historyRow(h) {
   const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
   const conf = (c <= 0 || h.height === 0)
     ? '<span class="tx-conf pending">pending</span>'
-    : c >= FINAL_CONF ? '<span class="tx-conf final">✓ final</span>'
+    : c >= FINAL_CONF ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
       : `<span class="tx-conf partial">${c} conf</span>`;
   const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
   const time = Number(detail.time) || 0;
   const sub = [cp, relTime(time), feeStr].filter(Boolean).join(' · ');
 
   return `<div class="tx">` +
-    `<div class="tx-icon ${iconCls}">${icon}</div>` +
+    `<div class="tx-icon ${iconCls}">${glyph}</div>` +
     `<div class="tx-main"><div class="tx-title">${esc(title)}</div>` +
     `<div class="tx-sub">${esc(sub)}${sub ? ' · ' : ''}${link}</div></div>` +
     `<div class="tx-right"><div class="tx-amt ${amtCls}">${amtStr}</div>${conf}</div></div>`;

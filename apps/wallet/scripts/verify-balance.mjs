@@ -94,11 +94,13 @@ check(true, 'after 1 block: balance = 14,488 DGB');
 await waitFor(`document.getElementById('w-pending-row').style.display === 'none'`, 'pending row gone');
 // The row is thin ("confirmed") only until #69's enrichment lands; once the
 // indexer answers /api/tx it renders the confirmation COUNT instead ("1 conf",
-// or "✓ final" at 6+). Accept any of the three — asserting the literal word
+// or "final" at 6+). Accept any of the three — asserting the literal word
 // made this go red against a wallet that was reporting strictly more.
+// The tick beside "final" is an <svg> since #138, so it is NOT in textContent —
+// match the bare word, never the old "✓ final".
 const histText = await evaluate(text('w-history'));
-check(/\d+\s*conf|✓\s*final|confirmed/.test(histText),
-  'history entry flipped to confirmed (shows: ' + (histText.match(/\d+\s*conf|✓\s*final|confirmed|pending/) || ['?'])[0] + ')');
+check(/\d+\s*conf|final|confirmed/.test(histText),
+  'history entry flipped to confirmed (shows: ' + (histText.match(/\d+\s*conf|final|confirmed|pending/) || ['?'])[0] + ')');
 await shot('21-confirmed.png');
 
 // probe: lock stops the money section; unlock restores it with the same balance

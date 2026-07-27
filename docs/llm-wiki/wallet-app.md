@@ -135,6 +135,35 @@ Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit 
   `appConfig.mock` defaults to `true` before `/api/config` answers, so the bare check failed
   open on a live deployment with a flaky config fetch (#L10).
 
+## Iconography (#138)
+
+- **One sprite, one source.** `#ic-sprite` at the top of `index.html` `<body>` holds every
+  `<symbol>`; markup uses `<svg class="ic"><use href="#ic-NAME"/></svg>`, and `app.js` builds
+  the same string through `icon(name, cls)` (defined beside `esc()`). Never inline a new path
+  at a call site — add a symbol.
+- Grid 24×24, stroke 1.75, round cap/join, `fill:none`, **`currentColor` only** — an icon
+  never carries its own hex, it inherits from the control it sits in. `.ic` 20px, `.ic-s`
+  16px, `.ic-l` 24px; stroke is renormalised per size so optical weight stays flat.
+- `icon()` interpolates `name` **unescaped** — it is always a literal at the call site. Never
+  pass it node/indexer/user data.
+- **No text glyphs as icons.** `↑ ↓ ◆ ✓ ✕ ⋯` are gone from `historyRow()`, the wallet list,
+  the w3 steps and the backup strip. They shifted the baseline, changed shape with the
+  platform font, and could not be tinted apart from their label.
+- **Consequence for drivers:** an icon is an `<svg>`, so it is NOT in `textContent`. The
+  confirmation badge now reads `final`, not `✓ final` — `verify-balance` and `verify-send`
+  match the bare word. Any new assertion on a glyph will silently never match.
+- **Inline `style.display` beats the stylesheet.** `#w-backup-badge` is `inline-flex` in CSS,
+  but `renderBackupNag()` writes `style.display` — so it sets `'inline-flex'`, not
+  `'inline-block'`. Same trap for anything else JS shows that now holds an icon.
+- `#w-modal-close` keeps its id **and** its `style.display` toggle: `renderBackupSkipGate()`
+  hides it to seal a mandatory ceremony, and `verify-beta-posture` / `verify-mainnet-live` /
+  `verify-mainnet-bringup` all assert exactly that. It is `.xbtn` now, not a text chip.
+- Brand marks (MetaMask/Phantom/OKX) are **not** in the sprite — they arrive as `data:` URIs
+  on the extension's own EIP-6963 announcement, admitted only if `/^data:image\//`.
+- Raster illustration (`hero-art.png`, `asset-*.png`) is a **separate tier**: emotional beats
+  only (hero, empty states, success). Never a 3D render inside a control, never a line icon
+  as a hero.
+
 ## Tests
 
 15 unit suites (192 tests) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/

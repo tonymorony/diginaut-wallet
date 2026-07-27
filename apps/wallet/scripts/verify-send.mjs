@@ -140,9 +140,10 @@ check(sentTx.version === 2, 'plain version-2 transaction (no DD envelope)');
 // ---- Mine: funds arrive; total balance drops only by the fee.
 await nodeRpc('generatetoaddress', [1, await nodeRpc('getnewaddress', [], 'stand')], 'stand');
 // Once #69's enrichment lands the row shows the confirmation COUNT ("1 conf",
-// "✓ final" at 6+), not the literal "confirmed" of the thin pre-enrichment row.
+// "final" at 6+), not the literal "confirmed" of the thin pre-enrichment row.
+// Since #138 the tick is an <svg>, so only the word "final" reaches textContent.
 await waitFor(
-  `/\\d+\\s*conf|✓\\s*final|confirmed/.test(${text('w-history')}) && !${text('w-history')}.includes('pending')`,
+  `/\\d+\\s*conf|final|confirmed/.test(${text('w-history')}) && !${text('w-history')}.includes('pending')`,
   'history confirmed');
 // The UI rounds to 2 decimals, so measure the drop in sats via the indexer:
 // both addresses are ours — the wallet total must shrink by exactly the fee.
