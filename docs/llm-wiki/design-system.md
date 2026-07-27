@@ -61,6 +61,11 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
   siblings.** The recovery card's *Dismiss* deleted the signed hex of a possibly-in-flight
   transaction; it now says *Delete saved transaction* on a live row and keeps *Dismiss* only
   on a resolved one, where nothing is destroyed.
+- **Borrowed chain jargon must mean here what it means out there.** `#w-recovery`'s heading
+  was *Unconfirmed broadcast*; to a BTC/LTC/DGB holder "unconfirmed" means broadcast and
+  waiting for a block — routine — while the card exists because we don't know it was
+  broadcast at all. Now *Broadcast not acknowledged*. `app.js`'s ambiguous-broadcast error
+  names that panel in prose: **retitle both together.**
 - **A qualifier can be the whole truth.** The mainnet banner said "no backup" while the app
   ships a mandatory seed ceremony *and* an encrypted file export — on the only chain with real
   funds, that read as *backups do not exist*. It says "no backup on our servers" (testnet

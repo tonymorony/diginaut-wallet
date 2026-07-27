@@ -153,12 +153,21 @@ then the CTA/recovery/banner copy pass).
   `$('w-web3-choice').nextElementSibling` (the hint `<p>`). #138 folded that copy into the
   door, the walk hit `null`, the throw was swallowed by the surrounding `catch` — and took
   `maybeShowMainnetAck()` with it, so **mainnet served no risk interstitial**. Now one node,
-  `#w-web3-group`. Caught only by `verify-mainnet-live` / `verify-beta-posture`; both were
-  unregistered when this bit, and **both are registered since** (`run-drivers.sh` = 13).
+  `#w-web3-group`. Caught only by `verify-mainnet-live` / `verify-beta-posture`, neither
+  registered when this bit. `verify-beta-posture` **is registered since** (`run-drivers.sh`
+  = 13, alongside `verify-mainnet-bringup`, which never touches the ack modal).
+  `verify-mainnet-live` drives the **deployed** site (`argv[2]`, default
+  `https://diginaut.ludere.space`, 3-min node warm-up) and so stays out of the local gate —
+  the blocking interstitial still has no coverage in `run-drivers.sh`. Don't read "13 green"
+  as "mainnet ack is tested".
 - Title is a state, not a constant: `setConnectMode()` → *Back up your seed phrase* / *Erase
   all wallets* / *Unlock your wallets* / *Add a wallet* (vault unlocked) / *Create or restore a
   wallet*. Writes `#w-connect-title` + `#w-connect-sub`; `querySelector('.modal-head h3')` is gone.
-- **The hero CTA is a state too, and it must agree with the title it opens.** `show()` picks
+- **The hero CTA is a state too, and it should agree with the title it opens** — it does in
+  every state but **wiped**, where the CTA reads *Restore a wallet* and the sheet still says
+  *Create or restore a wallet* and focuses `w-create-choice`. That is the open deferral in
+  `project-status.md` (the post-eviction sheet also still paints create as the sole
+  `.door.primary`); fix the three together, not the title alone. `show()` picks
   all three from one tuple: `locked` → *Unlock* (chip *Unlock*), wiped → *Restore a wallet*
   (*Restore*), fresh → *Create or restore a wallet* (*Create or restore*). Both `#hero-connect`
   and the header chip `#w-connect` are written every `show()`, so the static HTML text is only

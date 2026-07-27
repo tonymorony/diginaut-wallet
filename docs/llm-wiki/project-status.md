@@ -25,11 +25,16 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
   destructive *Dismiss*, and the mainnet banner's unqualified "no backup". "Connect" now
   survives only on the web3 door, where it is true. Conventions: `design-system.md` § UX copy.
 - Baseline at branch point: **192 wallet tests, 13/13 drivers** — unchanged by this branch.
-- Deferred to a follow-up (audited but not fixed): the trust line hides with `#w-choice` the
-  moment restore opens; the post-eviction sheet still paints *create* as the sole `.door.primary`;
-  autolock is silent; `#w-recovery`'s *Unconfirmed broadcast* `<h2>` reads as routine to a
-  BTC/LTC/DGB holder; `rederiveHint` promises re-derivation "any time" without `CONTEXT.md`'s
-  convenience-door hedge; ~14 tone/glossary items (e.g. "Burning" on redeem confirm).
+- Deferred to a follow-up (audited but not fixed): the **post-eviction sheet** — hero says
+  *Restore a wallet* while the sheet titles *Create or restore a wallet*, focuses
+  `w-create-choice` and paints create as the sole `.door.primary` (fix the three together);
+  the locked hero still shows the first-contact marketing pitch under an *Unlock* button
+  ("autolock is silent"); the trust line hides with `#w-choice` when restore opens (partly
+  covered — `#w-connect-sub` carries the claim while `vault.status === 'none'`, so the real
+  gap is only the add-a-wallet path); `rederiveHint` promises re-derivation "any time" without
+  `CONTEXT.md`'s convenience-door hedge; ~14 tone/glossary items (e.g. "Burning" on redeem
+  confirm). Also open, unrelated to copy: the mainnet ack interstitial has **no coverage in
+  the local driver gate** (`verify-mainnet-live` is deploy-only) — see `wallet-app.md`.
 
 ## Shipped since: external-audit changeset (#137, merged `5d79c61`)
 

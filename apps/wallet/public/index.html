@@ -520,8 +520,11 @@
              and a button inside a button is invalid HTML (browsers re-parent it) -->
         <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <!-- show() rewrites this per vault state (create/restore/unlock); the
-             static text is only what ships before the first render -->
-        <button id="w-connect" class="chip-btn" style="display:none">Create or restore</button>
+             static text is only what ships before the first render.
+             It writes textContent, so this button must stay TEXT-ONLY — giving
+             it an <svg><use/></svg> like its siblings would have show() delete
+             the icon on every render (design-system.md § icon sprite). -->
+        <button id="w-connect" class="chip-btn" title="Create or restore a wallet" style="display:none">Create or restore</button>
         <button id="net-btn" title="Network status"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-globe"/></svg><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
     </div>
@@ -545,7 +548,12 @@
          show() and the wallet-switch teardown never touch it, because the coins
          are at risk whichever wallet is on screen. -->
     <section class="card" id="w-recovery" style="display:none">
-      <h2>Unconfirmed broadcast</h2>
+      <!-- NOT "Unconfirmed broadcast": to a BTC/LTC/DGB holder "unconfirmed"
+           means broadcast and waiting for a block — a routine, benign state.
+           The actual state is that we do not know it was broadcast at all, on
+           the one card whose job is to stop a double-send. app.js's ambiguous
+           -broadcast error names this panel in prose; move both together. -->
+      <h2>Broadcast not acknowledged</h2>
       <p class="hint warn-text" style="margin-top:0">A transaction was signed and sent to the node, but the node never answered. It <strong>may already be in the mempool</strong>. Check its status or rebroadcast the identical transaction — do not rebuild and send it again, that would create a second, conflicting transaction over the same coins.</p>
       <div id="w-recovery-list"></div>
       <div class="err" id="w-recovery-err"></div>

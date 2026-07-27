@@ -157,7 +157,8 @@ async function sendAndClassify(hex, txid) {
       + 'Do not rebuild and send it again — that would create a second, conflicting transaction over the same '
       + 'coins. '
       + (journalled
-        ? 'Use “Check status” or “Rebroadcast” in the Unconfirmed broadcast panel above. '
+        // names the #w-recovery <h2> verbatim — retitle both together
+        ? 'Use “Check status” or “Rebroadcast” in the Broadcast not acknowledged panel above. '
         : 'This browser could not save a recovery record, so copy the raw transaction below and keep it: '
           + 'a block explorer’s broadcast form re-sends the identical bytes, and searching its ID there '
           + 'tells you whether it already confirmed. Raw transaction: ' + hex + ' ')
@@ -745,8 +746,18 @@ function setConnectMode(mode) {
     ? ['Back up your seed phrase', 'Write the words down before you fund this wallet']
     : mode === 'erase' ? ['Erase all wallets', 'This cannot be undone']
       : mode === 'unlock' ? ['Unlock your wallets', 'One master password for every wallet on this device']
-        : vault.status === 'unlocked' ? ['Add a wallet', 'Your vault is unlocked — no password needed to add']
-          : ['Create or restore a wallet', 'Non-custodial — the keys never leave this browser'];
+        // the one leg where "connect" is literally true. Without this arm the
+        // sheet headed a MetaMask/Phantom picker with "Create or restore a
+        // wallet", contradicting the door the user had just clicked — the same
+        // header-vs-content mismatch #138 fixed everywhere else.
+        : ['web3-pick', 'web3-sign'].includes(mode)
+          // the sub must NOT restate the mechanism — #w-web3-pick's own body
+          // already explains the fixed message and the derivation. It carries
+          // the thing that body leaves out: this is the one door that touches
+          // an outside key holder, and even here nothing is granted away.
+          ? ['Connect a browser wallet', 'Experimental — the extension signs once and never gains access to this wallet']
+          : vault.status === 'unlocked' ? ['Add a wallet', 'Your vault is unlocked — no password needed to add']
+            : ['Create or restore a wallet', 'Non-custodial — the keys never leave this browser'];
   $('w-connect-title').textContent = title;
   $('w-connect-sub').textContent = sub;
   // real words live in the ceremony DOM only while its steps are open
