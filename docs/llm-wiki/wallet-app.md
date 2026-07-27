@@ -135,6 +135,30 @@ Verified: 2026-07-26 @ branch `audit/2026-07-26-external-audit` (external-audit 
   `appConfig.mock` defaults to `true` before `/api/config` answers, so the bare check failed
   open on a live deployment with a flaky config fetch (#L10).
 
+## Connect modal (#138)
+
+- `#w-choice` is four **doors** (`.door`), not four stacked buttons. The ids are load-bearing
+  and unchanged — `w-create-choice` / `w-show-restore` / `w-show-import` / `w-web3-choice` are
+  clicked **by id** across ~14 drivers. Restyle freely; renaming an id breaks all of them.
+- Exactly ONE primary (`.door.primary`, accent tint). The old sheet painted both "create" and
+  the EXPERIMENTAL web3 door solid black — two defaults, one of them the risky one. Never
+  give a second door primary weight.
+- The title is a state, not a constant: `setConnectMode()` picks between *Back up your seed
+  phrase* / *Erase all wallets* / *Unlock your wallets* / ***Add a wallet*** (vault already
+  unlocked) / *Connect a wallet*. It shipped saying "Connect wallet" over a connected wallet.
+  Title + subtitle are `#w-connect-title` / `#w-connect-sub` — the old
+  `querySelector('.modal-head h3')` write is gone.
+- `openConnectModal()` pulls focus (unlock → `w-unlock-pass`, else the first door) inside a
+  `requestAnimationFrame`: `setConnectMode` flips `display` in the same tick, and an unlaid-out
+  element cannot take focus. Wrapped in try/catch — a failed focus must never abort the open.
+- `role="dialog"` + `aria-modal` + `aria-labelledby` now match the mainnet-ack and disclaimer
+  modals. There is still **no focus trap** on this modal (those two have one) — open follow-up.
+- **Driver gotcha, cost an hour:** every node in this modal ships in the first paint, so
+  `waitFor(document.getElementById('w-create-choice'))` returns *immediately* — the click then
+  lands mid-boot and `show()` resets the mode out from under it. Wait on **visibility**
+  (`#hero-guest`'s `style.display`, `#w-connect-modal.classList.contains('open')`,
+  `#w-form`'s `style.display`), never on presence.
+
 ## Iconography (#138)
 
 - **One sprite, one source.** `#ic-sprite` at the top of `index.html` `<body>` holds every

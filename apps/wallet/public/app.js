@@ -704,9 +704,18 @@ function setConnectMode(mode) {
   $('w-quiz-view').style.display = mode === 'quiz' ? 'block' : 'none';
   $('w-backup-success').style.display = mode === 'backup-done' ? 'block' : 'none';
   renderBackupSkipGate();
-  document.querySelector('#w-connect-modal .modal-head h3').textContent =
-    ['backup', 'quiz', 'backup-done'].includes(mode) ? 'Back up your seed phrase'
-      : mode === 'erase' ? 'Erase all wallets' : 'Connect wallet';
+  // The sheet is not always a "connect": with a vault already open it is an ADD,
+  // and it said "Connect wallet" over a connected wallet. The title has to name
+  // the state the modal is actually in, or the header contradicts the chrome
+  // behind it (#138).
+  const [title, sub] = ['backup', 'quiz', 'backup-done'].includes(mode)
+    ? ['Back up your seed phrase', 'Write the words down before you fund this wallet']
+    : mode === 'erase' ? ['Erase all wallets', 'This cannot be undone']
+      : mode === 'unlock' ? ['Unlock your wallets', 'One master password for every wallet on this device']
+        : vault.status === 'unlocked' ? ['Add a wallet', 'Your vault is unlocked — no password needed to add']
+          : ['Connect a wallet', 'Non-custodial — the keys never leave this browser'];
+  $('w-connect-title').textContent = title;
+  $('w-connect-sub').textContent = sub;
   // real words live in the ceremony DOM only while its steps are open
   if (mode !== 'backup') $('w-backup-words').innerHTML = '';
   if (mode !== 'quiz') { $('w-quiz-slots').innerHTML = ''; $('w-quiz-chips').innerHTML = ''; $('w-quiz-err').textContent = ''; }
@@ -716,8 +725,17 @@ function setConnectMode(mode) {
   $('w-none-err').textContent = '';
 }
 function openConnectModal() {
-  setConnectMode(vault.status === 'locked' ? 'unlock' : 'choice');
+  const locked = vault.status === 'locked';
+  setConnectMode(locked ? 'unlock' : 'choice');
   $('w-connect-modal').classList.add('open');
+  // Pull focus into the dialog so a keyboard user lands on the thing the modal
+  // is asking for, not on whatever was behind it. Deferred a frame: the element
+  // has to be laid out (display flipped by setConnectMode) before it can take
+  // focus. Never throw here — a failed focus must not abort opening.
+  requestAnimationFrame(() => {
+    if (!$('w-connect-modal').classList.contains('open')) return;
+    try { (locked ? $('w-unlock-pass') : $('w-create-choice')).focus(); } catch { /* not laid out */ }
+  });
 }
 function closeConnectModal() {
   $('w-connect-modal').classList.remove('open');
@@ -1417,13 +1435,19 @@ async function openWeb3Picker() {
     return;
   }
   listEl.innerHTML = found.map((w, i) => {
-    // EIP-6963 icons are wallet-supplied — admit data:image URIs only
-    const icon = typeof w.icon === 'string' && /^data:image\//.test(w.icon)
+    // EIP-6963 icons are wallet-supplied — admit data:image URIs only.
+    // Named brandIcon, not icon: a local `icon` here would shadow the sprite
+    // helper for the whole callback.
+    const brandIcon = typeof w.icon === 'string' && /^data:image\//.test(w.icon)
       ? `<img src="${esc(w.icon)}" alt="" />`
       : `<span class="w3-fallback-ic">${esc((w.brand || '?').slice(0, 1).toUpperCase())}</span>`;
-    const sub = w.kind === 'sol' ? 'Solana signature (Ed25519)' : 'detected extension';
-    return `<button type="button" class="w3-row" data-web3-pick="${i}">${icon}`
-      + `<span><span class="w3-name">${esc(w.brand)}</span><br/><span class="w3-sub">${sub}</span></span></button>`;
+    // symmetric copy: the old EVM row said "detected extension", which named the
+    // discovery mechanism rather than the curve the signature will use
+    const sol = w.kind === 'sol';
+    const sub = sol ? 'Solana signature (Ed25519)' : 'EVM signature (secp256k1)';
+    return `<button type="button" class="w3-row" data-web3-pick="${i}">${brandIcon}`
+      + `<span class="w3-txt"><span class="w3-name">${esc(w.brand)}</span><br/><span class="w3-sub">${sub}</span></span>`
+      + `<span class="chainpill">${sol ? 'SOL' : 'EVM'}</span></button>`;
   }).join('');
 }
 
