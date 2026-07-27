@@ -52,11 +52,28 @@
        nothing under the script-src CSP. Authored on a 24x24 grid, stroke 1.75,
        round cap/join, fill none, currentColor ONLY — an icon never carries its
        own hex, it inherits from whatever it sits in. Stroke is nudged per size
-       so the optical weight stays constant from 16px to 24px. */
+       so the optical weight stays constant from 16px to 44px.
+       pointer-events:none is load-bearing, not polish: an icon is aria-hidden
+       decoration, so it must never be able to become `e.target`. Without it a
+       click landing on the stroke of the glyph inside #w-erase-go / #w-remove-go
+       makes `busy(e.target, …)` set `disabled` on the SVG — a no-op expando —
+       and the re-entrancy guard in front of deleteAllRecords() / removeWallet()
+       silently disappears. Invisible to the drivers, which click by id. */
     .ic { display: block; flex: none; width: 20px; height: 20px; stroke: currentColor;
-      stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+      stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none;
+      pointer-events: none; }
     .ic-s { width: 16px; height: 16px; stroke-width: 2; }
     .ic-l { width: 24px; height: 24px; stroke-width: 1.6; }
+    /* success beats only. margin-inline is required, not cosmetic: .ic is
+       display:block, and the beats centre their tick with text-align. */
+    .ic-xl { width: 44px; height: 44px; stroke-width: 1.4; margin-inline: auto; }
+    /* A dot glyph has no line to renormalise — its stroke IS its diameter, so it
+       opts out of the size ladder by CLASS, never by a stroke-width baked onto
+       the symbol (which would defeat the ladder everywhere it renders).
+       Doubled selector on purpose: it has to outrank the component overrides
+       (.tx-icon .ic is 0,2,0), because opting out of the ladder means opting
+       out everywhere, not just where no component has an opinion. */
+    .ic.ic-dots { stroke-width: 2.6; }
     #ic-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
     label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-700); margin: 14px 0 6px; }
     input, select, textarea {
@@ -80,6 +97,12 @@
     button.secondary { background: var(--gray-100); color: var(--text); }
     button.secondary:hover { background: #f5f7fa; box-shadow: inset 0 0 0 1px var(--gray-200); }
     .warn-text { color: var(--warn); }
+    /* The two warn lines that earn a mark, scoped by id on purpose: bare
+       .warn-text is worn by 14 nodes and most of them are ordinary prose.
+       .ic is display:block, so without the row the triangle lands ABOVE the
+       sentence. #w-import-warn's JS reveal writes style.display and therefore
+       has to say 'flex' — an inline display beats this rule. */
+    #w-import-warn, #w-web3-mismatch-text { display: flex; align-items: flex-start; gap: 6px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
     .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
     /* Activity rows (#69): direction + signed amount, counterpart, date, confirmations */
@@ -88,7 +111,6 @@
     .tx:first-child { padding-top: 2px; } .tx:last-of-type { border-bottom: 0; }
     .tx-icon { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; }
     .tx-icon .ic { width: 15px; height: 15px; stroke-width: 2.1; }
-    .tx-icon.dd .ic { fill: currentColor; stroke-width: 0; width: 11px; height: 11px; }
     .tx-icon.in { background: var(--good-bg); color: var(--good); }
     .tx-icon.out { background: var(--gray-100); color: var(--gray-700); }
     .tx-icon.dd { background: var(--accent-5); color: var(--accent); }
@@ -108,6 +130,9 @@
     .amt-head label { margin-bottom: 0; }
     .amt-tools { display: flex; gap: 6px; }
     .amt-btn { width: auto; margin: 0 0 2px; padding: 4px 11px; font-size: 12px; border-radius: 999px; }
+    /* the currency toggle carries a mark beside its label; the base `button` rule
+       declares no display at all, so this is what gives it a row and a gap */
+    #w-send-ccy { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
     /* overflow-wrap because an error line can now carry the RAW TRANSACTION
        (the storage-failure branch of the ambiguous-broadcast message, #C1):
        hex has no spaces, so the default `normal` would push one unbreakable
@@ -133,7 +158,11 @@
     a { color: var(--accent); }
     .topbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
     .logo { display: flex; align-items: center; gap: 8px; }
-    .corner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+    /* flex:1 is what makes justify-content:flex-end mean anything once .topbar
+       wraps. Without it the corner box is only as wide as its contents, so on a
+       narrow screen it lands at the START of its own line — right-aligned
+       controls that jump to the left edge the moment the header wraps. */
+    .corner { display: flex; flex: 1 1 auto; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
     .chip-btn { width: auto; margin: 0; padding: 9px 14px; font-size: 13px; }
     #w-chip { display: inline-flex; align-items: center; gap: 10px; background: #fff; border-radius: 999px; padding: 5px 6px 5px 14px; box-shadow: 0 1px 2px rgba(21,24,30,.06); min-width: 0; }
     #w-chip .mono { font-size: 12px; color: var(--gray-700); white-space: nowrap; word-break: normal; overflow: hidden; text-overflow: ellipsis; }
@@ -236,6 +265,40 @@
       .guest { padding: 24px 16px 30px; }
       .guest img.guest-art { width: min(200px, 60%); }
       .net-banner { padding: 7px 10px; font-size: 11px; }
+      /* The header is the tightest row in the app: at 430px the topbar has 398px
+         and the guest corner wants 498. The Network button drops its word and
+         keeps the globe + its status dot — an icon-only control, which the
+         system allows precisely because it carries aria-label AND title. The
+         dot was always the part doing the work; the word was the redundancy. */
+      #net-btn .nb-label { display: none; }
+      #net-btn { padding: 9px 11px; gap: 6px; }
+      .corner { gap: 6px; }
+      /* The pill goes on phones — the last 80px, and what buys the single row.
+         Network identity is NOT lost: .net-banner says the same thing in full
+         width, in the same colour level, and is position:sticky, so it survives
+         the scroll that the pill's .floating class was invented to survive.
+         On mainnet that banner is the red "MAINNET BETA — real funds at risk"
+         line, which is louder than the pill it replaces here.
+         NOT GUARDED BY CI, twice over: verify-beta-posture reads the .hidden
+         PROPERTY (`!net-pill.hidden`), which a CSS display:none does not set,
+         and the drivers run at desktop width where this rule never applies. If
+         the banner is ever made dismissible or non-sticky, this rule has to go
+         with it — that pairing is the whole argument. */
+      .net-pill { display: none; }
+      /* Same trade, same reasoning, 83px more: every state this badge carries has
+         a louder partner that survives. MOCK MODE is dev-only (it needs absent
+         RPC creds, so it cannot reach a deployment). LIVE NODE is informational.
+         CROSS-WIRED — the one that matters — comes with a red SERVER
+         MISCONFIGURED banner naming both chains AND a blocked wallet boot, so
+         the badge is nowhere near the only thing saying it. */
+      #modeBadge { display: none; }
+      /* Badge and strip are the same warning; the strip only ever shows when the
+         badge would too, and says it in full with the CTA. At 430px the corner
+         wants 450 of its 398, so while the strip is up the badge is the row that
+         goes — duplication, not signal. Dismiss the strip and the badge comes
+         back with its label, because then it is the only surface saying it.
+         !important because renderBackupCta() writes style.display inline. */
+      body.has-backup-strip #w-backup-badge { display: none !important; }
       .actions { gap: 8px; }
       .action { font-size: 12px; padding: 12px 4px 9px; }
     }
@@ -271,6 +334,10 @@
     #mint-modal.success #w-mint { display: none; }
     #consolidate-modal.success #w-consolidate { display: none; }
     .tx-success .tx-check { color: var(--good); }
+    /* #w-backup-success is NOT a .tx-success (it must not answer showTxSuccess()'s
+       modal.querySelector, and .tx-success{display:none} would fight app.js's
+       style.display write) — so it needs the tint spelled out here. */
+    #w-backup-success .tx-check { color: var(--good); }
     .tx-success .tx-title { margin: 10px 0 2px; font-size: 18px; font-weight: 600; }
     .tx-success .tx-link { display: inline-block; margin: 2px 0 4px; }
     .tx-success a.tx-link:not([href]) { color: var(--muted); text-decoration: none; cursor: default; }
@@ -293,7 +360,8 @@
     .rx-row:last-child { border-bottom: 0; }
     .rx-row .rx-i { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 26px; }
     .rx-row .rx-addr { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .rx-row .rx-tag { font-size: 10px; font-weight: 600; letter-spacing: .02em; padding: 2px 8px; border-radius: 999px; background: var(--good-bg); color: var(--good); white-space: nowrap; }
+    .rx-row .rx-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; letter-spacing: .02em; padding: 2px 8px; border-radius: 999px; background: var(--good-bg); color: var(--good); white-space: nowrap; }
+    .rx-row .rx-tag .ic { width: 11px; height: 11px; stroke-width: 2.4; }
     .rx-row .rx-tag.idle { background: var(--gray-100); color: var(--muted); }
     .rx-row .rx-tag.now { background: var(--gray-900); color: #fff; }
     .rx-row .icon-btn { position: static; width: 26px; height: 26px; box-shadow: none; background: var(--gray-100); }
@@ -368,6 +436,16 @@
     .quiz-slot.filled { border-style: solid; border-color: var(--gray-300); background: #fff; }
     .quiz-slot.filled:hover { background: var(--gray-50); }
     .quiz-slot .qn { display: block; font-size: 10.5px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
+    /* An empty slot used to render a literal '·' — the one character still doing
+       icon work anywhere in the app, and named in design-system.md's gone list.
+       The placeholder is a CSS rule now: font-independent, tintable, and it does
+       not shift the baseline when the word lands. min-height on the value span
+       keeps empty and filled the same height, which is what the glyph was
+       really holding up. Emptiness is already stated by .quiz-slot's dashed
+       border (solid once .filled), so the mark only has to be an invitation. */
+    .quiz-slot .mono { display: block; min-height: 1.25em; }
+    .quiz-slot:not(.filled) .mono::after { content: ''; display: block; width: 22px; height: 2px;
+      margin: calc(.625em - 1px) auto; background: var(--gray-300); border-radius: 1px; }
     .quiz-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .quiz-chip { width: auto; margin: 0; padding: 6px 13px; border-radius: 999px; font-size: 13px; }
     .quiz-chip:disabled { opacity: .35; }
@@ -382,11 +460,19 @@
     .wal-name { font-weight: 600; }
     .wal-sub { font-size: 11.5px; color: var(--muted); font-weight: 400; }
     .wal-check { margin-left: auto; color: var(--accent); display: flex; }
-    .wal-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); vertical-align: 1px; }
+    /* the class name is a driver contract (verify-wallet-mgmt counts .wal-dot);
+       it holds a mark now instead of being one, so the state survives a
+       colour-blind read and matches #w-backup-badge, which draws it already */
+    .wal-dot { display: inline-flex; color: var(--bad); vertical-align: -2px; }
+    .wal-dot .ic { width: 12px; height: 12px; stroke-width: 2.4; }
     .wal-manage { flex: none; width: auto; margin: 0; padding: 8px 12px; line-height: 1; display: flex; align-items: center; }
     .wal-edit { padding: 2px 0 12px; border-bottom: 1px solid var(--gray-100); }
     .wal-edit .grid button { margin-top: 10px; }
-    button.danger { background: var(--primary-700); }
+    /* exactly three elements wear this: #w-erase-go, #w-remove-go and the
+       switcher's Remove… disclosure. Both commit buttons carry ic-trash, so the
+       rule has to be a row; .net-banner.danger / .net-pill.danger are not
+       buttons and are unaffected. */
+    button.danger { background: var(--primary-700); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
     button.danger:hover { background: var(--primary-800); }
     /* sign-to-derive (#130): picker rows, ceremony steps, disclosure checkbox */
     .badge.exp { background: var(--warn-bg); color: var(--warn); }
@@ -459,8 +545,16 @@
            control carries aria-label + title. Decorative uses get aria-hidden.
          · No emoji, no text glyphs. Those shift the baseline, change shape with
            the platform font, and cannot be tinted apart from their label.
-         · Brand marks (MetaMask, Phantom, OKX) are NOT in here — they arrive as
-           data: URIs on the extension's own EIP-6963 announcement. -->
+         · A symbol carries NO presentation attributes — no stroke-width, no
+           fill, no stroke. Weight comes from the size class, so a value baked
+           here would follow the shape into every context it renders in.
+           ic-more is the exception that proves it: three dots have no line to
+           renormalise, so they opt out through .ic-dots, a class, not an attr.
+         · Brand marks are NOT in here. Third-party ones (MetaMask, Phantom, OKX)
+           arrive as data: URIs on the extension's own EIP-6963 announcement; the
+           footer's GitHub octocat is first-party but still out, because a fixed
+           filled logo cannot be authored on the 24x24 / stroke / fill:none
+           contract without ceasing to be that logo. -->
   <svg id="ic-sprite" aria-hidden="true"><defs>
     <symbol id="ic-sparkle" viewBox="0 0 24 24"><path d="M11 3.2l1.7 4.6 4.6 1.7-4.6 1.7L11 15.8 9.3 11.2 4.7 9.5l4.6-1.7z"/><path d="M17.8 14.2l.85 2.15 2.15.85-2.15.85-.85 2.15-.85-2.15-2.15-.85 2.15-.85z"/></symbol>
     <symbol id="ic-key" viewBox="0 0 24 24"><circle cx="8.75" cy="8.75" r="4.25"/><path d="M11.8 11.8L20 20"/><path d="M17.2 17.2l-1.9 1.9"/><path d="M20 20l1.3-1.3"/></symbol>
@@ -481,6 +575,7 @@
     <symbol id="ic-qr" viewBox="0 0 24 24"><rect x="4" y="4" width="6.4" height="6.4" rx="1.6"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.6"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.6"/><path d="M13.6 13.6h2.8v2.8h-2.8z"/><path d="M20 13.6v2.6M20 20h-3.4M13.6 20h.01"/></symbol>
     <symbol id="ic-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M15.6 6.3A2.5 2.5 0 0 0 13.1 4H6.5A2.5 2.5 0 0 0 4 6.5v6.6a2.5 2.5 0 0 0 2.3 2.5"/></symbol>
     <symbol id="ic-check" viewBox="0 0 24 24"><path d="M5 12.6l4.4 4.4L19 7.4"/></symbol>
+    <symbol id="ic-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M8.2 12.4l2.7 2.7L15.9 9.6"/></symbol>
     <symbol id="ic-x" viewBox="0 0 24 24"><path d="M6.4 6.4l11.2 11.2M17.6 6.4L6.4 17.6"/></symbol>
     <symbol id="ic-chevron-right" viewBox="0 0 24 24"><path d="M9.6 5.6L16 12l-6.4 6.4"/></symbol>
     <symbol id="ic-chevron-down" viewBox="0 0 24 24"><path d="M5.6 9L12 15.4 18.4 9"/></symbol>
@@ -491,6 +586,7 @@
     <symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8"/><path d="M12 3.6c2.1 2.3 3.3 5.3 3.3 8.4S14.1 18.1 12 20.4c-2.1-2.3-3.3-5.3-3.3-8.4S9.9 5.9 12 3.6z"/></symbol>
     <symbol id="ic-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 7.1v5.2l3.4 2"/></symbol>
     <symbol id="ic-refresh" viewBox="0 0 24 24"><path d="M20.2 5.6v5h-5"/><path d="M19.4 10.6a7.6 7.6 0 1 0-.4 5.4"/></symbol>
+    <symbol id="ic-swap" viewBox="0 0 24 24"><path d="M4.4 8.6h13.2"/><path d="M14.4 5.4l3.2 3.2-3.2 3.2"/><path d="M19.6 15.4H6.4"/><path d="M9.6 12.2l-3.2 3.2 3.2 3.2"/></symbol>
     <symbol id="ic-external" viewBox="0 0 24 24"><path d="M14.2 4.4h5.4v5.4"/><path d="M19.6 4.4L11.4 12.6"/><path d="M18 14.4v4.1a1.6 1.6 0 0 1-1.6 1.6H5.6A1.6 1.6 0 0 1 4 18.5V7.7a1.6 1.6 0 0 1 1.6-1.6h4.1"/></symbol>
     <symbol id="ic-download" viewBox="0 0 24 24"><path d="M12 3.8v10.9"/><path d="M7.6 10.4L12 14.8l4.4-4.4"/><path d="M4.4 16.8v1.6a2 2 0 0 0 2 2h11.2a2 2 0 0 0 2-2v-1.6"/></symbol>
     <symbol id="ic-upload" viewBox="0 0 24 24"><path d="M12 14.8V3.9"/><path d="M7.6 8.3L12 3.9l4.4 4.4"/><path d="M4.4 16.8v1.6a2 2 0 0 0 2 2h11.2a2 2 0 0 0 2-2v-1.6"/></symbol>
@@ -499,7 +595,7 @@
     <symbol id="ic-trash" viewBox="0 0 24 24"><path d="M4.6 6.9h14.8"/><path d="M9.7 6.9V5.6A1.6 1.6 0 0 1 11.3 4h1.4a1.6 1.6 0 0 1 1.6 1.6v1.3"/><path d="M6.6 6.9l.8 11.6a2 2 0 0 0 2 1.9h5.2a2 2 0 0 0 2-1.9l.8-11.6"/></symbol>
     <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 11.2v5.2"/><path d="M12 7.9h.01"/></symbol>
     <symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5.4v13.2M5.4 12h13.2"/></symbol>
-    <symbol id="ic-more" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/></symbol>
+    <symbol id="ic-more" viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></symbol>
   </defs></svg>
 
   <!-- populated at runtime from the node's chain (netchrome.js, #61) -->
@@ -518,14 +614,14 @@
         <button id="w-backup-badge" style="display:none" title="Back up this wallet's seed phrase"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-alert"/></svg>Not backed up</button>
         <!-- role/tabindex, not a <button>: it nests the real Disconnect button,
              and a button inside a button is invalid HTML (browsers re-parent it) -->
-        <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
+        <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-wallets"/></svg><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
         <!-- show() rewrites this per vault state (create/restore/unlock); the
              static text is only what ships before the first render.
              It writes textContent, so this button must stay TEXT-ONLY — giving
              it an <svg><use/></svg> like its siblings would have show() delete
              the icon on every render (design-system.md § icon sprite). -->
         <button id="w-connect" class="chip-btn" title="Create or restore a wallet" style="display:none">Create or restore</button>
-        <button id="net-btn" title="Network status"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-globe"/></svg><span id="net-dot" class="dot warn"></span>Network</button>
+        <button id="net-btn" title="Network status" aria-label="Network status"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-globe"/></svg><span id="net-dot" class="dot warn"></span><span class="nb-label">Network</span></button>
       </div>
     </div>
   </header>
@@ -534,6 +630,7 @@
        but has no verified backup. Dismiss hides it for this session only. -->
   <div class="backup-strip" id="w-backup-strip" style="display:none">
     <div class="backup-strip-inner">
+      <svg class="ic ic-s" aria-hidden="true"><use href="#ic-alert"/></svg>
       <span id="w-backup-strip-text">This wallet holds funds but has no backup — if this browser data is lost, the funds are gone.</span>
       <button id="w-backup-strip-go" type="button">Back up now</button>
       <button id="w-backup-strip-dismiss" type="button" class="secondary" title="Dismiss for this session" aria-label="Dismiss for this session"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-x"/></svg></button>
@@ -866,7 +963,7 @@
         <div class="err" id="w-quiz-err"></div>
       </div>
       <div id="w-backup-success" style="display:none;text-align:center;padding:16px 0 4px">
-        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style="color:var(--good)"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg class="ic ic-xl tx-check" aria-hidden="true"><use href="#ic-check-circle"/></svg>
         <div style="font-size:18px;font-weight:600;margin:10px 0 2px">Backed up</div>
         <p class="hint" style="margin-top:2px">Keep the written words offline and private — anyone who has them controls the funds.</p>
         <!-- #M1: the encrypted backup file, offered where the user is already
@@ -913,7 +1010,7 @@
         <label for="w-erase-input">Type ERASE to confirm</label>
         <input id="w-erase-input" autocomplete="off" />
         <div class="grid">
-          <button id="w-erase-go" class="danger" disabled>Erase everything</button>
+          <button id="w-erase-go" class="danger" disabled><svg class="ic ic-s" aria-hidden="true"><use href="#ic-trash"/></svg>Erase everything</button>
           <button id="w-erase-cancel" class="secondary">Cancel</button>
         </div>
         <div class="err" id="w-erase-err"></div>
@@ -945,7 +1042,7 @@
           <label for="w-remove-name">Type the wallet's name to confirm</label>
           <input id="w-remove-name" autocomplete="off" />
           <div class="grid">
-            <button id="w-remove-go" class="danger" disabled>Remove wallet</button>
+            <button id="w-remove-go" class="danger" disabled><svg class="ic ic-s" aria-hidden="true"><use href="#ic-trash"/></svg>Remove wallet</button>
             <button id="w-remove-cancel" class="secondary">Cancel</button>
           </div>
           <div class="err" id="w-remove-err"></div>
@@ -971,7 +1068,7 @@
             <div class="amt-head">
               <label for="w-send-amount" id="w-send-amount-label">Amount (DGB)</label>
               <div class="amt-tools">
-                <button type="button" id="w-send-ccy" class="amt-btn secondary" title="Enter the amount in USD instead">⇄ USD</button>
+                <button type="button" id="w-send-ccy" class="amt-btn secondary" title="Enter the amount in USD instead"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-swap"/></svg>USD</button>
                 <button type="button" id="w-send-max" class="amt-btn secondary" title="Send the entire spendable balance">Max</button>
               </div>
             </div>
@@ -1028,7 +1125,7 @@
         </div>
         <!-- shown instead of the form once a tx is broadcast -->
         <div class="tx-success">
-          <svg class="tx-check" width="44" height="44" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg class="ic ic-xl tx-check" aria-hidden="true"><use href="#ic-check-circle"/></svg>
           <div class="tx-title"></div>
           <a class="tx-link mono" target="_blank" rel="noopener"></a>
           <p class="hint tx-note" style="margin-top:2px"></p>
@@ -1158,7 +1255,7 @@
         </div>
         <!-- shown instead of the form once the mint is broadcast -->
         <div class="tx-success">
-          <svg class="tx-check" width="44" height="44" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg class="ic ic-xl tx-check" aria-hidden="true"><use href="#ic-check-circle"/></svg>
           <div class="tx-title"></div>
           <a class="tx-link mono" target="_blank" rel="noopener"></a>
           <p class="hint tx-note" style="margin-top:2px"></p>
@@ -1247,7 +1344,7 @@
         </div>
         <!-- shown instead of the form once the consolidation is broadcast -->
         <div class="tx-success">
-          <svg class="tx-check" width="44" height="44" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg class="ic ic-xl tx-check" aria-hidden="true"><use href="#ic-check-circle"/></svg>
           <div class="tx-title"></div>
           <a class="tx-link mono" target="_blank" rel="noopener"></a>
           <p class="hint tx-note" style="margin-top:2px"></p>
