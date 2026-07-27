@@ -1,6 +1,6 @@
 # Agent workflow & process lessons
 
-Verified: 2026-07-26. Repo: <https://github.com/tonymorony/diginaut-wallet>
+Verified: 2026-07-27. Repo: <https://github.com/tonymorony/diginaut-wallet>
 (old `digidollar-wallet` URL redirects; a remote pointing at the old URL pushes fine, but an
 already-open PR may silently not pick up new commits — check the PR actually updated).
 
@@ -8,6 +8,12 @@ already-open PR may silently not pick up new commits — check the PR actually u
 
 1. Branch (`build/…`, `fix/…`, `ops/…`, `discovery/…`) → implement → **wiki write-back**
    (checklist below, edits committed on the same branch) → push → `gh pr create`.
+1b. **Commit subjects are Conventional Commits** — `type(scope): summary` (`feat`, `fix`,
+   `chore`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `revert`; scope one of
+   `wallet`, `indexer`, `faucet`, `digidollar-js`, `wiki`, `deploy`). Imperative, no trailing
+   period, ≤ 72 chars, *why* in the body; `!` + `BREAKING CHANGE:` footer for breaks. Rule
+   added 2026-07-27 — earlier history uses prose subjects and is left alone. Not enforced by
+   CI (no commitlint hook yet), so it is on the author.
 2. Spawn a Code Reviewer agent for a genuine review; post the verdict (FIX-FIRST / SHIP) as a
    PR comment. Reviewers: treat a behavior-changing PR with no wiki delta and no stated
    reason as a FIX-FIRST item.

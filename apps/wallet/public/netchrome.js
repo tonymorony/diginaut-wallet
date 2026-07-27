@@ -50,7 +50,12 @@ export function networkChrome(chain) {
       // Copy decided in #54 — loud, red (level:'danger'), and honest about the cap.
       return {
         title: 'Diginaut · DigiDollar wallet',
-        banner: `MAINNET BETA — real funds at risk. Beta software, in-browser keys, no backup. $${BETA_TX_CAP_USD}/tx cap.`,
+        // "no backup" was false and dangerous on the one chain with real funds:
+        // mainnet ships a MANDATORY seed ceremony plus an encrypted file export,
+        // so the bare phrase told a user their backup did not exist. Testnet
+        // already qualified it ("no server-side backup") — the loud chain must
+        // not make the weaker, wronger claim. What is absent is OUR copy of it.
+        banner: `MAINNET BETA — real funds at risk. Beta software, in-browser keys, no backup on our servers. $${BETA_TX_CAP_USD}/tx cap.`,
         level: 'danger',
         pill: 'MAINNET',
       };

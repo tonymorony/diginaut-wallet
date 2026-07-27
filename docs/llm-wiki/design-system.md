@@ -1,6 +1,6 @@
 # Design system
 
-Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138).
+Verified: 2026-07-27 @ branch `design/copy-truthful-labels` (#138, then the copy pass).
 
 Visual + copy conventions shared by every surface. Behavioural facts about a specific screen
 live in `wallet-app.md`; this page is only "how it should look and read".
@@ -53,8 +53,23 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
   Precedent (#138 feedback): the guest CTA read **"Connect wallet"**, the EVM phrase for
   *grant this site access to a wallet that already holds your funds* — while Diginaut's
   default path grants nothing and generates a keypair in the browser. A DGB holder read it as
-  the EVM gesture, left the site, and read the source before returning. Mirror defect:
-  `Disconnect` calls `lockWallet()`, making a safe reversible lock sound like a severing.
+  the EVM gesture, left the site, and read the source before returning. **Fixed:** the CTA is
+  now a three-state tuple (*Create or restore a wallet* / *Restore a wallet* / *Unlock*) —
+  `wallet-app.md` § Connect modal. Mirror defect, still open: `Disconnect` calls
+  `lockWallet()`, making a safe reversible lock sound like a severing.
+- **A destructive button is labelled by its consequence, even next to identical-looking
+  siblings.** The recovery card's *Dismiss* deleted the signed hex of a possibly-in-flight
+  transaction; it now says *Delete saved transaction* on a live row and keeps *Dismiss* only
+  on a resolved one, where nothing is destroyed.
+- **Borrowed chain jargon must mean here what it means out there.** `#w-recovery`'s heading
+  was *Unconfirmed broadcast*; to a BTC/LTC/DGB holder "unconfirmed" means broadcast and
+  waiting for a block — routine — while the card exists because we don't know it was
+  broadcast at all. Now *Broadcast not acknowledged*. `app.js`'s ambiguous-broadcast error
+  names that panel in prose: **retitle both together.**
+- **A qualifier can be the whole truth.** The mainnet banner said "no backup" while the app
+  ships a mandatory seed ceremony *and* an encrypted file export — on the only chain with real
+  funds, that read as *backups do not exist*. It says "no backup on our servers" (testnet
+  already qualified it). Say what is absent, not that nothing exists.
 - **Keep an accurate jargon term in the one place it is accurate.** "Connect" is correct on
   the web3 sign-to-derive door and nowhere else; using it only there teaches the distinction.
 - **Name the consequence, not the mechanism** — "New 24-word seed phrase, you'll write it down

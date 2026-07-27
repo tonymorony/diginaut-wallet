@@ -1,6 +1,7 @@
 # apps/wallet
 
-Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138 icon system + connect modal).
+Verified: 2026-07-27 @ branch `design/copy-truthful-labels` (#138 icon system + connect modal,
+then the CTA/recovery/banner copy pass).
 
 ## Layout
 
@@ -76,6 +77,11 @@ Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138 icon 
   written at REVIEW time only — never re-read state in the `w-*-go` handlers (L6 property).
   Card row titles drop to `r.kind` while `vault.status !== 'unlocked'` (amount + counterparty
   must not outlive the lock) — `show()` re-renders the card so it flips on the transition.
+  The row's last button is labelled from `rec`: a **live** row says *Delete saved transaction*
+  (the click is `broadcastLog.drop()`, which destroys the signed hex that Rebroadcast and Copy
+  raw transaction are the only users of, for a tx that may be in flight), a **resolved** row —
+  `rec === null`, record already gone — says *Dismiss*, which is then true. Don't collapse the
+  two back into one word.
 - **Cross-module copy contract**: `SERVER_REFUSALS` in `broadcastlog.js` string-matches the
   proxy's own 413/`request body too large` and 429/`too many requests — ` (the only refusals
   it cannot detect structurally). `server.test.js` feeds the live response through
@@ -116,7 +122,8 @@ Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138 icon 
   `w-erase-go` and last-wallet removal — always **before** `show('none')`. It must NOT be
   cleared by `vault.js`'s v1→v2 `deleteKeystore()`: a vault still exists there. Tombstone +
   no vault ⇒ the guest hero swaps `#hero-guest-copy` for `#hero-recovery` and the CTA reads
-  "Restore a wallet" (keyed on `state === 'none'` only — the same hero also serves `locked`).
+  "Restore a wallet" (keyed on `state === 'none'` only — the same hero also serves `locked`,
+  which takes the *Unlock* CTA; see § Connect modal for the three-state tuple).
 - Backup strip escalates on `persistState?.persisted !== true` (unknown counts as evictable),
   so it now nags at **zero balance**; the per-session dismiss is what keeps that bearable.
 - `backupSkipAllowed(chain)` in `netchrome.js` is an **allow-list** (`test`/`testnet`/
@@ -146,11 +153,29 @@ Verified: 2026-07-27 @ branch `design/icon-system-and-connect-modal` (#138 icon 
   `$('w-web3-choice').nextElementSibling` (the hint `<p>`). #138 folded that copy into the
   door, the walk hit `null`, the throw was swallowed by the surrounding `catch` — and took
   `maybeShowMainnetAck()` with it, so **mainnet served no risk interstitial**. Now one node,
-  `#w-web3-group`. No driver in `run-drivers.sh`'s registered set covers this; only
-  `verify-mainnet-live` / `verify-beta-posture` do, and neither is registered.
+  `#w-web3-group`. Caught only by `verify-mainnet-live` / `verify-beta-posture`, neither
+  registered when this bit. `verify-beta-posture` **is registered since** (`run-drivers.sh`
+  = 13, alongside `verify-mainnet-bringup`, which never touches the ack modal).
+  `verify-mainnet-live` drives the **deployed** site (`argv[2]`, default
+  `https://diginaut.ludere.space`, 3-min node warm-up) and so stays out of the local gate —
+  the blocking interstitial still has no coverage in `run-drivers.sh`. Don't read "13 green"
+  as "mainnet ack is tested".
 - Title is a state, not a constant: `setConnectMode()` → *Back up your seed phrase* / *Erase
-  all wallets* / *Unlock your wallets* / *Add a wallet* (vault unlocked) / *Connect a wallet*.
-  Writes `#w-connect-title` + `#w-connect-sub`; the `querySelector('.modal-head h3')` is gone.
+  all wallets* / *Unlock your wallets* / *Add a wallet* (vault unlocked) / *Create or restore a
+  wallet*. Writes `#w-connect-title` + `#w-connect-sub`; `querySelector('.modal-head h3')` is gone.
+- **The hero CTA is a state too, and it should agree with the title it opens** — it does in
+  every state but **wiped**, where the CTA reads *Restore a wallet* and the sheet still says
+  *Create or restore a wallet* and focuses `w-create-choice`. That is the open deferral in
+  `project-status.md` (the post-eviction sheet also still paints create as the sole
+  `.door.primary`); fix the three together, not the title alone. `show()` picks
+  all three from one tuple: `locked` → *Unlock* (chip *Unlock*), wiped → *Restore a wallet*
+  (*Restore*), fresh → *Create or restore a wallet* (*Create or restore*). Both `#hero-connect`
+  and the header chip `#w-connect` are written every `show()`, so the static HTML text is only
+  the pre-first-render default. Before this, one constant "Connect wallet" rode all three —
+  over a **locked** vault it offered to "connect" a wallet already on the device while opening
+  a sheet titled *Unlock your wallets*. Add a state here and you must add its CTA.
+- "Connect" now appears in exactly one place, `#w-web3-choice` (*Connect a browser wallet*),
+  which is the only door where an external key holder really is granting access.
 - `openConnectModal()` focuses inside a `requestAnimationFrame` (display flips in the same
   tick; an unlaid-out element cannot take focus) and **re-reads `vault.status` in the
   callback** — an autolock inside that frame would otherwise aim at a hidden door.

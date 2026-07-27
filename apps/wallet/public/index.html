@@ -519,7 +519,12 @@
         <!-- role/tabindex, not a <button>: it nests the real Disconnect button,
              and a button inside a button is invalid HTML (browsers re-parent it) -->
         <span id="w-chip" role="button" tabindex="0" title="Switch or manage wallets" style="display:none"><span id="w-chip-addr" class="mono"></span><button id="w-disconnect" class="secondary chip-btn">Disconnect</button></span>
-        <button id="w-connect" class="chip-btn" style="display:none">Connect wallet</button>
+        <!-- show() rewrites this per vault state (create/restore/unlock); the
+             static text is only what ships before the first render.
+             It writes textContent, so this button must stay TEXT-ONLY — giving
+             it an <svg><use/></svg> like its siblings would have show() delete
+             the icon on every render (design-system.md § icon sprite). -->
+        <button id="w-connect" class="chip-btn" title="Create or restore a wallet" style="display:none">Create or restore</button>
         <button id="net-btn" title="Network status"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-globe"/></svg><span id="net-dot" class="dot warn"></span>Network</button>
       </div>
     </div>
@@ -543,7 +548,12 @@
          show() and the wallet-switch teardown never touch it, because the coins
          are at risk whichever wallet is on screen. -->
     <section class="card" id="w-recovery" style="display:none">
-      <h2>Unconfirmed broadcast</h2>
+      <!-- NOT "Unconfirmed broadcast": to a BTC/LTC/DGB holder "unconfirmed"
+           means broadcast and waiting for a block — a routine, benign state.
+           The actual state is that we do not know it was broadcast at all, on
+           the one card whose job is to stop a double-send. app.js's ambiguous
+           -broadcast error names this panel in prose; move both together. -->
+      <h2>Broadcast not acknowledged</h2>
       <p class="hint warn-text" style="margin-top:0">A transaction was signed and sent to the node, but the node never answered. It <strong>may already be in the mempool</strong>. Check its status or rebroadcast the identical transaction — do not rebuild and send it again, that would create a second, conflicting transaction over the same coins.</p>
       <div id="w-recovery-list"></div>
       <div class="err" id="w-recovery-err"></div>
@@ -568,7 +578,7 @@
            record survives. Offering a cheerful "create a new wallet" here is how
            a storage eviction reads as a fresh install. -->
       <p id="hero-recovery" class="warn-text" style="display:none">This browser previously held a Diginaut wallet, and its stored data is gone — cleared, or evicted by the browser to reclaim space. Nothing was sent anywhere: your coins are still on chain. Restore the wallet from its seed phrase or from an encrypted backup file. If you have neither, the funds cannot be recovered.</p>
-      <button id="hero-connect">Connect wallet</button>
+      <button id="hero-connect">Create or restore a wallet</button>
     </section>
 
     <!-- connected: hero balance + actions, then assets / DigiDollar / activity -->
@@ -692,7 +702,7 @@
            sheet has no visible control (a sealed backup ceremony hides Close) -->
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="w-connect-title" tabindex="-1">
       <div class="modal-head">
-        <div><h3 id="w-connect-title">Connect wallet</h3><p class="msub" id="w-connect-sub"></p></div>
+        <div><h3 id="w-connect-title">Create or restore a wallet</h3><p class="msub" id="w-connect-sub"></p></div>
         <button id="w-modal-close" class="xbtn" title="Close" aria-label="Close"><svg class="ic" aria-hidden="true"><use href="#ic-x"/></svg></button>
       </div>
 
@@ -744,7 +754,11 @@
           <button id="w-web3-choice" class="door exp">
             <span class="door-ic"><svg class="ic" aria-hidden="true"><use href="#ic-puzzle"/></svg></span>
             <span class="door-txt">
-              <span class="door-t">Use a browser wallet <span class="badge exp">EXPERIMENTAL</span></span>
+              <!-- the ONLY door where "connect" is literally true: this one asks an
+                   extension that already holds keys to sign for us. Reserving the
+                   word here teaches the distinction the old global "Connect
+                   wallet" destroyed — see design-system.md § UX copy. -->
+              <span class="door-t">Connect a browser wallet <span class="badge exp">EXPERIMENTAL</span></span>
               <span class="door-s">MetaMask, Phantom, OKX or any extension you already have signs one fixed message; the signature becomes a DigiByte wallet.</span>
             </span>
             <svg class="ic door-go" aria-hidden="true"><use href="#ic-chevron-right"/></svg>

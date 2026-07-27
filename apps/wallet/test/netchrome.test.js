@@ -10,7 +10,13 @@ test('mainnet: red beta banner with the #54 copy, MAINNET pill', () => {
   const c = networkChrome('main');
   assert.match(c.banner, /MAINNET BETA/);
   assert.match(c.banner, /real funds at risk/);
-  assert.match(c.banner, /no backup/);
+  // The qualifier is load-bearing, not decoration: the app ships a mandatory
+  // seed ceremony + encrypted file export, so a bare "no backup" is false on
+  // the only chain that holds real funds. Asserted in the NEGATIVE so it pins
+  // the DEFECT's absence rather than this fix's wording — a later copy pass
+  // that lands something better ("we never hold a copy of your keys") stays
+  // green, while a revert to the bare claim still fails.
+  assert.doesNotMatch(c.banner, /\bno backup\b(?! on our servers)/);
   assert.ok(c.banner.includes(`$${BETA_TX_CAP_USD}/tx cap`), 'banner quotes the cap');
   assert.equal(c.level, 'danger');
   assert.equal(c.pill, 'MAINNET');
