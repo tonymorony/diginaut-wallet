@@ -4,6 +4,7 @@
 // and asserts the UI renders the open position (amount, tier, collateral,
 // expiry) distinctly from the DGB balance. Setup: same as verify-send.mjs.
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS,
   buildSignedMintTx, scriptPubKeyFromAddress,
@@ -11,7 +12,7 @@ import {
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500';
 const MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 

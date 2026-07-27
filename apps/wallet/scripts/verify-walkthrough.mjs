@@ -11,12 +11,13 @@
 //     e.g. FAUCET_DATA_FILE=/tmp/faucet-claims-walkthrough-$RANDOM.json)
 //   - headless Chrome CDP on 9224 with a FRESH user-data-dir (clean IndexedDB)
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
 const INDEXER = 'http://127.0.0.1:8789';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500';
 const PASS = 'walkthrough pass';
 // BIP39 test vector #2 — wallet B is deterministic so the driver knows its

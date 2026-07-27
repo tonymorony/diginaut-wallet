@@ -22,16 +22,17 @@
 //   node apps/wallet/scripts/verify-wallet-switch.mjs   # exit 0 = all green
 // A FRESH user-data-dir per run is required (IndexedDB carries the vault).
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { connectCdp } from './lib/cdp.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const IDX_PORT = Number(process.env.IDX_PORT) || 8867;
 const APP_PORT = Number(process.env.APP_PORT) || 8866;
 const PASS = 'wallet switch driver';
 const A_TXID = 'a'.repeat(64); // recognisable in the Activity list
 
 const idx = spawn('node', [`${ROOT}scripts/fake-indexer.mjs`], {
-  env: { ...process.env, PORT: String(IDX_PORT), TIP: '100000' }, stdio: 'ignore',
+  env: { ...process.env, PORT: String(IDX_PORT), TIP: '1284512' }, stdio: 'ignore',
 });
 const app = spawn('node', [`${ROOT}server.js`], {
   env: { ...process.env, PORT: String(APP_PORT), INDEXER_URL: `http://127.0.0.1:${IDX_PORT}` }, stdio: 'ignore',
@@ -111,6 +112,9 @@ await waitFor(vis('w-backup-view'), 'ceremony for wallet B');
 await click('w-backup-done');
 await waitFor(`!${modalOpen('w-connect-modal')}`, 'ceremony dismissed for wallet B');
 await waitFor(`${text('w-address')} !== ${JSON.stringify(addrA)}`, 'wallet B derives its own address');
+// Held for the switch-back assertion below. B is never funded, so unlike A's
+// address this one does not rotate.
+const addrB = await evaluate(text('w-address'));
 await waitFor(`document.getElementById('w-balance').textContent === '0'`, 'wallet B shows its own empty balance', 20_000);
 
 // ---- release wallet A's poll onto wallet B ----
@@ -132,8 +136,21 @@ await waitFor(`window.__held.length >= 6`, 'wallet B has a poll in flight', 20_0
 await evaluate(`window.__stall = false`);
 await click('w-chip');
 await waitFor(modalOpen('wallet-modal'), 'switcher open again');
-await evaluate(`document.querySelector('#w-wallet-list [data-switch]').click()`); // first row = wallet A
-await waitFor(`${text('w-address')} === ${JSON.stringify(addrA)}`, 'switched back to wallet A');
+// Wallet A is "the row that is not the active one", not "the first row": the
+// list renders in creation order today, but nothing in the assertion should
+// depend on that.
+await evaluate(`(() => {
+  const row = [...document.querySelectorAll('#w-wallet-list .wal-row')].find((r) => !r.querySelector('.wal-check'));
+  row.querySelector('[data-switch]').click();
+  return true;
+})()`);
+// NOT an address-equality check against addrA. addrA has a transaction now, so
+// re-opening wallet A correctly rotates the receive address to the next unused
+// index (syncReceiveIndex). The old `=== addrA` wait raced that rotation: it
+// passed only when the poll happened to sample before the bump landed, which is
+// why this driver went red on fast machines and green in CI. The balance wait
+// on the next line is the real proof that wallet A is back on screen.
+await waitFor(`${text('w-address')} !== ${JSON.stringify(addrB)}`, 'switched off wallet B');
 await waitFor(`document.getElementById('w-balance').textContent === '5,000'`, 'wallet A repainted', 20_000);
 await evaluate(`(() => { window.__held.splice(0).forEach((f) => f()); return true; })()`);
 await new Promise((r) => setTimeout(r, 800));
@@ -142,7 +159,13 @@ check((await evaluate(text('w-balance'))) === '5,000',
 
 await click('w-chip');
 await waitFor(modalOpen('wallet-modal'), 'switcher open for manage');
-await evaluate(`document.querySelectorAll('#w-wallet-list [data-manage]')[0].click()`);
+// same identity rule as the switch above: manage the ACTIVE row, which is
+// wallet A now that the switch landed
+await evaluate(`(() => {
+  const row = [...document.querySelectorAll('#w-wallet-list .wal-row')].find((r) => r.querySelector('.wal-check'));
+  row.querySelector('[data-manage]').click();
+  return true;
+})()`);
 await waitFor(`document.getElementById('w-remove-open') !== null`, 'manage row expanded for wallet A');
 await click('w-remove-open');
 await waitFor(vis('w-remove-view'), 'remove ceremony shown for wallet A');

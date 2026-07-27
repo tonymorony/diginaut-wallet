@@ -16,6 +16,8 @@ services:
   wallet:
     environment:
       EXPECTED_CHAIN: test # refuse to serve if ever pointed at a non-testnet node
+      TRUST_PROXY: "1" # #H4: Caddy is the socket peer — read the real client off X-Forwarded-For
+      HSTS: "1"        # #M3: Caddy terminates TLS for this name
     ports: !override
       - "127.0.0.1:8791:8791" # Caddy fronts the public interface
 
@@ -59,6 +61,8 @@ services:
       EXPLORER_TX_URL: ${MAINNET_EXPLORER_TX_URL:-https://digiexplorer.info/tx/}
       PRICE_HISTORY_FILE: /data/price-history.json # its own volume → per-network series
       EXPECTED_CHAIN: main # refuse to serve if ever pointed at a non-mainnet node
+      TRUST_PROXY: "1" # #H4: Caddy is the socket peer — read the real client off X-Forwarded-For
+      HSTS: "1"        # #M3: Caddy terminates TLS for this name
     volumes:
       - wallet-main-data:/data
     depends_on: [indexer-main]

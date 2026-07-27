@@ -73,6 +73,17 @@ await evaluate(`{
 await shot('91-mgmt-quiz.png');
 await click('w-quiz-verify');
 await waitFor(visible('w-backup-success'), 'quiz pass → success beat');
+// #M1: the success beat also offers the encrypted backup file — the same
+// keystore envelope the switcher's ⋯ menu exports, surfaced where the user is
+// already thinking about losing the wallet. Re-auth gated exactly like that
+// export (§4/§5): the typed password IS the file's KDF input, so the prompt is
+// proof of possession, never the just-typed create password reused.
+check(await evaluate(visible('w-backup-file')), 'success beat offers the encrypted backup file (#M1)');
+await click('w-backup-file');
+await waitFor(modalOpen('reauth-modal'), 're-auth gate on the ceremony backup-file download');
+await click('reauth-cancel');
+check(await evaluate(visible('w-backup-success')) && (await evaluate(text('w-backup-file-err'))) === '',
+  'cancelling the re-auth writes no file and reports no error');
 await click('w-backup-success-done');
 await waitFor(`!${modalOpen('w-connect-modal')}`, 'ceremony closed');
 check(!(await evaluate(visible('w-backup-badge'))), 'quiz pass clears the "Not backed up" badge');

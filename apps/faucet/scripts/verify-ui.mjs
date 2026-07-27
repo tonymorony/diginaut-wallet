@@ -1,9 +1,10 @@
 // Drive the wallet UI faucet button against the REAL faucet + regtest node.
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url)); // .pathname is a URL path — unusable as a path on Windows
 
 const { webSocketDebuggerUrl } = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json();
 const ws = new WebSocket(webSocketDebuggerUrl);

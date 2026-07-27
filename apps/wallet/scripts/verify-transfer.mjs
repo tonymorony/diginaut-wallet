@@ -5,11 +5,12 @@
 // DigiDollar, and no fee coin on the DD-holding address.
 // Setup: same as verify-mint.mjs.
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500';
 // BIP39 test vector #2 — wallet B is deterministic so the driver knows its address
 const MNEMONIC_B = 'legal winner thank year wave sausage worth useful legal winner thank yellow';

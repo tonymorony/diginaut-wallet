@@ -79,11 +79,17 @@ function verifyVendorIntegrity() {
 // cannot execute even if an innerHTML sink is ever missed — defence in depth
 // behind the per-sink escaping in app.js. Derived from the real index.html so it
 // can never silently drift out of sync (a changed importmap fails loudly here).
-function importmapCspHash() {
-  const html = readFileSync(join(PUBLIC_DIR, 'index.html'), 'utf8');
+export function importmapCspHash(html = readFileSync(join(PUBLIC_DIR, 'index.html'), 'utf8')) {
   const m = html.match(/<script type="importmap">([\s\S]*?)<\/script>/);
   if (!m) throw new Error('index.html: inline importmap not found — cannot build a script-src CSP');
-  return `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`;
+  // #L7: the HTML parser normalizes CRLF and lone CR to LF while preprocessing
+  // the input stream, so the browser hashes the LF form whatever is on disk.
+  // Hashing raw bytes breaks every CRLF checkout (Windows core.autocrlf): no
+  // hash matches, the importmap is blocked, and the wallet never boots — a
+  // total outage with no diagnostic anywhere. The `html` parameter exists so a
+  // test can prove the invariance; the zero-arg call below is unchanged.
+  const normalized = m[1].replace(/\r\n?/g, '\n');
+  return `'sha256-${createHash('sha256').update(normalized).digest('base64')}'`;
 }
 const CSP = [
   "default-src 'self'",
@@ -102,6 +108,29 @@ const SECURITY_HEADERS = {
   'x-content-type-options': 'nosniff',
   'x-frame-options': 'DENY',
   'referrer-policy': 'no-referrer',   // never leak the wallet URL/path to an explorer or upstream
+};
+
+// #M3 — TLS deployments only (HSTS=1). Without it, a wallet served over HTTPS
+// is one sslstrip away from handing the key-holding page over plain HTTP on a
+// hostile network. 180 days; includeSubDomains because no name under this
+// origin should ever be reachable over http. No `preload`: that is a one-way,
+// browser-vendor-list commitment an operator opts into, not something a wallet
+// build decides for them. Default OFF — the wallet also legitimately runs on
+// http://localhost, where HSTS would poison the origin for every other
+// localhost project on the developer's machine.
+// Deliberately emitted here and NOT in deploy/Caddyfile: an app-level header
+// also protects self-hosters who terminate TLS elsewhere (nginx, a Cloudflare
+// tunnel), and Caddy forwards upstream response headers unchanged.
+const HSTS_VALUE = 'max-age=15552000; includeSubDomains';
+
+// Env numbers where 0 is MEANINGFUL (0 = unlimited). The `Number(x) || dflt`
+// idiom used for PORT would silently turn an operator's deliberate 0 back
+// into the default.
+const numEnv = (name, dflt) => {
+  const v = process.env[name];
+  if (v === undefined || v === '') return dflt;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : dflt;
 };
 
 export function configFromEnv() {
@@ -127,6 +156,30 @@ export function configFromEnv() {
     // serving testnet data (or vice versa) is the one misconfiguration a
     // dual-network host cannot afford. Unset = no guard (single-net setups).
     expectedChain: process.env.EXPECTED_CHAIN || '',
+    // #M3: emit Strict-Transport-Security. Set on a TLS deployment; the header
+    // is ignored by browsers over plain http (RFC 6797 §7.2), so it is harmless
+    // on the container's http hop and reaches the browser via Caddy.
+    hsts: process.env.HSTS === '1',
+    // #H4: behind deploy/Caddyfile the socket peer is always Caddy, so per-IP
+    // limiting would bucket every user into one key. TRUST_PROXY=1 makes the
+    // limiter read the address Caddy appended to X-Forwarded-For. OFF by
+    // default: with nothing in front, a trusted XFF is a free rate-limit
+    // bypass — a client just forges a fresh value per request.
+    trustProxy: process.env.TRUST_PROXY === '1',
+    // Fixed-window per-IP budgets. 0 = unlimited (browser drivers, tests).
+    rateLimit: {
+      windowMs: numEnv('RATE_LIMIT_WINDOW_MS', 60_000),
+      rpc: numEnv('RATE_LIMIT_RPC_PER_MIN', 120),
+      indexer: numEnv('RATE_LIMIT_INDEXER_PER_MIN', 6000),
+      faucet: numEnv('RATE_LIMIT_FAUCET_PER_MIN', 20),
+    },
+    // Body caps. 1 MiB RPC: a max-standard DigiByte tx (400 000 weight) is at
+    // most ~400 KB serialized = ~800 KB of hex, so this admits every tx the
+    // node would relay and nothing bigger — and the consolidate flow spends
+    // EVERY confirmed coin (public/app.js, no input cap), which is where the
+    // big bodies come from. 16 KiB faucet: the claim body is one JSON object
+    // with one address.
+    maxBodyBytes: { rpc: numEnv('MAX_RPC_BODY_BYTES', 1_048_576), faucet: numEnv('MAX_FAUCET_BODY_BYTES', 16_384) },
   };
 }
 
@@ -150,17 +203,22 @@ async function handleIndexer(req, res, { indexerUrl, guard }) {
   }
 }
 
-// Forward a claim to the Faucet service (same-origin for the browser; the
-// faucet's own rate limiting sees the real client IP via x-forwarded-for).
-async function handleFaucetClaim(req, res, { faucetUrl, guard }) {
+// Forward a claim to the Faucet service (same-origin for the browser). The
+// Faucet keys its 24 h cooldown off the FIRST x-forwarded-for element
+// (apps/faucet/server.js) and we send exactly one, so this header decides who
+// the Faucet thinks is claiming. #H4: it used to be req.socket.remoteAddress,
+// which behind deploy/Caddyfile is the Caddy container — i.e. every TLS
+// deployment granted one claim per 24 h for ALL of its users combined.
+// clientIp() resolves the real peer when TRUST_PROXY says a proxy is in front.
+async function handleFaucetClaim(req, res, { faucetUrl, guard, maxBodyBytes, trustProxy }) {
   if (guard?.blocked()) return sendJson(res, 503, { error: guard.describe() });
   if (!faucetUrl) return sendJson(res, 503, { error: 'no faucet configured' });
-  let raw = '';
-  for await (const chunk of req) raw += chunk;
+  const raw = await readBody(req, res, maxBodyBytes);
+  if (raw === null) return; // 413 already sent (or the client vanished)
   try {
     const upstream = await fetch(faucetUrl + '/api/claim', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-forwarded-for': req.socket.remoteAddress ?? '' },
+      headers: { 'content-type': 'application/json', 'x-forwarded-for': clientIp(req, trustProxy) },
       body: raw,
       signal: AbortSignal.timeout(30_000),
     });
@@ -408,9 +466,130 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
-async function handleRpc(req, res, { rpc, mockMode, guard }) {
-  let raw = '';
-  for await (const chunk of req) raw += chunk;
+// ---- Client identity (#H4) ----
+// Normalized peer address, WITHOUT rate-limit bucketing — this is also what
+// gets forwarded to the Faucet, so it must stay a real address.
+export function clientIp(req, trustProxy) {
+  if (trustProxy) {
+    const xff = req.headers['x-forwarded-for'];
+    const list = String(Array.isArray(xff) ? xff.join(',') : xff || '').split(',');
+    // LAST element, not first: Caddy APPENDS the address it saw to whatever
+    // the client sent, so everything to the left is attacker-supplied.
+    const last = list[list.length - 1].trim();
+    if (last) return normalizeIp(last);
+  }
+  return normalizeIp(req.socket.remoteAddress || 'unknown');
+}
+
+function normalizeIp(addr) {
+  let a = String(addr).trim().replace(/^\[/, '').replace(/\]$/, '');
+  const pct = a.indexOf('%');            // fe80::1%eth0
+  if (pct > -1) a = a.slice(0, pct);
+  return a.replace(/^::ffff:/i, '');     // ::ffff:1.2.3.4 and 1.2.3.4 are one client
+}
+
+// Rate-limit key. An IPv6 client usually owns a whole /64, so counting per
+// address would hand it 2^64 budgets; count per /64 instead. IPv4 unchanged.
+function rateKey(ip) {
+  if (!ip.includes(':')) return ip;
+  const [head, tail] = ip.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail === undefined ? [] : (tail ? tail.split(':') : []);
+  const groups = ip.includes('::')
+    ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t]
+    : h;
+  if (groups.length !== 8) return ip;    // malformed: key on the raw string
+  return groups.slice(0, 4).map((g) => (g || '0').toLowerCase().replace(/^0+(?=.)/, '')).join(':') + '::/64';
+}
+
+// ---- Fixed-window per-IP limiter (#H4) ----
+// One window for the whole process: at rollover the table is DROPPED, so a
+// flood of distinct source addresses cannot grow it past one window's worth of
+// clients (an ever-growing Map would be a slower version of the DoS this
+// closes). No timer, no sweep, trivially testable with an injected clock.
+export function createRateLimiter({ limits = {}, windowMs = 60_000, now = Date.now } = {}) {
+  let windowStart = 0;
+  let counts = new Map(); // `${bucket}|${rateKey}` -> hits this window
+  return {
+    /** @returns {number} 0 = allowed, else ms until the window resets */
+    take(bucket, ip) {
+      const limit = limits[bucket];
+      if (!limit || limit <= 0) return 0; // 0/absent = unlimited
+      const t = now();
+      if (t - windowStart >= windowMs) { windowStart = t; counts = new Map(); }
+      const key = `${bucket}|${rateKey(ip)}`;
+      const n = (counts.get(key) ?? 0) + 1;
+      counts.set(key, n);
+      return n > limit ? windowStart + windowMs - t : 0;
+    },
+  };
+}
+
+// Which budget a request spends. MUST mirror the routing conditions in
+// startServer exactly — a limited path that has drifted from a routed path is
+// a hole. null = not limited (static assets, /api/config, /api/price-history:
+// one cold page load pulls ~50 module/vendor files, and config/price-history
+// are in-memory).
+function rateBucket(req) {
+  if (req.method === 'POST' && req.url === '/api/rpc') return 'rpc';
+  if (req.method === 'POST' && req.url === '/api/faucet/claim') return 'faucet';
+  if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return 'indexer';
+  return null;
+}
+
+// ---- Bounded body read (#H4) ----
+// Both proxies used to do `for await (…) raw += chunk` with no ceiling: one
+// client streaming forever pinned the whole body in this process's heap.
+// Returns null AFTER having answered 413 — callers must return immediately.
+function readBody(req, res, limitBytes) {
+  return new Promise((resolve) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > limitBytes) {
+      // Refuse before reading a byte. Nothing was consumed, so Node discards
+      // the rest of the upload itself and the client still gets this answer.
+      tooLarge(res, limitBytes);
+      return resolve(null);
+    }
+    const chunks = [];
+    let size = 0;
+    let done = false;
+    req.on('data', (chunk) => {
+      if (done) return;
+      size += chunk.length;               // BYTES — `raw += chunk` mis-counts
+      if (size > limitBytes) {            // chunked, or a lying content-length
+        done = true;
+        // Stop reading and hang up once the 413 is flushed. Pause rather than
+        // destroy: destroying mid-upload can reset the socket before the
+        // response bytes leave, and the client then sees a network error
+        // instead of the 413.
+        req.pause();
+        res.setHeader('connection', 'close');
+        tooLarge(res, limitBytes);
+        return resolve(null);
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => { if (!done) { done = true; resolve(Buffer.concat(chunks).toString('utf8')); } });
+    // Aborted upload: this used to reject the for-await and land in
+    // startServer's catch, which then tried to sendJson on a dead socket.
+    // Resolving null must never become a throw — a second sendJson on an
+    // already-answered request is ERR_HTTP_HEADERS_SENT.
+    req.on('error', () => { if (!done) { done = true; resolve(null); } });
+    // Belt-and-braces: 'close' always fires, so the promise always settles and
+    // `chunks` is always released. A pending-forever read would pin the buffer
+    // it holds — the very leak this function closes. Fires after 'end' on the
+    // happy path, where `done` is already true.
+    req.on('close', () => { if (!done) { done = true; resolve(null); } });
+  });
+}
+
+function tooLarge(res, limitBytes) {
+  sendJson(res, 413, { error: `request body too large (limit ${limitBytes} bytes)` });
+}
+
+async function handleRpc(req, res, { rpc, mockMode, guard, maxBodyBytes }) {
+  const raw = await readBody(req, res, maxBodyBytes);
+  if (raw === null) return;   // 413 already sent (or the client vanished)
   let payload;
   try {
     payload = JSON.parse(raw || '{}');
@@ -469,16 +648,53 @@ async function serveStatic(req, res) {
 export function startServer(overrides = {}) {
   const vendorFileCount = verifyVendorIntegrity();
   const env = configFromEnv();
-  const config = { ...env, ...overrides, rpc: { ...env.rpc, ...(overrides.rpc || {}) } };
+  const config = {
+    ...env,
+    ...overrides,
+    rpc: { ...env.rpc, ...(overrides.rpc || {}) },
+    // #H4 — same shallow-merge as rpc: overriding one budget must not drop the
+    // others. 0 means unlimited here, so a dropped key silently DISABLES a
+    // limit rather than failing loudly.
+    rateLimit: { ...env.rateLimit, ...(overrides.rateLimit || {}) },
+    maxBodyBytes: { ...env.maxBodyBytes, ...(overrides.maxBodyBytes || {}) },
+  };
   const mockMode = !config.rpc.user || !config.rpc.pass;
+  const limiter = createRateLimiter({
+    limits: { rpc: config.rateLimit.rpc, indexer: config.rateLimit.indexer, faucet: config.rateLimit.faucet },
+    windowMs: config.rateLimit.windowMs,
+    now: config.now, // tests drive the window without sleeping; undefined → Date.now
+  });
+  // #M3 — built per server, not folded into the module-level SECURITY_HEADERS:
+  // several instances share this process (the test file starts many) and HSTS
+  // is a per-deployment decision.
+  const responseHeaders = config.hsts
+    ? { ...SECURITY_HEADERS, 'strict-transport-security': HSTS_VALUE }
+    : SECURITY_HEADERS;
 
   let priceSeries = [];
   let guard = null;
   const server = createServer(async (req, res) => {
-    for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
+    for (const [k, v] of Object.entries(responseHeaders)) res.setHeader(k, v);
     try {
-      if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode, guard });
-      if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, { ...config, guard });
+      // #H4 — rate limit FIRST: before any body is read, before the cross-wire
+      // guard, before any upstream fetch. A limiter that runs after the
+      // expensive work is decoration.
+      const bucket = rateBucket(req);
+      if (bucket) {
+        const waitMs = limiter.take(bucket, clientIp(req, config.trustProxy));
+        if (waitMs > 0) {
+          const secs = Math.ceil(waitMs / 1000);
+          res.setHeader('retry-after', String(secs));
+          return sendJson(res, 429, {
+            error: `too many requests — this server limits how often one client may call ${bucket === 'indexer' ? 'the balance index' : bucket === 'faucet' ? 'the Faucet' : 'the node'}; retry in ${secs}s`,
+            retryAfterMs: waitMs,
+          });
+        }
+      }
+      if (req.method === 'POST' && req.url === '/api/rpc') return await handleRpc(req, res, { rpc: config.rpc, mockMode, guard, maxBodyBytes: config.maxBodyBytes.rpc });
+      // the explicit maxBodyBytes after the spread is deliberate — the spread
+      // would otherwise hand the handler the whole {rpc, faucet} object
+      if (req.method === 'POST' && req.url === '/api/faucet/claim') return await handleFaucetClaim(req, res, { ...config, guard, maxBodyBytes: config.maxBodyBytes.faucet });
       if (req.method === 'GET' && req.url.startsWith('/api/indexer/')) return await handleIndexer(req, res, { ...config, guard });
       // The stablecoin flows (mint/transfer/redeem) ship unconditionally as one
       // unit (ADR-0002, release gate #17) — no feature flag in the config.

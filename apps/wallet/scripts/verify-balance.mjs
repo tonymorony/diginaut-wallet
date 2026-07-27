@@ -1,10 +1,11 @@
 // Drive #5: balance & history in the wallet UI through the full real stack
 // (regtest node + ElectrumX + indexer façade + faucet + wallet app).
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const CDP_PORT = 9224;
 const APP = 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname;
+const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC = 'http://127.0.0.1:18500/wallet/stand';
 
 async function nodeRpc(method, params = []) {

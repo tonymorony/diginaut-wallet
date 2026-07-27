@@ -14,9 +14,10 @@
 //   node apps/wallet/scripts/verify-receive-index.mjs   # exit 0 = all green
 // A FRESH user-data-dir per run is required (IndexedDB carries the vault).
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { connectCdp } from './lib/cdp.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const IDX_PORT = Number(process.env.IDX_PORT) || 8899;
 const APP_PORT = Number(process.env.APP_PORT) || 8898;
 const PASS = 'receive index driver';
@@ -29,7 +30,7 @@ const HANDOUT = 6;
 const DEEP = 13; // second funded index, five unused indices below it (7…12)
 
 const idx = spawn('node', [`${ROOT}scripts/fake-indexer.mjs`], {
-  env: { ...process.env, PORT: String(IDX_PORT), TIP: '100000' }, stdio: 'ignore',
+  env: { ...process.env, PORT: String(IDX_PORT), TIP: '1284512' }, stdio: 'ignore',
 });
 const app = spawn('node', [`${ROOT}server.js`], {
   env: { ...process.env, PORT: String(APP_PORT), INDEXER_URL: `http://127.0.0.1:${IDX_PORT}` }, stdio: 'ignore',

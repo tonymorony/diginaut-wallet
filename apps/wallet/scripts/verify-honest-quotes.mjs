@@ -11,11 +11,12 @@
 // The indexer and the broadcast reject are faked via CDP Fetch interception —
 // no node, no indexer, no funds needed.
 import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { requiredCollateralSats } from 'digidollar-js';
 
 const CDP_PORT = Number(process.env.CDP_PORT) || 9224;
 const APP = process.env.APP_URL || 'http://127.0.0.1:8791';
-const OUT = new URL('.', import.meta.url).pathname; // screenshots land next to the driver, not in cwd
+const OUT = fileURLToPath(new URL('.', import.meta.url)); // screenshots land next to the driver, not in cwd
 const MINT_FEE_SATS = 12_000_000n; // app.js MINT_FEE_SATS
 const PRICE_MICRO = 13_420n; // mock getoracleprice
 const DCA_BPS = 12_500n; // MOCK_SYSTEM_HEALTH=130 → warning tier, 1.25×
@@ -76,12 +77,18 @@ ws.onmessage = async (ev) => {
   const sid = m.sessionId;
   try {
     if (request.url.includes('/api/indexer/')) {
+      // The wallet validates indexer answers and refuses one addressed to
+      // someone else (#H2), so echo the address the request actually asked for
+      // instead of omitting it / sending ''.
+      const address = request.url.match(/\/address\/([a-z0-9]+)\//)?.[1] ?? '';
       // one fat P2TR coin on every watched address — enough for the mint
       const body = request.url.endsWith('/utxos')
-        ? { utxos: [{ txid: 'ab'.repeat(32), vout: 0, valueSats: String(fake.utxoSats), height: 100 }] }
-        : request.url.endsWith('/dd-utxos') ? { utxos: [], totalCents: '0' }
-        : request.url.endsWith('/positions') ? { address: '', positions: [], tipHeight: 100 }
-        : { history: [] };
+        ? { address, utxos: [{ txid: 'ab'.repeat(32), vout: 0, valueSats: String(fake.utxoSats), height: 100 }] }
+        : request.url.endsWith('/dd-utxos') ? { address, utxos: [], totalCents: '0' }
+        // tipHeight = the mock node's `blocks`; anything lower paints the
+        // stale-index warning (#H5) onto every confirm screen this driver shoots
+        : request.url.endsWith('/positions') ? { address, positions: [], tipHeight: 1_284_512 }
+        : { address, history: [] };
       return await fulfill(requestId, sid, 200, body);
     }
     const rpcBody = request.postData ? JSON.parse(request.postData) : {};
@@ -194,6 +201,19 @@ check(/frozen/i.test(rejErr) && /untouched/.test(rejErr) && rejErr.includes('min
   `consensus reject mapped to a friendly error: "${rejErr}"`);
 check(!rejErr.startsWith('minting-frozen-volatility'), 'raw node text is not the headline');
 await shot('83-friendly-reject.png');
+
+// -- G. #L3: closing the modal abandons the draft. The confirm screen armed
+// above still holds the funding UTXO's private key and is one click from
+// signing a quote reviewed at a long-gone price; only send-modal used to be
+// torn down on close. Reopening must also re-arm from scratch.
+const mintArmed = async () => (await evaluate(visible('w-mint-confirm')))
+  || (await evaluate(`document.getElementById('w-mint-review').disabled`));
+check(await mintArmed(), 'the rejected mint left its draft armed (the state #L3 is about)');
+await evaluate(`document.querySelector('#mint-modal [data-close]').click()`);
+check(!(await mintArmed()), 'closing the mint modal drops the draft and re-enables Review (#L3)');
+await click('act-mint');
+check(!(await mintArmed()), 'reopening mint re-arms from scratch — no stale confirm screen (#L3)');
+await evaluate(`document.getElementById('mint-modal').classList.remove('open')`);
 
 console.log(process.exitCode ? '\nSome checks FAILED' : '\nAll honest-quote checks green');
 ws.close();

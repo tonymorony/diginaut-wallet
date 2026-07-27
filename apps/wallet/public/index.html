@@ -94,7 +94,11 @@
     .amt-head label { margin-bottom: 0; }
     .amt-tools { display: flex; gap: 6px; }
     .amt-btn { width: auto; margin: 0 0 2px; padding: 4px 11px; font-size: 12px; border-radius: 999px; }
-    .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
+    /* overflow-wrap because an error line can now carry the RAW TRANSACTION
+       (the storage-failure branch of the ambiguous-broadcast message, #C1):
+       hex has no spaces, so the default `normal` would push one unbreakable
+       token out of the modal and clip the very bytes the user must copy. */
+    .err { color: var(--bad); font-size: 13px; margin-top: 8px; overflow-wrap: anywhere; }
     .oracles { display: grid; grid-template-columns: repeat(auto-fill, minmax(28px,1fr)); gap: 5px; margin-top: 10px; }
     .oracle { height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600; }
     .net-banner {
@@ -415,6 +419,19 @@
   </div>
 
   <main>
+    <!-- #C1: a signed transaction whose broadcast outcome is unknown. Persisted
+         in localStorage (signed hex + locally computed txid — public data,
+         useless for spending) so a tab crash between signing and broadcasting
+         still leaves a trace. A SIBLING of every wallet surface on purpose:
+         show() and the wallet-switch teardown never touch it, because the coins
+         are at risk whichever wallet is on screen. -->
+    <section class="card" id="w-recovery" style="display:none">
+      <h2>Unconfirmed broadcast</h2>
+      <p class="hint warn-text" style="margin-top:0">A transaction was signed and sent to the node, but the node never answered. It <strong>may already be in the mempool</strong>. Check its status or rebroadcast the identical transaction — do not rebuild and send it again, that would create a second, conflicting transaction over the same coins.</p>
+      <div id="w-recovery-list"></div>
+      <div class="err" id="w-recovery-err"></div>
+    </section>
+
     <!-- boot placeholder (drivers key on w-loading via show()); visible from
          the first paint — show() hides it once the wallet state is known -->
     <div id="wallet-card">
@@ -429,7 +446,11 @@
     <section class="card guest" id="hero-guest" style="display:none">
       <img src="/hero-art.png" alt="" aria-hidden="true" class="guest-art" />
       <h1>Diginaut</h1>
-      <p>The wallet for DigiByte &amp; DigiDollar — the decentralized USD stablecoin. Keys are generated in this browser and never leave it.</p>
+      <p id="hero-guest-copy">The wallet for DigiByte &amp; DigiDollar — the decentralized USD stablecoin. Keys are generated in this browser and never leave it.</p>
+      <!-- #C2: this browser held a wallet (diginaut.hadVault) but no vault
+           record survives. Offering a cheerful "create a new wallet" here is how
+           a storage eviction reads as a fresh install. -->
+      <p id="hero-recovery" class="warn-text" style="display:none">This browser previously held a Diginaut wallet, and its stored data is gone — cleared, or evicted by the browser to reclaim space. Nothing was sent anywhere: your coins are still on chain. Restore the wallet from its seed phrase or from an encrypted backup file. If you have neither, the funds cannot be recovered.</p>
       <button id="hero-connect">Connect wallet</button>
     </section>
 
@@ -499,6 +520,8 @@
           <div class="row"><span class="k">Burning</span><span class="v">$<span id="w-rd-c-dd"></span></span></div>
           <div class="row"><span class="k">Collateral returned</span><span class="v"><span id="w-rd-c-coll"></span> DGB</span></div>
           <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-rd-c-fee"></span> DGB</span></div>
+          <!-- #H5: written at review time from the retained chain tips -->
+          <div class="hint warn-text" id="w-rd-c-stale" style="display:none"></div>
           <div class="grid">
             <button id="w-rd-go">Confirm &amp; redeem</button>
             <button id="w-rd-cancel" class="secondary">Cancel</button>
@@ -655,14 +678,33 @@
         <div class="quiz-slots" id="w-quiz-slots"></div>
         <div class="quiz-chips" id="w-quiz-chips"></div>
         <button id="w-quiz-verify">Verify</button>
+        <!-- The way BACK when the words weren't written down: on a sealed
+             (mainnet/unknown-chain) ceremony every dismiss route is gated, so
+             without this the quiz is a dead end whose only exit is F5 (#C3).
+             Going backwards INTO the ceremony is not a skip. -->
+        <button id="w-quiz-back" class="secondary">Show the words again</button>
         <div class="err" id="w-quiz-err"></div>
       </div>
       <div id="w-backup-success" style="display:none;text-align:center;padding:16px 0 4px">
         <svg width="44" height="44" viewBox="0 0 24 24" fill="none" style="color:var(--good)"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M8 12.5l2.6 2.6L16 9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <div style="font-size:18px;font-weight:600;margin:10px 0 2px">Backed up</div>
         <p class="hint" style="margin-top:2px">Keep the written words offline and private — anyone who has them controls the funds.</p>
+        <!-- #M1: the encrypted backup file, offered where the user is already
+             thinking about losing the wallet. Deliberately SECONDARY (spec §4
+             wording) — the seed quiz they just passed is the backup; this file
+             dies with a forgotten password. Done stays the LAST child. -->
+        <button type="button" id="w-backup-file" class="secondary" style="margin-top:10px">Download encrypted backup file</button>
+        <p class="hint" id="w-backup-file-hint" style="margin:6px 0 0;text-align:left">An encrypted copy of this wallet, protected by your master password. This password is not recoverable — the seed phrase you just wrote down is the only backup that survives forgetting it.</p>
+        <p class="hint" id="w-backup-file-saved" style="display:none;margin:6px 0 0;text-align:left"></p>
+        <div class="err" id="w-backup-file-err" style="text-align:left"></div>
         <button id="w-backup-success-done">Done</button>
       </div>
+      <!-- #C3: mainnet (and an unknown chain — a mainnet deployment with a dead
+           node must fail strict) has no skip; say why instead of showing a dead
+           end. Copy is chain-agnostic on purpose: it is shown for the unknown
+           chain too, and it must not name a network (verify-mainnet-bringup
+           asserts no user-visible TESTNET wording on mainnet). -->
+      <p class="hint warn-text" id="w-backup-sealed" style="display:none;margin-top:10px">This wallet may be holding real coins. Write the words down and confirm the three checks — there is no "remind me later" until the network is confirmed safe to skip on.</p>
       <!-- skip: shared by the reveal and quiz steps. The id w-backup-done is
            load-bearing — existing drivers dismiss the backup flow with ONE
            click on it right after w-create. -->
@@ -764,6 +806,8 @@
               <div class="row"><span class="k">Recipient</span><span class="v mono" id="w-send-c-to" style="word-break:break-all"></span></div>
               <div class="row"><span class="k">Amount</span><span class="v"><span id="w-send-c-amount"></span> DGB<span id="w-send-c-amount-usd" style="color:var(--muted);font-weight:400"></span></span></div>
               <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-send-c-fee"></span> DGB</span></div>
+              <!-- #H5: written at review time from the retained chain tips -->
+              <div class="hint warn-text" id="w-send-c-stale" style="display:none"></div>
               <!-- decision #54: DGB send with no price feed is warned, not blocked -->
               <div class="hint warn-text" id="w-send-c-capnote" style="display:none">Couldn’t verify the $500 beta cap — no price feed.</div>
               <div class="grid">
@@ -789,6 +833,8 @@
               <div class="row"><span class="k">Sending</span><span class="v">$<span id="w-tr-c-dd"></span></span></div>
               <div class="row"><span class="k">DigiDollar change</span><span class="v">$<span id="w-tr-c-change"></span></span></div>
               <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-tr-c-fee"></span> DGB</span></div>
+              <!-- #H5: written at review time from the retained chain tips -->
+              <div class="hint warn-text" id="w-tr-c-stale" style="display:none"></div>
               <div class="grid">
                 <button id="w-tr-go">Confirm &amp; transfer</button>
                 <button id="w-tr-cancel" class="secondary">Cancel</button>
@@ -918,6 +964,8 @@
             <div class="row"><span class="k">Oracle price used</span><span class="v" id="w-mint-c-price"></span></div>
             <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-mint-c-fee"></span> DGB</span></div>
             <div class="row"><span class="k">Unlocks</span><span class="v" id="w-mint-c-unlock"></span></div>
+            <!-- #H5: written at review time from the retained chain tips -->
+            <div class="hint warn-text" id="w-mint-c-stale" style="display:none"></div>
             <div class="grid">
               <button id="w-mint-go">Confirm &amp; mint</button>
               <button id="w-mint-cancel" class="secondary">Cancel</button>
@@ -953,6 +1001,12 @@
         <div class="row"><span class="k">Active oracles</span><span class="v" id="o-active">—</span></div>
         <div class="oracles" id="o-grid"></div>
         <div class="hint" id="o-hint"></div>
+        <!-- #C2: deliberately OUTSIDE #net-wallet-sec — the vault's fragility is
+             true whether or not a wallet is currently open, and that section is
+             hidden unless one is. -->
+        <h2 style="margin-top:18px">Browser storage</h2>
+        <div class="row"><span class="k">Storage protection</span><span class="v" id="s-persist">—</span></div>
+        <p class="hint" id="s-persist-hint" style="margin:6px 0 0"></p>
         <div id="net-wallet-sec" style="display:none">
           <h2 style="margin-top:18px">Wallet</h2>
           <!-- hidden once the active wallet passes the backup quiz -->
@@ -1002,6 +1056,8 @@
             <div class="row"><span class="k">Consolidated amount</span><span class="v"><span id="w-cons-c-amount"></span> DGB</span></div>
             <div class="row"><span class="k">To (your address)</span><span class="v mono" id="w-cons-c-to" style="word-break:break-all"></span></div>
             <div class="row"><span class="k">Network fee</span><span class="v"><span id="w-cons-c-fee"></span> DGB</span></div>
+            <!-- #H5: written at review time from the retained chain tips -->
+            <div class="hint warn-text" id="w-cons-c-stale" style="display:none"></div>
             <div class="grid">
               <button id="w-cons-go">Confirm &amp; consolidate</button>
               <button id="w-cons-cancel" class="secondary" data-close>Cancel</button>

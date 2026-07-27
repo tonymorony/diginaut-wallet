@@ -124,7 +124,15 @@ await setVal('w-create-pass', 'correct horse battery');
 await setVal('w-create-pass2', 'correct horse battery');
 await click('w-create');
 await waitFor(visible('w-open'), 'unlocked after create');
-await click('w-backup-done'); // skip the backup ceremony overlay (spec §2)
+// #C3: the chain is UNKNOWN here (the node is still down), and an unknown chain
+// fails STRICT — a mainnet deployment whose node is unreachable must not hand
+// out a one-click "skip your only backup". The ceremony stays open over the
+// already-open wallet for the rest of this driver; it is completed at the end.
+await waitFor(visible('w-backup-view'), 'backup ceremony overlays create');
+check(!(await evaluate(visible('w-backup-done'))), 'no "Remind me later" while the chain is unknown (fails strict)');
+check(await evaluate(`document.getElementById('w-modal-close').style.display === 'none'`),
+  'the create-time ceremony cannot be clicked away either');
+check(await evaluate(visible('w-backup-sealed')), 'the sealed ceremony explains why there is no skip');
 const placeholder = await evaluate(text('w-address'));
 check(!/1[a-z0-9]{20,}/.test(placeholder), `no address rendered for a guessed network: "${placeholder}"`);
 check(await evaluate(`document.getElementById('w-copy').disabled`), 'copy is disabled — nothing address-like to copy');
@@ -143,6 +151,8 @@ check((await evaluate(`document.title`)) === 'Diginaut · DigiDollar wallet', 't
 // #63 landed the beta posture: mainnet now carries the RED beta banner
 // (copy from #54) — verify-beta-posture.mjs proves the full posture.
 check(/MAINNET BETA/.test(await evaluate(text('net-banner'))), 'mainnet shows the beta warning banner (#63)');
+// #C3: the chain resolving from unknown to 'main' must not RE-OFFER the skip
+check(!(await evaluate(visible('w-backup-done'))), 'the skip stays gone once the chain resolves to mainnet');
 check(!(await evaluate(`document.body.textContent`)).includes('TESTNET'), 'no user-visible TESTNET wording anywhere');
 check((await evaluate(text('modeBadge'))) === 'LIVE NODE', 'LIVE NODE badge (real mode)');
 
@@ -164,6 +174,24 @@ await waitFor(visible('w-receive-guard'), 'backup warning intercepts the un-back
 await click('w-receive-anyway');
 await waitFor(visible('w-receive-body'), 'receive view after "Continue anyway"');
 check((await evaluate(text('w-address'))).startsWith('dgb1p'), 'receive modal shows the mainnet address');
+await evaluate(`document.getElementById('receive-modal').classList.remove('open')`);
+
+// -- 7. the sealed ceremony still has an exit: finish it (#C3)
+// The seal removes the SKIP, not the flow — passing the quiz is the way out,
+// and it must clear the "Not backed up" badge exactly as it does on testnet.
+await click('w-backup-show');
+const words = (await evaluate(text('w-backup-words'))).trim().split(/\s+/);
+await click('w-backup-continue');
+await waitFor(visible('w-quiz-view'), 'quiz step');
+await evaluate(`{ const words = ${JSON.stringify(words)};
+  const idxs = [...document.querySelectorAll('#w-quiz-slots .qn')].map((e) => Number(e.textContent.match(/\\d+/)[0]) - 1);
+  for (const n of idxs) [...document.querySelectorAll('#w-quiz-chips [data-chip]')].find((c) => !c.disabled && c.textContent === words[n]).click(); }`);
+await click('w-quiz-verify');
+await waitFor(visible('w-backup-success'), 'quiz pass → success beat');
+check(await evaluate(visible('w-backup-file')), 'the success beat offers the encrypted backup file (#M1)');
+await click('w-backup-success-done');
+await waitFor(`!document.getElementById('w-connect-modal').classList.contains('open')`, 'ceremony closes on Done');
+check(!(await evaluate(visible('w-backup-badge'))), 'the quiz pass clears the "Not backed up" badge');
 
 await cdp('Target.closeTarget', { targetId });
 ws.close();

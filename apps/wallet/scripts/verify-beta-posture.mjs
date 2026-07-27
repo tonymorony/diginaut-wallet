@@ -74,7 +74,7 @@ await new Promise((r) => node.listen(0, r));
 
 // ---- inline indexer stub (fake-indexer.mjs shape, plus fundable positions) ----
 const funded = new Map(); // address → { utxos, ddCents, ddUtxos, positions }
-const TIP = 100_000;
+const TIP = 1_284_512; // = the mock node's `blocks`, or every confirm screen carries the stale-index warning (#H5)
 const indexer = createServer((req, res) => {
   const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
   const m = req.url.match(/^\/api\/address\/([a-zA-Z0-9]+)\/(utxos|history|positions|dd-utxos)$/);
@@ -163,7 +163,27 @@ await setVal('w-create-pass', 'beta posture pass');
 await setVal('w-create-pass2', 'beta posture pass');
 await click('w-create');
 await waitFor(`document.getElementById('w-open').style.display !== 'none'`, 'wallet created + unlocked');
-await click('w-backup-done');
+// #C3: on mainnet the create-time backup ceremony has NO skip and NO close —
+// the coins are real, so "remind me later" is not on offer. The only way out is
+// the quiz (or a page reload), which is what this driver takes.
+await waitFor(`document.getElementById('w-backup-view').style.display !== 'none'`, 'backup ceremony overlays create');
+check(await evaluate(`document.getElementById('w-backup-done').style.display === 'none'`),
+  'mainnet create-time ceremony offers no "Remind me later" (#C3)');
+check(await evaluate(`document.getElementById('w-modal-close').style.display === 'none'`),
+  'and Close is not the skip in disguise — the ceremony is sealed');
+check(await evaluate(`document.getElementById('w-backup-sealed').style.display !== 'none'`),
+  'the sealed ceremony says why, instead of showing a dead end');
+await click('w-backup-show');
+const seedWords = (await evaluate(text('w-backup-words'))).trim().split(/\s+/);
+await click('w-backup-continue');
+await waitFor(`document.getElementById('w-quiz-view').style.display !== 'none'`, 'quiz step');
+await evaluate(`{ const words = ${JSON.stringify(seedWords)};
+  const idxs = [...document.querySelectorAll('#w-quiz-slots .qn')].map((e) => Number(e.textContent.match(/\\d+/)[0]) - 1);
+  for (const n of idxs) [...document.querySelectorAll('#w-quiz-chips [data-chip]')].find((c) => !c.disabled && c.textContent === words[n]).click(); }`);
+await click('w-quiz-verify');
+await waitFor(`document.getElementById('w-backup-success').style.display !== 'none'`, 'quiz pass → success beat');
+await click('w-backup-success-done');
+await waitFor(`!document.getElementById('w-connect-modal').classList.contains('open')`, 'ceremony closes on Done');
 const addr = await evaluate(text('w-address'));
 const ddAddr = await evaluate(text('w-dd-address'));
 check(/^dgb1p/.test(addr) && /^DD/.test(ddAddr), `mainnet addresses derived (${addr.slice(0, 12)}…, ${ddAddr.slice(0, 6)}…)`);
@@ -173,8 +193,11 @@ funded.set(addr, {
   utxos: [{ txid: 'ab'.repeat(32), vout: 0, valueSats: '10000000000000', height: 99_000 }],
   ddCents: '0',
   ddUtxos: [],
+  // full positions shape: the wallet validates indexer answers now (#H2) and a
+  // position missing height/tierId is refused, as the real indexer never omits
+  // them (apps/indexer scanPositions)
   positions: [{
-    txid: 'cd'.repeat(32), ddCents: '60000', tierLabel: '1 year',
+    txid: 'cd'.repeat(32), height: 98_000, ddCents: '60000', tierId: '1year', tierLabel: '1 year',
     collateralSats: '5000000000000', unlockHeight: 99_000, // < tip → redeemable
   }],
 });

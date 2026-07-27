@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { networkChrome, betaCapError, BETA_TX_CAP_USD } from '../public/netchrome.js';
+import { networkChrome, betaCapError, backupSkipAllowed, BETA_TX_CAP_USD } from '../public/netchrome.js';
 
 // One build serves every network (#61): wording is decided at runtime from the
 // node's reported chain, never baked into the HTML. The mainnet beta posture
@@ -65,4 +65,29 @@ test('beta cap: testnet/regtest are never capped (no regression, #63 AC)', () =>
 test('beta cap: unknown USD value (no price feed) is warn-allow, not blocked', () => {
   assert.equal(betaCapError('mainnet', null), null);
   assert.equal(betaCapError('mainnet', undefined), null);
+});
+
+// ---- Seed-backup skip gate (#C3): mainnet and unknown chains fail strict ----
+
+test('backup skip: mainnet forbids the skip in both spellings', () => {
+  assert.equal(backupSkipAllowed('main'), false);
+  assert.equal(backupSkipAllowed('mainnet'), false);
+});
+
+test('backup skip: testnet and regtest keep the frictionless flow', () => {
+  for (const c of ['test', 'testnet', 'regtest']) assert.equal(backupSkipAllowed(c), true, c);
+});
+
+test('backup skip: an unknown chain fails STRICT — unlike betaCapError, which warn-allows', () => {
+  for (const c of [undefined, null, '', 'signet', 'garbage', 0, {}]) {
+    assert.equal(backupSkipAllowed(c), false, String(c));
+  }
+  // the two gates deliberately disagree on the unknown case; pin that contract
+  assert.equal(betaCapError(null, 10_000), null);
+  assert.equal(backupSkipAllowed(null), false);
+});
+
+test('backup skip: the allow-list is closed — no chain outside the three is skippable', () => {
+  assert.deepEqual(['main', 'mainnet', 'test', 'testnet', 'regtest', 'signet', '']
+    .filter(backupSkipAllowed), ['test', 'testnet', 'regtest']);
 });
