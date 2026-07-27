@@ -55,8 +55,9 @@ Split work by phase: **Fable 5 thinks, Opus 5 agents execute.**
   NEEDS_STACK sets) via `scripts/run-drivers.sh`; `check-pins.mjs`
   enforces exact dep pins; a committed-vendor.lock-vs-tree test catches dep bumps that skip
   the regen.
-- `verify-wallet-switch` is **flaky** (fixed sleeps, first-`[data-switch]`-row assumption) —
-  fix before making CI a required check, or it blocks merges at random.
+- `verify-wallet-switch` was the CI flake; **fixed 2026-07-27** (it asserted `w-address ===`
+  the funded wallet's address after switching back, racing the receive-index rotation — see
+  `testing-and-drivers.md` gotchas). Full gate green 11/11 locally since.
 - CI does **not** build Docker images — `.nvmrc` is the only runtime CI tests. A Dockerfile
   Node line ahead of `.nvmrc` means prod runs an untested Node (how Dependabot's node:26 got
   under a signing wallet; policy since #123: Active LTS, ignore docker majors).

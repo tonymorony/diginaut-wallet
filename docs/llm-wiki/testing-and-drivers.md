@@ -1,8 +1,11 @@
 # Testing & drivers
 
-Verified: 2026-07-26 @ `7247899`. Baselines drift — run and compare, don't quote stale counts.
-Last known green: all unit suites + 8 of the 9 regtest drivers (98 checks) vs main,
-2026-07-26 — `verify-fold-shapes` was proven separately (PR #124), not part of that run.
+Verified: 2026-07-27 @ branch `audit/2026-07-26-external-audit`. Baselines drift — run and
+compare, don't quote stale counts.
+Last known green: all 11 registered CDP drivers (`scripts/run-drivers.sh`, no args) + all unit
+suites, 2026-07-27 — the first fully green gate since `verify-wallet-switch` was fixed.
+Regtest: 8 of the 9 drivers (98 checks) vs main, 2026-07-26 — `verify-fold-shapes` was proven
+separately (PR #124), not part of that run.
 
 ## Layers
 
@@ -19,8 +22,8 @@ Last known green: all unit suites + 8 of the 9 regtest drivers (98 checks) vs ma
 
 - **Registered in `run-drivers.sh` = what CI runs.** SELF_CONTAINED: `verify-autolock-default`,
   `verify-crosswire`, `verify-wallet-mgmt`, `verify-receive-index`, `verify-receive-ui`,
-  `verify-send-amount`, `verify-wallet-switch` (**flaky** — fixed sleeps + first-row
-  assumption; fix before CI becomes required), `verify-oracle-refresh`; branch #130 adds
+  `verify-send-amount`, `verify-wallet-switch` (was the CI flake — **fixed 2026-07-27**, see
+  gotchas), `verify-oracle-refresh`; branch #130 adds
   `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider).
   NEEDS_STACK (runner starts fake-indexer 8799 + wallet 8791): `verify-ui`
   (create/lock/unlock/restore), `verify-receive-compat`.
@@ -80,6 +83,14 @@ Last known green: all unit suites + 8 of the 9 regtest drivers (98 checks) vs ma
   element too. That is why the ~20 mock/testnet `w-backup-done` clicks survived the audit's
   mainnet skip gate (#C3) — visibility must be asserted explicitly, a passing click proves
   nothing about whether the button is on screen.
+- **A funded wallet's receive address ROTATES on re-open** — `syncReceiveIndex` finds index 0
+  used and advances. Any driver asserting "we are back on wallet X" via `w-address` equality
+  is racing that bump: it passes only when the poll samples before the scan lands (fast
+  machine → red, slower CI → green). That was the whole `verify-wallet-switch` flake, not the
+  sleeps; assert on a value that identifies the wallet (its balance) instead. Fixed 2026-07-27.
+- Wallet-switcher rows: select by identity (`.wal-row` with/without `.wal-check` = active),
+  never `[data-switch]`/`[data-manage]` index — list order is creation order today, but no
+  assertion should depend on it.
 - Any driver that creates a wallet on a **mainnet or chain-unknown** node must solve the
   backup quiz to escape the ceremony — there is no skip and no Close there (#C3). Proven
   snippet: `verify-wallet-mgmt.mjs` §1; already applied in `verify-beta-posture`,
