@@ -25,6 +25,12 @@ re-derive hard-won facts every session.
 
 - **User merges PRs.** Workflow: branch → PR → spawn reviewer agent (verdict as PR comment) →
   stop. Never self-merge; never commit/push unasked.
+- **Conventional Commits.** Every commit subject is `type(scope): summary` — types `feat`,
+  `fix`, `chore`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `revert`; scope optional
+  (`wallet`, `indexer`, `faucet`, `digidollar-js`, `wiki`, `deploy`). Imperative mood, no
+  trailing period, subject ≤ 72 chars; put the *why* in the body. Breaking changes take a `!`
+  before the colon and a `BREAKING CHANGE:` body footer. History before 2026-07-27 predates
+  this rule — don't rewrite it, and don't copy its style.
 - **Model routing:** Fable 5 plans, researches, and pathfinds; coding, code review, and
   security review go to **Opus 5 subagents** (`model: "opus"` when spawning). Details:
   `docs/llm-wiki/agent-workflow.md` § Model routing.
