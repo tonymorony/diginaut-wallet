@@ -8,7 +8,8 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58 } from '@scure/base';
 import {
-  S2D_MESSAGE, S2D_VERSION, eip191Digest, canonicalizeEvmSignature, recoverEthAddress,
+  S2D_MESSAGE, S2D_VERSION, S2D_MESSAGE_MAIN, S2D_VERSION_MAIN, s2dForChain, s2dForVersion,
+  eip191Digest, canonicalizeEvmSignature, recoverEthAddress,
   verifySolanaSignature, entropyFromSignature, mnemonicFromEntropy, fingerprintOfEntropy,
   shortAddress,
 } from '../public/connect.js';
@@ -34,6 +35,50 @@ test('the frozen v1 message is byte-for-byte the audited one (321 bytes, pinned 
   assert.ok(!S2D_MESSAGE.endsWith('\n'), 'no trailing newline — it would change the bytes');
   const digest = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
   assert.equal(digest, '2666c5f978b46e18c683a5dd6480b596d9266c545cdb73acad12d97b1f42a029');
+});
+
+test('the frozen v2 mainnet message is byte-for-byte pinned (331 bytes, pinned SHA-256)', async () => {
+  // Same treatment as v1, for the same reason: these bytes ARE the wallet. A
+  // diff here re-derives every mainnet user's keys, so it must never be a
+  // silent edit — this pin is the tripwire.
+  const bytes = new TextEncoder().encode(S2D_MESSAGE_MAIN);
+  assert.equal(S2D_VERSION_MAIN, 2);
+  assert.equal(bytes.length, 331);
+  assert.ok(S2D_MESSAGE_MAIN.startsWith('Diginaut sign-to-derive v2\nNetwork: DigiByte mainnet\n'));
+  assert.ok(!S2D_MESSAGE_MAIN.endsWith('\n'), 'no trailing newline — it would change the bytes');
+  const digest = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+  assert.equal(digest, 'efd237737852aef965742854516e7f8af61c7cc26e8f6cc6dc7222972a335b40');
+});
+
+test('the two networks derive from DIFFERENT bytes — no cross-network replay (ADR 0005)', () => {
+  // The security property, asserted rather than assumed: a signature made on
+  // one network cannot be replayed against the other's funds, because the
+  // signer never saw those bytes.
+  assert.notEqual(S2D_MESSAGE, S2D_MESSAGE_MAIN);
+  assert.ok(S2D_MESSAGE.includes('DigiByte testnet') && !S2D_MESSAGE.includes('mainnet'));
+  assert.ok(S2D_MESSAGE_MAIN.includes('DigiByte mainnet') && !S2D_MESSAGE_MAIN.includes('testnet'));
+  // each message points at its OWN origin, including the refuse-elsewhere line
+  assert.ok(S2D_MESSAGE.includes('Only sign this message on https://dgb.ludere.space.'));
+  assert.ok(S2D_MESSAGE_MAIN.includes('Only sign this message on https://diginaut.ludere.space.'));
+});
+
+test('chain and stored-version selectors resolve to the right frozen bytes', () => {
+  // BOTH spellings: the node says 'main', the wallet's netName says 'mainnet'.
+  // A caller mixing them up would silently derive the testnet wallet on mainnet.
+  for (const c of ['main', 'mainnet']) {
+    assert.equal(s2dForChain(c).message, S2D_MESSAGE_MAIN, `${c} -> v2`);
+    assert.equal(s2dForChain(c).version, 2);
+  }
+  // allow-list, never deny-list: anything unrecognised falls to v1, which
+  // cannot touch mainnet funds
+  for (const c of ['test', 'testnet', 'regtest', null, undefined, '', 'MAIN', 'bogus']) {
+    assert.equal(s2dForChain(c).message, S2D_MESSAGE, `${c} -> v1`);
+    assert.equal(s2dForChain(c).version, 1);
+  }
+  // re-derive picks by the version stored on the source record, not the chain
+  assert.equal(s2dForVersion(2).message, S2D_MESSAGE_MAIN);
+  assert.equal(s2dForVersion(1).message, S2D_MESSAGE);
+  assert.equal(s2dForVersion(undefined).message, S2D_MESSAGE, 'legacy record with no msgVersion is v1');
 });
 
 test('pinned pipeline vector: fixed key → fixed signature → fixed mnemonic + fingerprint', async () => {

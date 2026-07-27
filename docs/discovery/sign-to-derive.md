@@ -397,9 +397,11 @@ Implementable byte-for-byte; everything referenced is already vendored.
 
 ### Open questions for the custody grilling (owner decisions, not research facts)
 
-1. **Mainnet message**: bump to a `Network: DigiByte mainnet` v2 message (different seed per
-   network — clean, but two wallets per user) or reuse the v1 seed across networks the way
-   restored mnemonics already work (`hd.js` splits coinType anyway)?
+1. ~~**Mainnet message**~~ — **RESOLVED** by ADR 0005 and shipped 2026-07-27: a v2
+   `Network: DigiByte mainnet` message, different seed per network, two wallets per user.
+   Reuse was rejected because the derivation signature is phishable by construction, so
+   reusing v1 would make every testnet-era signature a mainnet private key — and would ask a
+   user on diginaut.ludere.space to sign bytes whose own last line says to refuse exactly that.
 2. **Mobile wallets**: stay extension-only, or accept WalletConnect's relay + dependency tree
    later for QR-based mobile signing? (Rejected for v1 in §1.)
 3. **Phantom policy**: hard-route Phantom to Solana signing (one Phantom = one wallet), or also
