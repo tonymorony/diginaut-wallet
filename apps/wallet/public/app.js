@@ -611,7 +611,15 @@ function show(state) {
   $('w-chip').style.display = open ? 'inline-flex' : 'none';
   // backup-status surfaces belong to an OPEN wallet; renderBackupCta shows
   // them again (or not) once openWallet knows the active wallet's flag
-  if (!open) { $('w-backup-badge').style.display = 'none'; $('w-backup-strip').style.display = 'none'; }
+  // The mirrored class has to die with the strip it mirrors: this path hides the
+  // strip inline without going through renderBackupStrip(), so leaving the class
+  // behind would put <body> in has-backup-strip with no strip rendered — the
+  // exact lie the invariant forbids. Benign only by accident today (the same
+  // line force-hides the badge, so nothing observes it).
+  if (!open) {
+    $('w-backup-badge').style.display = 'none'; $('w-backup-strip').style.display = 'none';
+    document.body.classList.remove('has-backup-strip');
+  }
   $('wallet-open-card').style.display = open ? 'grid' : 'none';
   $('net-wallet-sec').style.display = open ? 'block' : 'none'; // seed/lock need an unlocked wallet
   // no indexer on this deployment: the money grid never loads, so say why (#61).
@@ -998,6 +1006,7 @@ const DONE_ICON = icon('check', 'ic-s');
 for (const el of document.querySelectorAll('.icon-btn')) el.innerHTML = COPY_ICON;
 const copyTimers = new WeakMap(); // button → pending revert timer
 const copyLabels = new WeakMap(); // button → its resting aria-label
+const copyTitles = new WeakMap(); // button → its resting title (moves with the label)
 
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.icon-btn');
@@ -1012,14 +1021,23 @@ document.addEventListener('click', async (e) => {
   }
   const label = copyLabels.get(btn) ?? btn.getAttribute('aria-label');
   copyLabels.set(btn, label); // a second tap mid-tick must not save "Copied" as the label
+  // title moves in lockstep with aria-label. An icon-only control satisfies the
+  // labelling rule only by carrying BOTH, so leaving title behind meant the
+  // tooltip read "Copy address" over a confirmation tick for 1400ms — the
+  // accessible name and the visible one disagreeing in the single state where
+  // the icon's meaning changes.
+  const title = copyTitles.get(btn) ?? btn.getAttribute('title');
+  copyTitles.set(btn, title);
   btn.innerHTML = DONE_ICON;
   btn.classList.add('copied');
   btn.setAttribute('aria-label', 'Copied');
+  btn.setAttribute('title', 'Copied');
   clearTimeout(copyTimers.get(btn));
   copyTimers.set(btn, setTimeout(() => {
     btn.innerHTML = COPY_ICON;
     btn.classList.remove('copied');
     btn.setAttribute('aria-label', label);
+    btn.setAttribute('title', title);
   }, 1400));
 });
 
@@ -1059,10 +1077,14 @@ function renderPrevAddresses() {
     const use = addressUse.get(i);
     // three states worth distinguishing: the one on display, one that has been
     // paid, and one handed out that nobody has used yet
+    // The two tags that report a fact get a mark; .idle stays bare, so the
+    // ABSENCE of a mark is what reads as "nothing has happened here". At 10px
+    // these three pills otherwise differ only by background colour, in the one
+    // list whose whole purpose is scanning for which addresses were paid.
     const tag = i === wallet.index
-      ? '<span class="rx-tag now">showing</span>'
+      ? `<span class="rx-tag now">${icon('eye')}showing</span>`
       : use?.used
-        ? '<span class="rx-tag">received</span>'
+        ? `<span class="rx-tag">${icon('check')}received</span>`
         : `<span class="rx-tag idle">${appConfig.indexer ? 'unused' : 'handed out'}</span>`;
     rows.push(`<div class="rx-row"><span class="rx-i mono">#${i}</span>`
       + `<span class="rx-addr mono" title="${esc(address)}">${esc(address.slice(0, 14))}…${esc(address.slice(-6))}</span>`
@@ -1485,9 +1507,12 @@ async function openWeb3Picker() {
     // EIP-6963 icons are wallet-supplied — admit data:image URIs only.
     // Named brandIcon, not icon: a local `icon` here would shadow the sprite
     // helper for the whole callback.
+    // A monogram is a legitimate brand stand-in and stays. A literal '?' is not
+    // — that is punctuation standing in for a shape, in a slot the sibling
+    // no-extensions row already fills from the sprite. Same puzzle piece here.
     const brandIcon = typeof w.icon === 'string' && /^data:image\//.test(w.icon)
       ? `<img src="${esc(w.icon)}" alt="" />`
-      : `<span class="w3-fallback-ic">${esc((w.brand || '?').slice(0, 1).toUpperCase())}</span>`;
+      : `<span class="w3-fallback-ic">${w.brand ? esc(w.brand.slice(0, 1).toUpperCase()) : icon('puzzle', 'ic-s')}</span>`;
     // symmetric copy: the old EVM row said "detected extension", which named the
     // discovery mechanism rather than the curve the signature will use
     const sol = w.kind === 'sol';
@@ -1546,11 +1571,15 @@ async function verifyReconnect(entry, address, run) {
 $('w-web3-agree').addEventListener('change', (e) => { $('w-web3-go').disabled = !e.target.checked; });
 
 function showWeb3Mismatch(brand) {
-  $('w-web3-mismatch-text').textContent =
+  // innerHTML for the mark only — the sentence is byte-identical, and an <svg>
+  // is not in textContent, so verify-connect-derive's includes() still reads it.
+  // This is a hard stop rendered directly beneath a column of green success
+  // ticks; amber prose alone does not break that visual continuity.
+  $('w-web3-mismatch-text').innerHTML = icon('alert', 'ic-s') + '<span>' + esc(
     `${brand} no longer produces the signature that created your existing derived wallet. `
     + 'Your funds are safe at that wallet’s addresses, but this extension can no longer re-derive them — '
     + 'restore from its 24-word phrase if you ever lose this browser. '
-    + 'You can still save today’s signature as a separate, NEW wallet.';
+    + 'You can still save today’s signature as a separate, NEW wallet.') + '</span>';
   $('w-web3-mismatch').style.display = 'block';
 }
 
@@ -1655,9 +1684,14 @@ $('w-import-file').addEventListener('change', (e) =>
     // network mismatch: warn but allow (§4) — mnemonics are network-agnostic,
     // the same seed just derives different-looking addresses per chain
     if (pendingImport.network && chainState.netKnown && pendingImport.network !== chainState.netName) {
-      $('w-import-warn').textContent = `This file was exported on ${pendingImport.network}, but this wallet runs on ` +
-        `${chainState.netName}. The seed phrase works on both networks — only the addresses look different.`;
-      $('w-import-warn').style.display = 'block';
+      // #w-import-warn sits directly under #w-import-info — same .hint size, same
+      // weight, differing only in colour, one of them a warning. The mark is the
+      // non-colour differentiator. 'flex', not 'block': an inline display beats
+      // the stylesheet, and the rule for this id is a row (#w-backup-badge trap).
+      $('w-import-warn').innerHTML = icon('alert', 'ic-s') + '<span>' + esc(
+        `This file was exported on ${pendingImport.network}, but this wallet runs on ` +
+        `${chainState.netName}. The seed phrase works on both networks — only the addresses look different.`) + '</span>';
+      $('w-import-warn').style.display = 'flex';
     }
     $('w-import-pass').focus();
   }));
@@ -1731,8 +1765,13 @@ $('w-erase-input').addEventListener('input', () => {
 });
 $('w-erase-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('w-erase-go').disabled) $('w-erase-go').click(); });
 $('w-erase-cancel').addEventListener('click', () => setConnectMode('unlock'));
-$('w-erase-go').addEventListener('click', (e) =>
-  busy(e.target, 'w-erase-err', async () => {
+// The button, not e.target: it holds an icon now, and busy() sets .disabled on
+// whatever it is handed. `.ic { pointer-events: none }` already keeps the glyph
+// from becoming the target — this is the second belt, because the thing being
+// guarded is deleteAllRecords() and the drivers click by id, so a regression
+// here would ship green.
+$('w-erase-go').addEventListener('click', () =>
+  busy($('w-erase-go'), 'w-erase-err', async () => {
     await keystore.deleteAllRecords();
     // #C2: a deliberate erase is not an eviction. Clear BEFORE show(), or the
     // recovery hero flashes at the user who just chose to erase.
@@ -1925,7 +1964,11 @@ function renderQuiz() {
   $('w-quiz-slots').innerHTML = q.idxs.map((wi, s) => {
     const chip = q.filled[s];
     return `<button type="button" class="quiz-slot${chip == null ? '' : ' filled'}" data-slot="${s}">` +
-      `<span class="qn">Word #${wi + 1}</span><span class="mono">${chip == null ? '·' : esc(q.chips[chip])}</span></button>`;
+      // An empty slot rendered a literal '·' — a glyph doing icon work, which is
+      // the one thing the sprite exists to end. The placeholder is a CSS rule on
+      // .quiz-slot:not(.filled) now, so it cannot shift the baseline when the
+      // word lands, and the slot's height no longer depends on a character.
+      `<span class="qn">Word #${wi + 1}</span><span class="mono">${chip == null ? '' : esc(q.chips[chip])}</span></button>`;
   }).join('');
   $('w-quiz-chips').innerHTML = q.chips.map((w, i) =>
     `<button type="button" class="quiz-chip secondary" data-chip="${i}"${q.filled.includes(i) ? ' disabled' : ''}>${esc(w)}</button>`).join('');
@@ -2053,6 +2096,15 @@ function renderBackupStrip() {
         : `This wallet has no backup.${evictLine} Back it up before any funds arrive.`);
   }
   $('w-backup-strip').style.display = nag ? 'block' : 'none';
+  // Mirrored onto <body> so CSS can react to the strip being up. The strip's
+  // condition is a strict SUBSET of the header badge's (both need
+  // !active.backedUp; the strip additionally needs funds-or-evictable and
+  // not-dismissed), so while it is showing, the badge is exact duplication —
+  // same fact, same trigger, stated far more fully right below it. The mobile
+  // header cashes that in for a row; see the ≤600px block in index.html.
+  // Must track the RENDERED state, not just !backedUp: dismissing the strip has
+  // to bring the badge back, because then it is the only surface left saying it.
+  document.body.classList.toggle('has-backup-strip', nag);
 }
 $('w-backup-strip-go').addEventListener('click', reenterBackupCeremony);
 $('w-backup-strip-dismiss').addEventListener('click', () => {
@@ -2150,7 +2202,11 @@ function renderWalletList() {
   if (!m) { $('w-wallet-list').innerHTML = ''; return; } // vault gone — modal is closing anyway
   $('w-wallet-list').innerHTML = m.wallets.map((w) => {
     const active = w.id === m.activeId;
-    const dot = w.backedUp ? '' : ' <span class="wal-dot" title="Not backed up"></span>';
+    // The class name is a driver contract (verify-wallet-mgmt counts .wal-dot),
+    // so the mark goes INSIDE the span rather than replacing it. Keep the
+    // leading space: it is what separates the wallet name from the badge in
+    // textContent, which verify-connect-derive reads.
+    const dot = w.backedUp ? '' : ` <span class="wal-dot" title="Not backed up" role="img" aria-label="Not backed up">${icon('alert')}</span>`;
     const sub = active ? `<div class="wal-sub mono">${esc($('w-chip-addr').textContent)}</div>` : '';
     // derived wallets carry their origin on the row (#128 variant A); the
     // source record is encrypted, so the detail only renders while unlocked
@@ -2167,7 +2223,7 @@ function renderWalletList() {
       `<span><span class="wal-name">${esc(w.name)}</span>${dot}${via}${sub}</span>` +
       (active ? `<span class="wal-check">${icon('check', 'ic-s')}</span>` : '') +
       `</button>` +
-      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove" aria-label="Rename or remove">${icon('more', 'ic-s')}</button>` +
+      `<button type="button" class="wal-manage secondary" data-manage="${esc(w.id)}" title="Rename or remove" aria-label="Rename or remove">${icon('more', 'ic-s ic-dots')}</button>` +
       `</div>` +
       (managingId === w.id ? walletEditHtml(w) : '');
   }).join('');
@@ -2303,8 +2359,10 @@ $('w-remove-name').addEventListener('input', () => {
 $('w-remove-name').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('w-remove-go').disabled) $('w-remove-go').click(); });
 $('w-remove-cancel').addEventListener('click', () => showRemoveView(null));
 
-$('w-remove-go').addEventListener('click', (e) =>
-  busy(e.target, 'w-remove-err', async () => {
+// Explicit element, same reason as #w-erase-go: this one deletes the vault
+// record outright when it is the last wallet.
+$('w-remove-go').addEventListener('click', () =>
+  busy($('w-remove-go'), 'w-remove-err', async () => {
     const id = removingId;
     await vault.removeWallet(id); // last wallet → deletes the vault record (§5)
     showRemoveView(null);
@@ -2562,11 +2620,11 @@ function historyRow(h) {
   const detail = txDetailCache.get(h.txid);
   if (!detail) {
     const conf = h.height === 0
-      ? '<span class="tx-conf pending">pending</span>'
+      ? `<span class="tx-conf pending">${icon('clock')}pending</span>`
       : '<span class="tx-conf partial">confirmed</span>';
     // 'more', not a '·' glyph: direction is unknown until enrichment lands, and
     // .tx-icon no longer carries the font-size/weight a bare character needs
-    return `<div class="tx"><div class="tx-icon out">${icon('more')}</div>` +
+    return `<div class="tx"><div class="tx-icon out">${icon('more', 'ic-dots')}</div>` +
       `<div class="tx-main"><div class="tx-title">Transaction</div><div class="tx-sub">${link}</div></div>` +
       `<div class="tx-right">${conf}</div></div>`;
   }
@@ -2614,7 +2672,7 @@ function historyRow(h) {
   const amtStr = amt === 0n ? '' : `${sign}${fmtDgb8(amt < 0n ? -amt : amt)} DGB`; // no misleading "0 DGB"
   const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
   const conf = (c <= 0 || h.height === 0)
-    ? '<span class="tx-conf pending">pending</span>'
+    ? `<span class="tx-conf pending">${icon('clock')}pending</span>`
     : c >= FINAL_CONF ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
       : `<span class="tx-conf partial">${c} conf</span>`;
   const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
@@ -2937,11 +2995,22 @@ function updateSendEq() {
   el.style.display = out ? 'block' : 'none';
 }
 
+/** title AND aria-label, always together. The button's content is a decorative
+ *  icon plus a bare currency, so name-from-content reads just "USD" — a noun with
+ *  no action, sitting next to Max in a send form — and `title` is never consulted
+ *  for the accessible name when an element has content. Three call sites write
+ *  this hint; a helper is what stops them drifting apart. */
+const setCcyHint = (t) => { const b = $('w-send-ccy'); b.title = t; b.setAttribute('aria-label', t); };
+
 function setSendCcy(ccy) {
   sendCcy = ccy;
   $('w-send-amount-label').textContent = `Amount (${ccy})`;
-  $('w-send-ccy').textContent = '⇄ ' + (ccy === 'DGB' ? 'USD' : 'DGB');
-  $('w-send-ccy').title = ccy === 'DGB' ? 'Enter the amount in USD instead' : 'Enter the amount in DGB instead';
+  // innerHTML, not textContent: the swap affordance is a sprite icon now, and a
+  // textContent write would delete it on the first toggle and never bring it
+  // back. Both operands are literals; #w-send-ccy's gap comes from CSS, so no
+  // separator character belongs in this string.
+  $('w-send-ccy').innerHTML = icon('swap', 'ic-s') + (ccy === 'DGB' ? 'USD' : 'DGB');
+  setCcyHint(ccy === 'DGB' ? 'Enter the amount in USD instead' : 'Enter the amount in DGB instead');
   $('w-send-amount').placeholder = ccy === 'USD' ? '0.00' : '';
   updateSendEq();
 }
@@ -2952,7 +3021,7 @@ function syncSendPriceGate() {
   const ok = priceUsable();
   $('w-send-ccy').disabled = !ok;
   if (!ok) {
-    $('w-send-ccy').title = 'USD entry needs a fresh oracle price';
+    setCcyHint('USD entry needs a fresh oracle price');
     if (sendCcy === 'USD') {
       // Demoting USD→DGB re-reads the SAME digits in a different currency —
       // the #116 bug class, now fired by a timer instead of a paste. So the
@@ -2966,7 +3035,7 @@ function syncSendPriceGate() {
       setSendCcy('DGB'); // refreshes the ≈-line last, so it describes the cleared field
     }
   } else if (sendCcy === 'DGB') {
-    $('w-send-ccy').title = 'Enter the amount in USD instead';
+    setCcyHint('Enter the amount in USD instead');
   }
 }
 
