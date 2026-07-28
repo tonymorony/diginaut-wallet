@@ -39,7 +39,7 @@ node --version
 # blocking mainnet interstitial — a mainnet user reached the wallet with no risk
 # acknowledgement — and the full local gate still went 11/11 green. Registered
 # now: the mainnet posture is exactly the thing that must never regress silently.
-SELF_CONTAINED=(verify-autolock-default verify-crosswire verify-wallet-mgmt verify-receive-index verify-receive-ui verify-send-amount verify-wallet-switch verify-oracle-refresh verify-connect-derive verify-beta-posture verify-mainnet-bringup)
+SELF_CONTAINED=(verify-autolock-default verify-crosswire verify-wallet-mgmt verify-receive-index verify-receive-ui verify-send-amount verify-wallet-switch verify-oracle-refresh verify-connect-derive verify-beta-posture verify-mainnet-bringup verify-web3-mainnet)
 NEEDS_STACK=(verify-ui verify-receive-compat)
 
 reap() {

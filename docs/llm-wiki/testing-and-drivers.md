@@ -2,10 +2,20 @@
 
 Verified: 2026-07-27 @ branch `audit/2026-07-26-external-audit`. Baselines drift — run and
 compare, don't quote stale counts.
-Last known green: all **13** registered CDP drivers (`scripts/run-drivers.sh`, no args) + all
+Last known green: all **14** registered CDP drivers (`scripts/run-drivers.sh`, no args) + all
 unit suites, 2026-07-27. (Was 11 until `verify-beta-posture` and `verify-mainnet-bringup` were
 registered — both were self-contained but unwired, so no CI run had ever driven a
-mainnet-shaped node. Count the arrays in `run-drivers.sh`, don't quote this line.)
+mainnet-shaped node; 14 since `verify-web3-mainnet`. Count the arrays in `run-drivers.sh`,
+don't quote this line.)
+
+**Two `visible()` traps this file keeps re-learning.** `visible(id)` is
+`style.display !== 'none'`, so it is **true for any element that has never had an inline
+display written** — `waitFor` returns instantly, the click lands mid-boot, and `show()` resets
+the mode underneath it. `verify-web3-mainnet` hit it twice while being written: on
+`#hero-connect` (settle on `visible('w-none')` instead — `show()` writes that one) and on
+`#w-backup` after the save (wait on `#w-connect-title` reading *Back up your seed phrase*,
+which `setConnectMode` writes). Rule: only `waitFor(visible(x))` when you have checked that
+something writes `x.style.display`; otherwise wait on text a render function sets.
 Regtest: 8 of the 9 drivers (98 checks) vs main, 2026-07-26 — `verify-fold-shapes` was proven
 separately (PR #124), not part of that run.
 
@@ -26,7 +36,14 @@ separately (PR #124), not part of that run.
   `verify-crosswire`, `verify-wallet-mgmt`, `verify-receive-index`, `verify-receive-ui`,
   `verify-send-amount`, `verify-wallet-switch` (was the CI flake — **fixed 2026-07-27**, see
   gotchas), `verify-oracle-refresh`; branch #130 adds
-  `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider).
+  `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider);
+  `verify-web3-mainnet` (the same fake provider against a **mainnet-shaped** node — the
+  combination neither of the other two covered). It guards the two properties that make the
+  mainnet door safe, and guards them *positively*: the fake wallet **throws on any message but
+  the v2 hex**, so a regression that sends v1 fails the ceremony instead of silently deriving
+  the wrong wallet on real funds; and it asserts the save path opens the **sealed** ceremony
+  (`w-backup-sealed` shown, `w-backup-done` and `w-modal-close` both hidden) and that the seed
+  it reveals is the v2-derived one, not v1.
   NEEDS_STACK (runner starts fake-indexer 8799 + wallet 8791): `verify-ui`
   (create/lock/unlock/restore), `verify-receive-compat`.
 - **Manual mock/stub drivers — NOT in the runner or CI, run them by name when touching
