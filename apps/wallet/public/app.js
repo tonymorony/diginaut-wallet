@@ -1231,8 +1231,15 @@ async function syncReceiveIndex() {
   if (receiveScanFailGen !== gen) { receiveScanFailGen = gen; receiveScanFails = 0; }
   receiveScanBusy = gen;
   let highest = -1;
+  // Warm start: the counter is this device's own memory of how far the chain
+  // has been walked, so re-proving 0…index-1 costs two history reads per index
+  // for an answer we already hold (a wallet at index 12 re-walked ~32 indices
+  // on every open). Safe ONLY because the watch window is CONTIGUOUS —
+  // watchedDerivations covers 0…index+2 and the money poll re-reads all of it
+  // every 8s, so an index below the counter can never go unwatched. Make the
+  // window sparse and this must go back to 0.
   try {
-    for (let from = 0, gap = 0; gap < RECEIVE_GAP; from += RECEIVE_SCAN_BATCH) {
+    for (let from = wallet.index, gap = 0; gap < RECEIVE_GAP; from += RECEIVE_SCAN_BATCH) {
       const batch = Array.from({ length: RECEIVE_SCAN_BATCH }, (_, k) => from + k);
       const used = await Promise.all(batch.map((i) =>
         derivationUsed(deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }))));
