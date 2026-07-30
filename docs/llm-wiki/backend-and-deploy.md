@@ -59,3 +59,9 @@ Gitignored/foreign in deploy/: `digidollar-status-service.mjs`, `oracle-price-fe
   host node (`DAEMON_URL=http://dd:ddpass@host.docker.internal:18500`). Also the build
   context for the compose electrumx services. Base image `python:3.14-slim` digest-pinned
   (plyvel compiles from sdist — verified fine).
+
+## See also
+
+- Fork-validation findings + upstreaming map (indexer O(n²) frame parser; all three services
+  binding `0.0.0.0`): `docs/discovery/dgbclick-fork-validation.md` — several findings addressed
+  by PRs #165–#169.

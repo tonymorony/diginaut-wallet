@@ -19,7 +19,7 @@ Agent-facing knowledge base. Protocol: see root `CLAUDE.md`. Load only what the 
 
 - `CONTEXT.md` — domain glossary (DigiDollar, mint, sign-to-derive, derived wallet…). Use its terms.
 - `docs/adr/0001–0005` — architecture decisions (digested in architecture.md).
-- `docs/discovery/*` — research with primary-source citations (sign-to-derive, consensus facts, oracles, indexer, UX benchmark).
+- `docs/discovery/*` — research with primary-source citations (sign-to-derive, consensus facts, oracles, indexer, UX benchmark, DGBclick fork validation).
 - `docs/specs/wallet-management-v2.md` — vault/backup/multi-wallet spec (shipped).
 - `docs/runbooks/*` — mainnet node prep (tracked); the 2026-07 server-migration runbook
   exists locally but is untracked (see project-status.md).

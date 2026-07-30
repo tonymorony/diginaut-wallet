@@ -218,3 +218,9 @@ guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity, keystore, netchrome 
 (strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
 export→wipe→restore), driver-paths (Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
+
+## See also
+
+- Fork-validation findings + upstreaming map (unbounded `kdf.iterations` in `parseKeystoreFile`;
+  finality precedence in `historyRow`; `w-erase-go` leaving `diginaut.broadcasts` behind):
+  `docs/discovery/dgbclick-fork-validation.md` — several findings addressed by PRs #165–#169.
