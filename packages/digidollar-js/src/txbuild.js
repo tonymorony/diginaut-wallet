@@ -12,8 +12,8 @@ import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { ripemd160 } from '@noble/hashes/legacy.js';
 import { LOCK_TIERS, requiredCollateralSats, tierById } from './index.js';
-import { buildDDVersion } from './envelope.js';
-import { buildMintMetadata, buildTransferMetadata, buildRedeemMetadata } from './envelope.js';
+import { buildDDVersion, parseDDVersion } from './envelope.js';
+import { buildMintMetadata, buildTransferMetadata, buildRedeemMetadata, parseMintMetadata, parseTransferMetadata, parseRedeemMetadata } from './envelope.js';
 import { collateralOutputKey, ddTokenOutputKey, normalRedemptionLeafHex, normalRedemptionLeafHash, collateralControlBlockHex } from './taproot.js';
 
 const { taggedHash } = schnorr.utils;
@@ -25,13 +25,17 @@ export const MIN_DD_TX_FEE_SATS = 10_000_000n; // 0.1 DGB (Core txbuilder.cpp)
 // $1.00. Same value on every network (DD_TX_LIMITS.*.minOutputCents), from
 // consensus/digidollar.h:73 `minOutputAmount = 100`.
 export const MIN_DD_OUTPUT_CENTS = 100n;
+// $100,000.00. The upper bound on a single DigiDollar output: consensus rejects
+// a transfer carrying more with "transfer-dd-amount-exceeds-maximum"
+// (digidollar/validation.cpp:1761). Same value on every network.
+export const MAX_DD_OUTPUT_CENTS = 10_000_000n;
 // Change below this goes to the fee instead of becoming an output. 0.001 DGB is
 // the relay-fee unit — negligible value, and guaranteed dust under any DGB dust
 // policy, so an output that size gets the whole transaction rejected. Every
 // builder in this file applies it: the DD ones were emitting the dust output
 // that plain spends have folded since #6, which is a DigiDollar that cannot
 // move rather than a spend that merely costs a little more.
-const CHANGE_FOLD_SATS = 100_000n;
+export const CHANGE_FOLD_SATS = 100_000n;
 
 const hexToBytes = (hex) => Uint8Array.from(hex.match(/../g).map((b) => parseInt(b, 16)));
 const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -76,8 +80,12 @@ export function xOnlyPubKey(privKeyHex) {
   return bytesToHex(schnorr.getPublicKey(hexToBytes(privKeyHex)));
 }
 
-/** Tweaked private key for spending a key-path-only P2TR of this key (BIP-341/386). */
-function tapTweakPrivKey(privKeyHex) {
+/**
+ * Tweaked private key for spending a key-path-only P2TR of this key
+ * (BIP-341/386). Package-internal, like `taprootSighash` and `signSighash`:
+ * bond.js signs its key-path inputs with it, index.js does not re-export it.
+ */
+export function tapTweakPrivKey(privKeyHex) {
   const d0 = BigInt('0x' + privKeyHex);
   const P = Point.BASE.multiply(d0).toAffine();
   const d = (P.y & 1n) === 0n ? d0 : CURVE_N - d0; // even-Y normalization
@@ -87,34 +95,83 @@ function tapTweakPrivKey(privKeyHex) {
   return dt.toString(16).padStart(64, '0');
 }
 
+// Hash types this library will sign. SIGHASH_NONE and SIGHASH_SINGLE (and their
+// ANYONECANPAY forms) are refused, not unimplemented: NONE commits to no output
+// at all, and SINGLE|ANYONECANPAY leaks change to whoever completes the
+// transaction (docs/discovery/dd-defi-yield.md). A product that needs one gets
+// its own design pass first. 0x01 is here because the upstream BIP-341 vectors
+// exercise the explicit-byte path; the builders use only 0x00 and 0x81.
+export const SIGHASH_DEFAULT = 0x00;
+export const SIGHASH_ALL = 0x01;
+export const SIGHASH_ANYONECANPAY = 0x80;
+
+function assertSupportedHashType(hashType) {
+  if (hashType === SIGHASH_DEFAULT || hashType === SIGHASH_ALL || hashType === (SIGHASH_ALL | SIGHASH_ANYONECANPAY)) return;
+  const base = hashType & 0x03;
+  if (base === 0x03) throw new RangeError(`refusing SIGHASH_SINGLE (hash type 0x${hashType.toString(16)}): it leaves the other outputs unsigned`);
+  if (base === 0x02) throw new RangeError(`refusing SIGHASH_NONE (hash type 0x${hashType.toString(16)}): it signs no outputs at all`);
+  throw new RangeError(`unsupported sighash hash type 0x${hashType.toString(16)} — only 0x00, 0x01 and 0x81 are signed here`);
+}
+
 /**
- * BIP-341 sighash, SIGHASH_DEFAULT, no annex. Key path by default; pass
- * `leafHash` (Uint8Array tapleaf hash) for a script-path (tapscript) spend —
- * spend_type gains ext_flag=1 and the leaf-hash extension is appended.
+ * BIP-341 sighash (no annex). Key path by default; pass `leafHash` (Uint8Array
+ * tapleaf hash) for a script-path spend — spend_type gains ext_flag=1 and the
+ * leaf-hash extension is appended.
+ *
+ * `hashType` follows BIP-341 exactly: with SIGHASH_ANYONECANPAY (the 0x80 bit)
+ * the four whole-transaction input digests are omitted and THIS input's
+ * outpoint, amount, scriptPubKey and nSequence are embedded after spend_type
+ * instead — which is what lets a third party append their own fee input to an
+ * already-signed transaction without invalidating the signature.
+ *
+ * Module-level export for the test suite (pinned digests + the upstream BIP-341
+ * vectors); deliberately NOT re-exported from index.js. Producing a DigiDollar-
+ * marked signature is meant to require going through one of the audited
+ * builders and its post-build gate, not around them.
  */
-function taprootSighash({ version, locktime, inputs, outputs, inputIndex, leafHash }) {
-  const shaPrevouts = sha256(concat(...inputs.map((i) => concat(hexToBytes(i.txidHex).reverse(), u32le(i.vout)))));
-  const shaAmounts = sha256(concat(...inputs.map((i) => u64le(i.valueSats))));
-  const shaScriptPubKeys = sha256(concat(...inputs.map((i) => {
+export function taprootSighash({ version, locktime, inputs, outputs, inputIndex, leafHash, hashType = SIGHASH_DEFAULT }) {
+  assertSupportedHashType(hashType);
+  const anyoneCanPay = (hashType & SIGHASH_ANYONECANPAY) !== 0;
+  const input = inputs[inputIndex];
+  const scriptPubKeyField = (i) => {
     const spk = hexToBytes(i.scriptPubKeyHex);
     return concat(varint(spk.length), spk);
-  })));
-  const shaSequences = sha256(concat(...inputs.map((i) => u32le(i.sequence))));
-  const shaOutputs = sha256(concat(...outputs.map((o) => {
-    const spk = o.script;
-    return concat(u64le(o.valueSats), varint(spk.length), spk);
-  })));
+  };
+  const outpoint = (i) => concat(hexToBytes(i.txidHex).reverse(), u32le(i.vout));
+  const shaOutputs = sha256(concat(...outputs.map((o) => concat(u64le(o.valueSats), varint(o.script.length), o.script))));
   const msg = concat(
-    Uint8Array.from([0x00]),          // hash_type: SIGHASH_DEFAULT
+    Uint8Array.from([hashType]),
     u32le(version), u32le(locktime),
-    shaPrevouts, shaAmounts, shaScriptPubKeys, shaSequences, shaOutputs,
+    ...(anyoneCanPay ? [] : [
+      sha256(concat(...inputs.map(outpoint))),                        // sha_prevouts
+      sha256(concat(...inputs.map((i) => u64le(i.valueSats)))),       // sha_amounts
+      sha256(concat(...inputs.map(scriptPubKeyField))),               // sha_scriptpubkeys
+      sha256(concat(...inputs.map((i) => u32le(i.sequence)))),        // sha_sequences
+    ]),
+    shaOutputs, // always: only ALL/DEFAULT reach here
     Uint8Array.from([leafHash ? 0x02 : 0x00]), // spend_type: (ext_flag·2)+annex
-    u32le(inputIndex),
+    ...(anyoneCanPay
+      ? [outpoint(input), u64le(input.valueSats), scriptPubKeyField(input), u32le(input.sequence)]
+      : [u32le(inputIndex)]),
     ...(leafHash
       ? [leafHash, Uint8Array.from([0x00]), u32le(0xffffffff)] // key_version, codesep pos
       : []),
   );
   return taggedHash('TapSighash', concat(Uint8Array.from([0x00]), msg)); // epoch 0
+}
+
+/**
+ * Schnorr signature for a taproot input: 64 bytes for SIGHASH_DEFAULT, and
+ * 65 (sig ‖ hash type) for every explicit hash type — BIP-341's rule, and the
+ * reason a distribution witness is 65 bytes with 0x81 as its last byte.
+ *
+ * Package-internal, like `taprootSighash`: bond.js signs the Lock & Earn shapes
+ * with it, and index.js does not re-export it.
+ */
+export function signSighash(sighash, keyBytes, hashType = SIGHASH_DEFAULT) {
+  assertSupportedHashType(hashType);
+  const sig = schnorr.sign(sighash, keyBytes);
+  return hashType === SIGHASH_DEFAULT ? sig : concat(sig, Uint8Array.from([hashType]));
 }
 
 /**
@@ -164,6 +221,265 @@ export function serializeTx({ version, locktime, inputs, outputs, witnesses }) {
   return bytesToHex(concat(...parts));
 }
 
+/**
+ * Inverse of `serializeTx`: bytes → `{ version, locktime, inputs, outputs,
+ * witnesses }` with `inputs: [{ txidHex, vout, scriptSigHex, sequence }]`,
+ * `outputs: [{ valueSats: bigint, scriptHex }]` and `witnesses: string[][]`
+ * (hex, one array per input, empty for a legacy/unsigned transaction).
+ *
+ * Both layouts are accepted: BIP-144 segwit (00 01 marker+flag) and legacy.
+ * Per BIP-144 a 0x00 where the input count belongs IS the marker — a legacy
+ * transaction with zero inputs is unrepresentable, which is what makes the
+ * layouts distinguishable. Truncation, trailing bytes and any flag byte other
+ * than 0x01 are refused: this parses transactions received from strangers
+ * (verifyDistributionChunk) as well as our own, so "mostly parsed" is not a
+ * safe outcome. A non-empty scriptSig is exposed rather than rejected.
+ */
+export function parseTx(hex) {
+  if (typeof hex !== 'string' || !/^([0-9a-f]{2})*$/i.test(hex) || hex.length === 0) {
+    throw new RangeError('transaction must be a non-empty even-length hex string');
+  }
+  const buf = hexToBytes(hex.toLowerCase());
+  let o = 0;
+  const take = (n) => {
+    if (o + n > buf.length) throw new RangeError(`transaction truncated: ran out of bytes at offset ${o}`);
+    const v = buf.subarray(o, o + n);
+    o += n;
+    return v;
+  };
+  const u32 = () => { const b = take(4); return ((b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0); };
+  const u64 = () => take(8).reduceRight((acc, b) => (acc << 8n) | BigInt(b), 0n);
+  // CompactSize, with Core's canonicality rule (ReadCompactSize: "non-canonical
+  // ReadCompactSize()"). A value encoded in more bytes than it needs is refused,
+  // because otherwise two different byte strings — with two different txids —
+  // both claim to be the same transaction.
+  const varint = () => {
+    const first = take(1)[0];
+    if (first < 0xfd) return first;
+    const nonCanonical = (value, floor) => {
+      if (value < floor) throw new RangeError(`non-canonical CompactSize: ${value} encoded in the 0x${first.toString(16)} form`);
+      return value;
+    };
+    if (first === 0xfd) { const b = take(2); return nonCanonical(b[0] | (b[1] << 8), 0xfd); }
+    if (first === 0xfe) return nonCanonical(u32(), 0x10000);
+    const v = u64();
+    if (v < 0x100000000n) throw new RangeError(`non-canonical CompactSize: ${v} encoded in the 0xff form`);
+    if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError('varint beyond the safe integer range');
+    return Number(v);
+  };
+  const takeHex = (n) => bytesToHex(take(n));
+
+  const version = u32();
+  let segwit = false;
+  if (buf[o] === 0x00) {
+    segwit = true;
+    o += 1;
+    const flag = take(1)[0];
+    if (flag !== 0x01) throw new RangeError(`unknown segwit flag byte 0x${flag.toString(16).padStart(2, '0')}`);
+  }
+  const inputs = Array.from({ length: varint() }, () => ({
+    // subarray is a view into buf — copy before reversing, or the parse eats itself.
+    txidHex: bytesToHex(Uint8Array.from(take(32)).reverse()),
+    vout: u32(),
+    scriptSigHex: takeHex(varint()),
+    sequence: u32(),
+  }));
+  const outputs = Array.from({ length: varint() }, () => ({
+    valueSats: u64(),
+    scriptHex: takeHex(varint()),
+  }));
+  const witnesses = inputs.map(() => (segwit
+    ? Array.from({ length: varint() }, () => takeHex(varint()))
+    : []));
+  const locktime = u32();
+  if (o !== buf.length) throw new RangeError(`trailing bytes after the transaction (${buf.length - o})`);
+  return { version, locktime, inputs, outputs, witnesses };
+}
+
+// ---- The verify-before-sign gate ----
+// One core, two users. Every buildSigned* in the DigiDollar family ends by
+// running its OWN serialized bytes back through this and throwing if any check
+// fails, so a serialization or envelope bug cannot ship a signature; and
+// bond.js's verifyDistributionChunk runs the same core over bytes it RECEIVED
+// from someone else, returning the check list instead of throwing.
+// Because the gate reads the final bytes, it sees what the network will see.
+// Check names are stable: the wallet renders them and the suite asserts on them.
+
+// OP_RETURN relay cap (Core policy.h:74) — no DigiDollar exemption.
+export const OP_RETURN_RELAY_CAP_BYTES = 83;
+
+const isCanonicalP2TR = (scriptHex) => /^5120[0-9a-f]{64}$/.test(scriptHex);
+const isOpReturn = (scriptHex) => scriptHex.startsWith('6a');
+const centsList = (outs) => outs.map((o) => o.cents);
+
+/**
+ * Re-derive a DigiDollar transaction's meaning from its serialized bytes and
+ * compare it to the intent it was built from. Never throws on content — broken
+ * hex yields `{ ok: false }` with a failed `parse` check.
+ *
+ * `expect` carries the INTENT, not the bytes: `{ type, ddOutputs:
+ * [{outputKeyHex, cents}], ddInCents, ddBurnedCents?, mint?, valuedOutputs? }`.
+ * The envelope is rebuilt from the amounts parsed out of the transaction and
+ * byte-compared to the OP_RETURN that is actually there, so a reordered,
+ * duplicated or non-minimally-encoded amount fails even though the builder's
+ * own inputs were fine.
+ */
+export function checkBuiltDDTx({ txHex, expect }) {
+  const checks = [];
+  const add = (name, ok, detail = '') => { checks.push({ name, ok: !!ok, detail }); return !!ok; };
+  const done = () => ({ ok: checks.length > 0 && checks.every((c) => c.ok), checks });
+  try {
+    return runDDChecks({ txHex, expect, add, done });
+  } catch (e) {
+    // The never-throws contract holds even for input nothing here anticipated
+    // (a transaction with no outputs at all, a JSON-decoded record whose cents
+    // came back as Numbers). Failing by name beats failing by exception in a
+    // caller that is rendering a checklist.
+    add('verifier-error', false, `unexpected error while checking: ${e.message}`);
+    return done();
+  }
+}
+
+function runDDChecks({ txHex, expect, add, done }) {
+  let tx;
+  try {
+    tx = parseTx(txHex);
+  } catch (e) {
+    add('parse', false, e.message);
+    return done();
+  }
+  add('parse', true, `${tx.inputs.length} in, ${tx.outputs.length} out`);
+
+  // Every DigiDollar shape is pure-witness, and a native witness program
+  // REQUIRES an empty scriptSig (BIP-141) — but no signature commits to
+  // scriptSig, so bytes with one injected still carry valid signatures while
+  // having a different txid from the ones that were verified.
+  const withScriptSig = tx.inputs.filter((i) => i.scriptSigHex !== '');
+  add('scriptsig-empty', withScriptSig.length === 0,
+    `${withScriptSig.length} input(s) carry a scriptSig; no signature commits to it, so the txid is not what was verified`);
+
+  const { isDigiDollar, type } = parseDDVersion(tx.version);
+  add('dd-marker', isDigiDollar && type === expect.type,
+    isDigiDollar ? `nVersion type ${type}, expected ${expect.type}` : `nVersion ${tx.version} carries no DigiDollar marker`);
+
+  const envelopeOutputs = tx.outputs.filter((o) => isOpReturn(o.scriptHex));
+  const ddOutputs = tx.outputs.filter((o) => o.valueSats === 0n && isCanonicalP2TR(o.scriptHex));
+  const valuedOutputs = tx.outputs.filter((o) => o.valueSats > 0n);
+  const unclassified = tx.outputs.length - envelopeOutputs.length - ddOutputs.length - valuedOutputs.length;
+  add('output-shapes', unclassified === 0, `${unclassified} output(s) are neither DD, envelope nor valued`);
+
+  // Core pairs the envelope with the zero-value canonical-P2TR outputs and
+  // wants exactly one OP_RETURN (validation.cpp:1744/1769; one-OP_RETURN is
+  // also relay policy). A redeem carries one only when it has DD change.
+  // Position: LAST on a transfer (Core's TransferTxBuilder, and every Lock &
+  // Earn shape) — but a mint puts its P2WPKH change after the OP_RETURN and a
+  // redeem puts its DGB change there, so the rule is transfer-only.
+  const wantsEnvelope = expect.type !== 'redeem' || ddOutputs.length > 0;
+  const envelopeLast = expect.type !== 'transfer' || isOpReturn(tx.outputs[tx.outputs.length - 1]?.scriptHex ?? '');
+  const envelopeOk = envelopeOutputs.length === (wantsEnvelope ? 1 : 0) && (!wantsEnvelope || envelopeLast);
+  add('envelope-present', envelopeOk,
+    `${envelopeOutputs.length} OP_RETURN output(s), expected ${wantsEnvelope ? 1 : 0}${expect.type === 'transfer' ? ' (last)' : ''}${envelopeLast ? '' : ' — not the last output'}`);
+  if (!envelopeOk) return done();
+
+  const envelopeHex = wantsEnvelope ? envelopeOutputs[0].scriptHex : null;
+  let amountsCents = [];
+  let rebuiltHex = null;
+  try {
+    if (expect.type === 'transfer') {
+      amountsCents = parseTransferMetadata(envelopeHex).amountsCents;
+      rebuiltHex = buildTransferMetadata({ amountsCents });
+      add('envelope-pairing', amountsCents.length === ddOutputs.length,
+        `${amountsCents.length} amount(s) for ${ddOutputs.length} DD output(s)`);
+    } else if (expect.type === 'redeem') {
+      if (wantsEnvelope) {
+        const { ddChangeCents } = parseRedeemMetadata(envelopeHex);
+        amountsCents = [ddChangeCents];
+        rebuiltHex = buildRedeemMetadata({ ddChangeCents });
+      }
+      add('envelope-pairing', ddOutputs.length === amountsCents.length,
+        `${amountsCents.length} change amount(s) for ${ddOutputs.length} DD output(s)`);
+    } else {
+      const mint = parseMintMetadata(envelopeHex);
+      amountsCents = [mint.ddCents];
+      rebuiltHex = buildMintMetadata(mint);
+      // The mint's own outputs must agree with its envelope: the collateral
+      // P2TR is derivable from (ownerKey, unlockHeight, ddCents) and the DD
+      // token output from the owner key alone (Core scripts.cpp).
+      const collateralHex = `5120${collateralOutputKey({ ownerKeyHex: mint.ownerKeyHex, lockHeight: mint.unlockHeight, ddCents: mint.ddCents })}`;
+      const tokenHex = `5120${ddTokenOutputKey(mint.ownerKeyHex)}`;
+      add('envelope-pairing',
+        tx.outputs[0]?.scriptHex === collateralHex && tx.outputs[1]?.scriptHex === tokenHex && ddOutputs.length === 1,
+        'collateral and DD token outputs must match the envelope owner key');
+    }
+  } catch (e) {
+    add('envelope-pairing', false, e.message);
+    return done();
+  }
+
+  add('envelope-exact', rebuiltHex === envelopeHex,
+    rebuiltHex === envelopeHex ? '' : `envelope ${envelopeHex} is not the canonical encoding ${rebuiltHex}`);
+  const envelopeBytes = wantsEnvelope ? envelopeHex.length / 2 : 0;
+  add('envelope-size', envelopeBytes <= OP_RETURN_RELAY_CAP_BYTES,
+    `${envelopeBytes}B of the ${OP_RETURN_RELAY_CAP_BYTES}B OP_RETURN relay cap`);
+
+  // Consensus rejects any DD output below $1.00 (validation.cpp:1756-1758) or
+  // above $100,000.00 (1761). The one documented exception is redeem change,
+  // which Core's redemption scan (2107-2149) amount-checks against NEITHER
+  // bound — refusing it here would strand a position (see buildRedeemOutputs).
+  const below = amountsCents.filter((c) => c < MIN_DD_OUTPUT_CENTS);
+  add('dd-minimum', below.length === 0 || expect.type === 'redeem',
+    below.length === 0 ? '' : `${below.length} DD amount(s) below $1.00${expect.type === 'redeem' ? ' — allowed on the redeem path' : ''}`);
+  const above = amountsCents.filter((c) => c > MAX_DD_OUTPUT_CENTS);
+  add('dd-maximum', above.length === 0 || expect.type === 'redeem',
+    above.length === 0 ? '' : `${above.length} DD amount(s) above $100,000.00${expect.type === 'redeem' ? ' — allowed on the redeem path' : ''}`);
+
+  const ddOutCents = amountsCents.reduce((s, c) => s + c, 0n);
+  if (expect.type === 'mint') {
+    add('dd-conservation', ddOutCents === expect.ddOutCents, `minting ${ddOutCents}c, expected ${expect.ddOutCents}c`);
+  } else if (expect.type === 'redeem') {
+    const burned = expect.ddInCents - ddOutCents;
+    add('dd-conservation', burned === expect.ddBurnedCents, `burning ${burned}c, expected ${expect.ddBurnedCents}c`);
+  } else {
+    add('dd-conservation', ddOutCents === expect.ddInCents, `${ddOutCents}c out of ${expect.ddInCents}c in`);
+  }
+
+  const seen = ddOutputs.map((o, i) => ({ outputKeyHex: o.scriptHex.slice(4), cents: amountsCents[i] }));
+  const wanted = expect.ddOutputs ?? [];
+  add('dd-outputs-match',
+    seen.length === wanted.length && seen.every((o, i) => o.outputKeyHex === wanted[i].outputKeyHex && o.cents === wanted[i].cents),
+    `DD outputs ${JSON.stringify(centsList(seen).map(String))} vs requested ${JSON.stringify(centsList(wanted).map(String))}`);
+
+  if (expect.valuedOutputs) {
+    add('valued-outputs-match',
+      valuedOutputs.length === expect.valuedOutputs.length
+        && valuedOutputs.every((o, i) => o.scriptHex === expect.valuedOutputs[i].scriptHex && o.valueSats === expect.valuedOutputs[i].valueSats),
+      `${valuedOutputs.length} valued output(s), expected ${expect.valuedOutputs.length}`);
+  }
+
+  // nLockTime and the sequences are the timing half of a template, and nothing
+  // else in this list would notice them being edited: a CLTV bond whose
+  // nLockTime is zeroed, or a distribution whose input is finalized, still has
+  // the right outputs and the right envelope.
+  if (expect.locktime !== undefined) {
+    add('locktime', tx.locktime === expect.locktime, `nLockTime ${tx.locktime}, expected ${expect.locktime}`);
+  }
+  if (expect.sequences) {
+    const seen = tx.inputs.map((i) => i.sequence);
+    add('input-sequences',
+      seen.length === expect.sequences.length && seen.every((s, i) => s === expect.sequences[i]),
+      `sequences [${seen.map((s) => s.toString(16)).join(', ')}], expected [${expect.sequences.map((s) => s.toString(16)).join(', ')}]`);
+  }
+  return done();
+}
+
+/** The gate itself: run the core over the built bytes, throw if anything failed. */
+export function assertBuiltDDTx({ txHex, expect, what }) {
+  const { ok, checks } = checkBuiltDDTx({ txHex, expect });
+  if (ok) return checks;
+  const failed = checks.filter((c) => !c.ok).map((c) => `${c.name}${c.detail ? ` (${c.detail})` : ''}`);
+  throw new Error(`${what} failed its post-build check: ${failed.join('; ')}`);
+}
+
 // ---- Transfer ----
 // Output layout mirrors real Core transfers (test/fixtures/transfer-tx.json,
 // TransferTxBuilder::BuildTransferTransaction):
@@ -193,9 +509,12 @@ export function buildTransferOutputs({
     outputs.push({ valueSats: 0n, script: p2trScript(ddTokenOutputKey(changeOwnerKeyHex)) });
     amountsCents.push(ddChangeCents);
   }
-  // Consensus checks EVERY canonical-P2TR output of a transfer against the $1
-  // minimum, not just the ones the sender thinks of as payments — the loop at
-  // digidollar/validation.cpp:1743 rejects with "transfer-dd-amount-below-minimum".
+  // Consensus checks EVERY canonical-P2TR output of a transfer against both
+  // amount bounds, not just the ones the sender thinks of as payments — the loop
+  // at digidollar/validation.cpp:1756-1758 rejects with
+  // "transfer-dd-amount-below-minimum" and 1761 with
+  // "transfer-dd-amount-exceeds-maximum". (1743 is the IsCanonicalP2TROutput
+  // branch that selects which outputs get checked, not the rejection itself.)
   // The DD CHANGE output is one of those, and it was the one nobody validated:
   // spend $10.00 from a $10.50 coin and the 50c change makes the whole transfer
   // unbroadcastable. Checked here, where the outputs and the OP_RETURN amounts
@@ -203,6 +522,9 @@ export function buildTransferOutputs({
   for (const c of amountsCents) {
     if (c < MIN_DD_OUTPUT_CENTS) {
       throw new RangeError(`consensus forbids DigiDollar outputs below $1.00 — this transfer would create one of $${(Number(c) / 100).toFixed(2)}`);
+    }
+    if (c > MAX_DD_OUTPUT_CENTS) {
+      throw new RangeError(`consensus forbids DigiDollar outputs above $100,000.00 — this transfer would create one of $${(Number(c) / 100).toFixed(2)}`);
     }
   }
   if (dgbChangeSats > 0n) {
@@ -238,6 +560,7 @@ export function buildSignedTransferTx({
 
   const ownerKey = xOnlyPubKey(privKeyHex);
   const ownerScriptHex = bytesToHex(p2trScript(ddTokenOutputKey(ownerKey)));
+  const changeScriptHex = dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex));
   const inputs = [
     { txidHex: ddUtxo.txidHex, vout: ddUtxo.vout, valueSats: 0n, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
     { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
@@ -247,7 +570,7 @@ export function buildSignedTransferTx({
     ddChangeCents,
     changeOwnerKeyHex: ownerKey,
     dgbChangeSats,
-    dgbChangeScriptHex: dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex)),
+    dgbChangeScriptHex: changeScriptHex,
   });
 
   const version = buildDDVersion('transfer');
@@ -257,6 +580,21 @@ export function buildSignedTransferTx({
   ]);
 
   const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses });
+  assertBuiltDDTx({
+    txHex: hex,
+    what: 'transfer',
+    expect: {
+      type: 'transfer',
+      ddInCents: ddUtxo.ddCents,
+      ddOutputs: [
+        ...recipients.map((r) => ({ outputKeyHex: r.outputKeyHex, cents: r.cents })),
+        ...(ddChangeCents > 0n ? [{ outputKeyHex: ddTokenOutputKey(ownerKey), cents: ddChangeCents }] : []),
+      ],
+      valuedOutputs: dgbChangeSats > 0n ? [{ scriptHex: changeScriptHex, valueSats: dgbChangeSats }] : [],
+      locktime: 0,
+      sequences: inputs.map((i) => i.sequence),
+    },
+  });
   return { hex, ddChangeCents, dgbChangeSats };
 }
 
@@ -339,13 +677,14 @@ export function buildSignedRedeemTx({
     ...ddUtxos.map((u) => ({ txidHex: u.txidHex, vout: u.vout, valueSats: 0n, scriptPubKeyHex: ownerScriptHex, sequence: 0xfffffffe })),
     { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
   ];
+  const changeScriptHex = dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex));
   const outputs = buildRedeemOutputs({
     collateralReturnSats: collateralUtxo.valueSats,
     collateralReturnScriptHex: ownerScriptHex,
     ddChangeCents,
     changeOwnerKeyHex: ownerKey,
     dgbChangeSats,
-    dgbChangeScriptHex: dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex)),
+    dgbChangeScriptHex: changeScriptHex,
   });
 
   const version = buildDDVersion('redeem');
@@ -367,6 +706,22 @@ export function buildSignedRedeemTx({
   });
 
   const hex = serializeTx({ version, locktime, inputs, outputs, witnesses });
+  assertBuiltDDTx({
+    txHex: hex,
+    what: 'redemption',
+    expect: {
+      type: 'redeem',
+      ddInCents: totalDDIn,
+      ddBurnedCents: collateralUtxo.ddCents,
+      ddOutputs: ddChangeCents > 0n ? [{ outputKeyHex: ddTokenOutputKey(ownerKey), cents: ddChangeCents }] : [],
+      valuedOutputs: [
+        { scriptHex: ownerScriptHex, valueSats: collateralUtxo.valueSats },
+        ...(dgbChangeSats > 0n ? [{ scriptHex: changeScriptHex, valueSats: dgbChangeSats }] : []),
+      ],
+      locktime,
+      sequences: inputs.map((i) => i.sequence),
+    },
+  });
   return { hex, ddChangeCents, dgbChangeSats };
 }
 
@@ -537,8 +892,9 @@ export function buildSignedMintTx({
 
   const fundingScript = p2trScript(ddTokenOutputKey(ownerKey)); // key-path-only P2TR of owner
   const inputs = [{ ...utxo, scriptPubKeyHex: bytesToHex(fundingScript), sequence: 0xfffffffd }];
+  const collateralScriptHex = bytesToHex(p2trScript(collateralOutputKey({ ownerKeyHex: ownerKey, lockHeight: unlockHeight, ddCents })));
   const outputs = [
-    { valueSats: collateralSats, script: p2trScript(collateralOutputKey({ ownerKeyHex: ownerKey, lockHeight: unlockHeight, ddCents })) },
+    { valueSats: collateralSats, script: hexToBytes(collateralScriptHex) },
     { valueSats: 0n, script: p2trScript(ddTokenOutputKey(ownerKey)) },
     { valueSats: 0n, script: hexToBytes(buildMintMetadata({ ddCents, unlockHeight, lockTier: LOCK_TIERS.indexOf(tier), ownerKeyHex: ownerKey })) },
   ];
@@ -549,5 +905,20 @@ export function buildSignedMintTx({
   const sig = schnorr.sign(sighash, hexToBytes(tapTweakPrivKey(privKeyHex))); // 64B, SIGHASH_DEFAULT
 
   const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses: [[sig]] });
+  assertBuiltDDTx({
+    txHex: hex,
+    what: 'mint',
+    expect: {
+      type: 'mint',
+      ddOutCents: ddCents,
+      ddOutputs: [{ outputKeyHex: ddTokenOutputKey(ownerKey), cents: ddCents }],
+      valuedOutputs: [
+        { scriptHex: collateralScriptHex, valueSats: collateralSats },
+        ...(changeSats > 0n ? [{ scriptHex: bytesToHex(p2wpkhScript(privKeyHex)), valueSats: changeSats }] : []),
+      ],
+      locktime: 0,
+      sequences: inputs.map((i) => i.sequence),
+    },
+  });
   return { hex, unlockHeight, collateralSats, changeSats };
 }
