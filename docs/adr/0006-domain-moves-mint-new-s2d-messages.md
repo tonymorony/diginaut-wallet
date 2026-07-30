@@ -38,12 +38,26 @@ Consequences:
   [#142](https://github.com/tonymorony/diginaut-wallet/pull/142) the mainnet save path runs the
   sealed, mandatory backup ceremony. On testnet a user may have skipped it, and the honest answer
   there is to keep using the legacy origin, which is why it stays up.
+- **Moving an era assignment exposed a latent bug in reconnect, now fixed.** ADR 0005 always said
+  reconnect selects by `source.msgVersion`; `app.js` in fact selected by the current chain, which
+  was indistinguishable while every host's era was permanent. It is not permanent for the hosts
+  this ADR re-assigns — `localhost`, `127.0.0.1`, every self-host — so a pre-move v1 source would
+  have been re-derived against v3 and shown the drift hard stop, blaming the extension for a
+  change the app made. Reconnect now reads the record. Any future era move inherits the fix.
 - The ceremony's "only *host* may ever ask for this signature" checkbox is now rendered from the
   selected message's own `Origin:` line (`s2dOriginHost`). It was a hardcoded
   `dgb.ludere.space`, so the mainnet ceremony named the testnet domain beside a message saying
   the opposite. A second copy of the origin can drift; a derived one cannot.
-- A future move mints v5/v6 and adds nothing to the legacy set — the new domains become "current
-  era" only until the next one, and every era ever served stays selectable by its host.
+- **The next move must pin the hosts it leaves behind, in the same commit.** `s2dForChain` is
+  `legacy set → its pinned era, everything else → the newest era`, so minting v5/v6 without
+  adding `diginaut.space` and `testnet.diginaut.space` to `LEGACY_S2D_HOSTS` (and
+  `LEGACY_HOST_MOVED_TO`) would drop them into "everything else" and silently re-derive every
+  v3/v4 wallet — this ADR's own catastrophe, executed by following it. The rule in one line:
+  **the host→era map only ever grows; a host joins it with its era frozen as-is on the day it
+  stops being canonical; "everything else" always means the newest era.** Every era ever served
+  stays selectable by its host, forever.
 
-Cutover procedure: `docs/runbooks/domain-cutover-2026-07.md`. Protocol details:
+Cutover procedure: `docs/runbooks/domain-cutover-2026-07.md`. The current bytes and the selection
+rules live in `apps/wallet/public/connect.js` with their pins in `apps/wallet/test/connect.test.js`
+— read those, not prose. Protocol background (v1/v2 era, mechanics unchanged since):
 `docs/discovery/sign-to-derive.md`.
