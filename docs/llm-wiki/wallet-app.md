@@ -22,7 +22,8 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   `VaultConflictError`. Held key must always match `record.kdf.salt`.
 - `public/connect.js` (~200 L) — sign-to-derive protocol + EIP-6963/Phantom plumbing (below).
 - Small pure modules: `netchrome.js` (per-chain banner/pill + `betaCapError`, cap $500/tx;
-  `backupSkipAllowed` — mainnet/unknown chain seal the backup ceremony), `dderrors.js`
+  `backupSkipAllowed` — mainnet/unknown chain seal the backup ceremony; `foldNetHealth` —
+  the header dot's failed-poll debounce), `dderrors.js`
   (consensus reject → friendly copy; spend/conflict families + `isAlreadyBroadcast`),
   `dca.js` (multiplier → BigInt bps), `autolock.js` (default 5 min; **absent ≠ 0/"Never"**),
   `broadcastlog.js` (pre-broadcast journal + local txid + FAIL-AMBIGUOUS classifier),
@@ -70,6 +71,21 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   fetch goes through `apiFetch` with a `nettimeout.js` budget; failures carry
   `err.transport = 'timeout'|'network'` — downstream code keys off the FLAG, never the copy.
   Price staleness: `PRICE_MAX_AGE_MS = 180s` demotes USD entry (and disarms Max).
+- **Who retries, and on what.** `fetchIndexer` alone: `[500, 1000, 2000]` ms keyed STRICTLY on
+  `err.transport`, so a 4xx or an `INDEXER_SHAPES` refusal rethrows on the first attempt. The
+  FULL ladder is the first load's budget only (`indexerFirstLoad` clears at the first money
+  paint) — after that one retry, because `refreshMoney` fans out to (index+3)×6 reads per tick.
+  `rpc()` must **never** grow one: `broadcastTx` rides it, and a re-sent `sendrawtransaction`
+  is the #C1 double-send.
+- Header dot: `foldNetHealth` (netchrome.js) needs TWO consecutive FAILED polls before
+  `netHealth.dd`/`.oracle` goes false — a ~2-3 s deploy restart used to paint it red. Only
+  failures are debounced; an answered inactive/stale lands on the first tick, because these
+  flags also gate `priceUsable`. Cost: a real outage reaches the dot up to one poll (60 s) late.
+- Activity badge: the tx's own confirmation count outranks the address-history height (separate
+  subsystems — the index lags, see `indexerLagBlocks`), but `final` needs BOTH (count ≥
+  `FINAL_CONF` **and** `h.height > 0`), and `c === 0` is `pending` whatever the height says.
+  Only a MISSING count falls back to height alone — which is also why the thin, un-enriched row
+  still decides on height. Copy rule: `design-system.md`. Fixtures: `verify-history`.
 - Broadcast path: `broadcastTx(hex, meta)` journals to `diginaut.broadcasts` BEFORE sending;
   ambiguous outcomes keep the record and surface the `#w-recovery` card (chain-scoped,
   survives lock/switch, netKnown-gated). A definite reject's message passes through
@@ -256,9 +272,10 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-15 unit suites (**205 tests** as of 2026-07-31) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
-guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity, keystore, netchrome (incl.
-`backupSkipAllowed`), dderrors (incl. spend/conflict families), dca, autolock, connect
+16 unit suites (**209 tests** as of 2026-07-31, this branch) under `test/`, `npm test` — server
+(CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity,
+keystore, icon-sprite, netchrome (incl. `backupSkipAllowed` + `foldNetHealth`),
+dderrors (incl. spend/conflict families), dca, autolock, connect
 (protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate
 (strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
 export→wipe→restore), driver-paths (Windows-path idiom must never return).

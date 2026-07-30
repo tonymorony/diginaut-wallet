@@ -220,6 +220,13 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
   wallets per site", or the user reads origin scoping as a policy we could waive.
 - **Never soften a risk to reduce friction.** The backup ceremony, mainnet interstitial,
   $500 cap and eviction warning are allowed to be blunt.
+- **A settlement word needs every source it claims to summarise.** The Activity badge says
+  `final` only when the node's confirmation count is ≥ `FINAL_CONF` **and** the address index
+  also carries a height for that tx. The two are separate subsystems and the index is
+  untrusted (#55), so finality on one signal alone would let a lying index name a settled
+  state the chain has not reached — a defect, not a rounding. Below that the count itself
+  (`N conf`) is the honest answer, and a count of 0 is `pending` whatever the index says.
+  Mechanism: `wallet-app.md` § Client state.
 - **Say where the keys live before the click,** not only after it.
 - Sentence case, no exclamation marks, no apologies in errors. `CONTEXT.md` glossary terms are
   binding, including their banned synonyms.

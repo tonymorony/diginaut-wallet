@@ -57,6 +57,11 @@ separately (PR #124), not part of that run.
 - **Manual mock/stub drivers — NOT in the runner or CI, run them by name when touching
   their area**: `verify-honest-quotes` (MOCK_SYSTEM_HEALTH), `verify-oracle-bounds`,
   `verify-history`, `verify-fiat-sendmax`, `verify-disclaimer`.
+  `verify-history` (17 checks) also owns the confirmation-badge precedence: its inline fake
+  serves a tx at index height 0 with 24 node confirmations (must read `24 conf`, never
+  `pending`) and one with an invented 9999 on no block (must never read `final`). It asserts
+  the badge's CLASS as well as its words — the tick is an `<svg>`, so text alone cannot prove a
+  row did NOT claim finality.
   `verify-oracle-bounds` passes its 5 mint-gate checks and then **hangs on
   `timeout: wallet unlocked after reload`** under Chrome 150 — reproduced identically on
   `origin/main` (2026-07-31), so it is environmental, not a regression. Don't chase it from a
