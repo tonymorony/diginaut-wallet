@@ -11,6 +11,7 @@
   "scripts": {
     "start": "npm start --workspace apps/wallet",
     "test": "node --test",
+    "proto:lock-earn": "node prototypes/lock-earn/tui.js",
     "vendor:lock": "npm run vendor:lock --workspace apps/wallet"
   },
   "engines": {
