@@ -12,7 +12,7 @@ import {
 } from '/lib/index.js';
 import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
-import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain } from '/connect.js';
+import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain, s2dOriginHost } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
@@ -1488,6 +1488,19 @@ function renderWeb3VerifySteps(stage) {
     + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? tick : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
 }
 
+/** Arm the disclosure step. The ONLY way to display it: the checkbox names the
+ *  host that may ask for this signature, and that host is read out of the frozen
+ *  message this ceremony is about to send — same call, same argument, one source
+ *  of truth. Filled before display (the step ships hidden, so nothing renders an
+ *  empty <b>). A hardcoded host here is how the mainnet ceremony ended up naming
+ *  the testnet domain; ADR 0006 makes the origin move again, so it must be
+ *  derived, not written twice. */
+function armWeb3Disclosure() {
+  $('w-web3-origin').textContent = s2dOriginHost(s2dForChain(gateChain()).message);
+  renderWeb3Steps('disclose');
+  $('w-web3-disclose').style.display = 'block';
+}
+
 async function openWeb3Picker() {
   // Belt for the boot race, re-aimed for the mainnet rollout. It used to refuse
   // mainnet outright; now that mainnet is supported the danger has moved, and
@@ -1552,8 +1565,7 @@ $('w-web3-list').addEventListener('click', async (e) => {
     web3Address = address;
     const known = vault.status === 'unlocked' ? vault.findSource(entry.kind, address) : null;
     if (known) { await verifyReconnect(entry, address, run); return; }
-    renderWeb3Steps('disclose');
-    $('w-web3-disclose').style.display = 'block';
+    armWeb3Disclosure();
   } catch (err) {
     if (run !== web3Run) return;
     $('w-web3-err').textContent = surfaceError(err);
@@ -1568,6 +1580,11 @@ async function verifyReconnect(entry, address, run) {
   // Reconnect is chain-scoped: on mainnet you are re-deriving your MAINNET
   // wallet, so sign that network's bytes. A testnet wallet legitimately fails
   // to match here — per ADR 0005 it is a different wallet, not a mismatch.
+  // s2dForChain now also picks the ORIGIN era (ADR 0006), and that keeps this
+  // honest for free: the vault is origin-scoped, and the keystore export
+  // envelope carries only the mnemonic (never the source record), so a source
+  // this call can find was minted at THIS origin and is therefore this origin's
+  // era by construction. There is no path that puts a v1 source in a v3 vault.
   const derived = await deriveOnce(entry, address, s2dForChain(gateChain()).version);
   if (run !== web3Run) return;
   renderWeb3VerifySteps('done');
@@ -1608,8 +1625,7 @@ $('w-web3-go').addEventListener('click', (e) =>
     } catch (err) {
       if (run !== web3Run) return; // ceremony abandoned — a late popup must not resurface it
       // refusal or user-rejected popup: back to the armed disclosure, error below
-      renderWeb3Steps('disclose');
-      $('w-web3-disclose').style.display = 'block';
+      armWeb3Disclosure();
       throw err;
     }
     if (run !== web3Run) return;
@@ -1652,8 +1668,7 @@ $('w-web3-newwallet').addEventListener('click', () => {
   if (web3Pending) { showWeb3Save(); return; } // already double-sign-proven
   // the mismatch came from the one-signature reconnect check: a NEW wallet
   // needs the full ceremony — one signature has not proven determinism
-  renderWeb3Steps('disclose');
-  $('w-web3-disclose').style.display = 'block';
+  armWeb3Disclosure();
 });
 
 $('w-web3-save-go').addEventListener('click', (e) =>

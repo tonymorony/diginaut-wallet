@@ -926,8 +926,15 @@
         <div id="w-web3-disclose" style="display:none">
           <p class="hint">You’ll sign the same message twice — the second signature proves your wallet signs deterministically.</p>
           <p class="hint">Even if your wallet uses a hardware device, the derived DigiByte wallet is a hot key in this browser.</p>
+          <!-- The host is written by app.js from the frozen message this
+               ceremony is about to ask for (s2dOriginHost), before the step is
+               ever displayed. It was hardcoded to dgb.ludere.space until the
+               2026-07-31 domain switch — so the MAINNET ceremony told users the
+               TESTNET domain was the only site allowed to ask, next to a message
+               saying the opposite. Never put a literal host back here: a second
+               copy of the origin drifts from the bytes and nothing can catch it. -->
           <label class="checkline"><input type="checkbox" id="w-web3-agree" />
-            <span>I understand: only <b>dgb.ludere.space</b> may ever ask for this signature. Any other site asking for it is stealing my funds.</span></label>
+            <span>I understand: only <b id="w-web3-origin"></b> may ever ask for this signature. Any other site asking for it is stealing my funds.</span></label>
           <button id="w-web3-go" disabled>Request signature 1 of 2</button>
         </div>
         <div id="w-web3-save" style="display:none">
