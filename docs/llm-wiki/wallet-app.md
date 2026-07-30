@@ -71,6 +71,13 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   fetch goes through `apiFetch` with a `nettimeout.js` budget; failures carry
   `err.transport = 'timeout'|'network'` — downstream code keys off the FLAG, never the copy.
   Price staleness: `PRICE_MAX_AGE_MS = 180s` demotes USD entry (and disarms Max).
+- Receive rediscovery (`syncReceiveIndex`) walks from **`wallet.index`**, not 0. Safe only
+  because the watch window is contiguous (`watchedDerivations()` = 0…index+2, re-read every
+  8 s) — make it sparse and the walk goes back to 0. The money poll **re-arms** the scan when
+  the deepest index with history reaches the counter (the same seed on a second device hands
+  out addresses this one never counted): clear `receiveScanGen` only, never `receiveScanBusy`,
+  and edge-trigger on the frontier — level-triggering re-walks the chain every 8 s into the
+  proxy's rate limit. Consequence: `w-address` can now rotate MID-SESSION.
 - **Who retries, and on what.** `fetchIndexer` alone: `[500, 1000, 2000]` ms, and what counts
   as transient lives in ONE predicate, `transientIndexerFailure` (nettimeout.js) — `err.transport`
   (dead browser↔wallet-server hop) **or** the wallet server's own 502 relay of a dead indexer
@@ -94,8 +101,8 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   still decides on height. Copy rule: `design-system.md`. Fixtures: `verify-history`.
 - Broadcast path: `broadcastTx(hex, meta)` journals to `diginaut.broadcasts` BEFORE sending;
   ambiguous outcomes keep the record and surface the `#w-recovery` card (chain-scoped,
-  survives lock/switch, netKnown-gated; only `w-erase-go` wipes the journal — § Backup &
-  browser storage). A definite reject's message passes through
+  survives lock/switch, netKnown-gated; `w-erase-go` is the only thing that wipes the whole
+  journal — § Backup & browser storage). A definite reject's message passes through
   UNMODIFIED (verify-honest-quotes pins this). Stale-tip warning rows (`w-*-c-stale`) are
   written at REVIEW time only — never re-read state in the `w-*-go` handlers (L6 property).
   Card row titles drop to `r.kind` while `vault.status !== 'unlocked'` (amount + counterparty
@@ -287,13 +294,13 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-17 unit suites (**222 tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server
-(CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity,
-keystore, icon-sprite, netchrome (incl. `backupSkipAllowed` + `foldNetHealth`),
-dderrors (incl. spend/conflict families), dca, autolock, connect
-(protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate
-(strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
-export→wipe→restore), driver-paths (Windows-path idiom must never return).
+17 unit suites (**PENDING tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
+guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity, keystore (incl. the imported
+file's KDF bounds), netchrome (incl. `backupSkipAllowed`), dderrors (incl. spend/conflict
+families), dca, autolock, connect (protocol pins), broadcastlog (txid vs Core fixtures,
+classifier, `clearAll`), nettimeout, validate (strict/tolerant + MAX_MONEY drift pin),
+persistence, backup-roundtrip (M2: real WebCrypto export→wipe→restore), icon-sprite,
+driver-paths (Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
 
 ## See also

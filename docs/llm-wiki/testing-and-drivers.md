@@ -148,6 +148,10 @@ separately (PR #124), not part of that run.
   is racing that bump: it passes only when the poll samples before the scan lands (fast
   machine → red, slower CI → green). That was the whole `verify-wallet-switch` flake, not the
   sleeps; assert on a value that identifies the wallet (its balance) instead. Fixed 2026-07-27.
+- **…and it now rotates MID-SESSION too**: the money poll re-arms the scan when a payment lands
+  at or past `wallet.index`, so a driver that funds the address it is currently showing must
+  expect `w-address`/`w-path` to advance one index within ~8 s. Fund, then wait on the path you
+  expect — never on the address staying put.
 - Wallet-switcher rows: select by identity (`.wal-row` with/without `.wal-check` = active),
   never `[data-switch]`/`[data-manage]` index — list order is creation order today, but no
   assertion should depend on it.
