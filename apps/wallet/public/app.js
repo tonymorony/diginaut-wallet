@@ -19,6 +19,7 @@ import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { MINT_FREEZE_EXPLANATION } from '/dderrors.js';
 import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/broadcastlog.js';
 import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
+import { pickDgbCoin } from '/coinpick.js';
 import { ensurePersistence, readPersistence, persistenceCopy, markHadVault, clearHadVault, hadVault } from '/persistence.js';
 import { NET_TIMEOUT_MS, isTimeoutError, timeoutMessage } from '/nettimeout.js';
 import {
@@ -2904,20 +2905,6 @@ async function spendableUtxos() {
   return perAddr.flat();
 }
 
-/** The single DGB coin that pays a DigiDollar transaction's DGB side — the fee
- * on a transfer or a redemption, the whole funding on a mint. Tiered: a
- * key-path P2TR coin on the preferred key first (Core's own anatomy, cheapest
- * witness), then any P2TR coin in the wallet, then a P2WPKH twin — mint change
- * (#38), which the builders sign per BIP-143. Smallest sufficient coin wins, so
- * a large one stays whole. Undefined when no single coin covers `minSats`. */
-function pickDgbCoin(utxos, minSats, preferKeyHex) {
-  const enough = utxos.filter((u) => u.valueSats >= minSats).sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1));
-  const taproot = enough.filter((u) => u.type !== 'p2wpkh');
-  return taproot.find((u) => u.privKeyHex === preferKeyHex)
-    ?? taproot[0]
-    ?? enough.find((u) => u.type === 'p2wpkh');
-}
-
 let pendingSend = null; // { plan, recipientScriptHex, amountSats, address } while confirming
 
 function resetSend() {
@@ -3243,7 +3230,7 @@ async function openConsolidateModal() {
     // address any more. Defensive — the offer is only revealed by a
     // fragmentation error, which needs two coins to fire.
     if (spendable.length === 1) {
-      throw new Error('your DGB is already a single coin — consolidating would only pay a fee');
+      throw new Error('you have only one confirmed DGB coin — consolidating would only pay a fee');
     }
     const plan = planMaxSpend({ utxos: spendable, recipientScriptHex: scriptPubKeyFromAddress(toAddress) });
     pendingConsolidate = { plan, toAddress };
@@ -3403,7 +3390,7 @@ $('w-mint-review').addEventListener('click', (e) =>
       // fragmented (not insufficient) funds are fixable by the guided
       // consolidation — the flag reveals the "Consolidate coins" offer (#103)
       throw totalSats >= needSats
-        ? fragmentationError(`your balance covers it, but no single coin is large enough (a mint spends one coin). Send ${fmtSats(needSats)} DGB to your own address to consolidate, then retry.`)
+        ? fragmentationError('your balance covers it, but no single coin is large enough (a mint spends one coin). Consolidate coins below, then retry.')
         : new Error(`insufficient funds: this mint needs ${fmtSats(needSats)} DGB (collateral + fee), you have ${fmtSats(totalSats)} DGB`);
     }
     const { blocks: tipHeight } = await rpc('getblockchaininfo');
@@ -3542,12 +3529,17 @@ $('w-tr-review').addEventListener('click', (e) =>
     const dgbCoins = await spendableUtxos();
     const feeUtxo = pickDgbCoin(dgbCoins, TRANSFER_FEE_SATS, ddUtxo.privKeyHex);
     if (!feeUtxo) {
-      const dgbTotal = dgbCoins.reduce((s, u) => s + u.valueSats, 0n);
+      // Confirmed, positive-value coins ONLY — the same set openConsolidateModal
+      // plans over. Totalling the raw list would promise a merge the modal then
+      // refuses (pending coins), and would count value-0 DD tokens as DGB.
+      const dgbTotal = dgbCoins.filter((u) => u.height > 0 && u.valueSats > 0n).reduce((s, u) => s + u.valueSats, 0n);
       // fragmented, not empty: consolidation merges every coin into one, which
       // is exactly what a one-coin fee needs — the flag reveals the offer (#103)
       throw dgbTotal >= TRANSFER_FEE_SATS
-        ? fragmentationError(`your DGB covers the ${fmtSats(TRANSFER_FEE_SATS)} DGB fee, but no single coin does (a transfer pays the fee from one coin). Consolidate your coins, then retry.`)
-        : new Error(`not enough DGB for the fee: a transfer costs ${fmtSats(TRANSFER_FEE_SATS)} DGB and you hold ${fmtSats(dgbTotal)} DGB. Send DGB to any of your addresses, then retry.`);
+        ? fragmentationError(`your DGB covers the ${fmtSats(TRANSFER_FEE_SATS)} DGB fee, but no single coin does (a transfer pays the fee from one coin). Consolidate coins below, then retry.`)
+        // satsToDgb, not fmtSats: fmtSats rounds to 2 decimals, so a holding of
+        // 0.119 DGB would print as "you hold 0.12 DGB" — the fee, over a refusal.
+        : new Error(`not enough DGB for the fee: a transfer costs ${fmtSats(TRANSFER_FEE_SATS)} DGB and you hold ${satsToDgb(dgbTotal)} DGB. Send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to one of your addresses in a single payment, then retry.`);
     }
     pendingTransfer = { ddUtxo, feeUtxo, cents, outputKeyHex: decoded.outputKeyHex, address };
     $('w-tr-c-to').textContent = address;
@@ -3633,10 +3625,11 @@ $('w-positions').addEventListener('click', (e) => {
     const dgbCoins = await spendableUtxos();
     const feeUtxo = pickDgbCoin(dgbCoins, REDEEM_FEE_SATS, burn[0].privKeyHex);
     if (!feeUtxo) {
-      const dgbTotal = dgbCoins.reduce((s, u) => s + u.valueSats, 0n);
+      // confirmed, positive-value only — same reasoning as the transfer gate
+      const dgbTotal = dgbCoins.filter((u) => u.height > 0 && u.valueSats > 0n).reduce((s, u) => s + u.valueSats, 0n);
       throw dgbTotal >= REDEEM_FEE_SATS
-        ? fragmentationError(`your DGB covers the ${fmtSats(REDEEM_FEE_SATS)} DGB fee, but no single coin does (a redemption pays the fee from one coin). Consolidate your coins, then retry.`)
-        : new Error(`not enough DGB for the fee: a redemption costs ${fmtSats(REDEEM_FEE_SATS)} DGB and you hold ${fmtSats(dgbTotal)} DGB. Send DGB to any of your addresses, then retry.`);
+        ? fragmentationError(`your DGB covers the ${fmtSats(REDEEM_FEE_SATS)} DGB fee, but no single coin does (a redemption pays the fee from one coin). Consolidate coins below, then retry.`)
+        : new Error(`not enough DGB for the fee: a redemption costs ${fmtSats(REDEEM_FEE_SATS)} DGB and you hold ${satsToDgb(dgbTotal)} DGB. Send at least ${fmtSats(REDEEM_FEE_SATS)} DGB to one of your addresses in a single payment, then retry.`);
     }
     pendingRedeem = { position: p, ddUtxos: burn, feeUtxo };
     $('w-rd-c-txid').textContent = p.txid.slice(0, 12) + '…';

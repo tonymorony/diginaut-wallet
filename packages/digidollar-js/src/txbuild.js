@@ -118,6 +118,21 @@ function taprootSighash({ version, locktime, inputs, outputs, inputIndex, leafHa
 }
 
 /**
+ * TEST SEAM (deep import only — see below). The BIP-341 key-path sighash a
+ * signed leg commits to, so a test can `schnorr.verify` that leg against the
+ * key it is supposed to belong to. Nothing else can: a key-path P2TR witness
+ * is a bare 64-byte signature, the input scriptPubKey never reaches the wire
+ * (empty scriptSig), and the transaction body is byte-identical whichever key
+ * signed — so the borrowed-key fee leg is otherwise unverifiable.
+ * Deliberately NOT re-exported from index.js: the package's public surface is
+ * index.js alone (package.json `exports`), so this is reachable only from
+ * inside the package, the way hd.test.js imports `../src/hd.js`. Keeping the
+ * sighash out of the public API is a standing seam decision (#147).
+ */
+export const keyPathSighashForTest = ({ version, locktime, inputs, outputs, inputIndex }) =>
+  taprootSighash({ version, locktime, inputs, outputs, inputIndex });
+
+/**
  * BIP-143 sighash (SIGHASH_ALL, no anyonecanpay) for a P2WPKH input. The
  * scriptCode is the implied P2PKH script of the hash160 embedded in the
  * input's witness program (scriptPubKey = 0014<hash160>).
@@ -392,7 +407,10 @@ export function buildSignedRedeemTx({
   const feeInputIndex = 1 + ddUtxos.length;
   const feeInput = inputs[feeInputIndex];
   if (feeInput?.txidHex !== feeUtxo.txidHex || feeInput.vout !== feeUtxo.vout) {
-    throw new RangeError('redeem input order does not put the fee coin where the signer expects it');
+    // Reaches the UI verbatim (the wallet renders e.message into the redemption
+    // error area), so it says what happened to the user's money, not which
+    // internal invariant tripped.
+    throw new RangeError('redemption inputs are in the wrong order — nothing was signed or broadcast');
   }
   const outputs = buildRedeemOutputs({
     collateralReturnSats: collateralUtxo.valueSats,
