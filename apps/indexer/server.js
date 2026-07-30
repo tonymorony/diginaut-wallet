@@ -12,6 +12,11 @@ import { pathToFileURL } from 'node:url';
 import { decodeWitnessAddress, parseDDVersion, parseMintMetadata, parseTransferMetadata, parseRedeemMetadata, ddTokenOutputKey, LOCK_TIERS } from 'digidollar-js';
 
 export function configFromEnv() {
+  // Validated rather than `|| default` like the knobs below, because 0 is
+  // meaningful here: it is the cache's kill switch (every get misses), which an
+  // operator triaging a staleness report needs without a code change. PORT=0
+  // and TTL=0 do not mean the same kind of thing.
+  const ttl = Number(process.env.TX_CACHE_TTL_MS);
   return {
     port: Number(process.env.PORT) || 8789,
     hrp: process.env.DGB_HRP || 'dgbt', // dgb | dgbt | dgbrt
@@ -23,7 +28,7 @@ export function configFromEnv() {
     // Well under DigiByte's 15s block time on purpose: at a block-length TTL
     // the wallet's 8s poll could show a pending tx as pending for a whole
     // extra block after it was mined.
-    txCacheTtlMs: Number(process.env.TX_CACHE_TTL_MS) || 5_000,
+    txCacheTtlMs: Number.isFinite(ttl) && ttl >= 0 ? ttl : 5_000,
   };
 }
 
@@ -41,12 +46,12 @@ export class ElectrumClient {
     this.sock = null;
     this.nextId = 1;
     this.pending = new Map();
-    // Frame assembly keeps the RAW chunks and resumes the '\n' search where
-    // the last pass stopped (see #onData) — no chunk is ever scanned twice.
+    // Frame assembly keeps the RAW chunks and resumes the '\n' search at the
+    // first chunk the last pass had not reached (see #onData) — chunk
+    // granularity, but no chunk is ever scanned twice.
     this.chunks = [];
     this.chunksLength = 0;
-    this.scanChunk = 0;  // first chunk not yet fully scanned for '\n'
-    this.scanOffset = 0; // byte offset in that chunk where scanning resumes
+    this.scanChunk = 0; // first chunk not yet scanned for '\n'
   }
 
   connect() {
@@ -94,7 +99,6 @@ export class ElectrumClient {
     this.chunks = [];
     this.chunksLength = 0;
     this.scanChunk = 0;
-    this.scanOffset = 0;
   }
 
   #onData(d) {
@@ -119,18 +123,26 @@ export class ElectrumClient {
       const err = new Error('electrum response exceeded frame limit');
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
-      this.sock?.destroy();
+      const dead = this.sock;
+      // Forget the socket BEFORE destroying it. 'close' is async, and until it
+      // fires `connect()` would hand the next caller `this.ready` — already
+      // resolved, for a corpse — and #send would write to it (ERR_STREAM_
+      // DESTROYED, a confusing transport error and one more failed money read).
+      // Nulling here also makes fail()'s identity guard no-op the late 'close'.
+      this.sock = null;
+      dead?.destroy();
       return;
     }
     for (;;) {
-      // Find the next '\n', resuming where the previous pass gave up.
+      // Find the next '\n', resuming at the first chunk the previous pass had
+      // not reached. A chunk with no newline is frame-interior, so advancing
+      // past it is exactly-once: nothing before scanChunk can hold a newline.
       let nlChunk = -1;
       let nlPos = -1;
       for (let i = this.scanChunk; i < this.chunks.length; i++) {
-        const p = this.chunks[i].indexOf(0x0a, i === this.scanChunk ? this.scanOffset : 0);
+        const p = this.chunks[i].indexOf(0x0a);
         if (p >= 0) { nlChunk = i; nlPos = p; break; }
         this.scanChunk = i + 1;
-        this.scanOffset = 0;
       }
       if (nlChunk < 0) return;
       // Assemble the completed frame ONCE and drop the bytes it consumed. What
@@ -141,7 +153,6 @@ export class ElectrumClient {
       this.chunks = rest.length ? [rest, ...this.chunks.slice(nlChunk + 1)] : this.chunks.slice(nlChunk + 1);
       this.chunksLength -= frame.length + 1; // the frame plus its newline
       this.scanChunk = 0;
-      this.scanOffset = 0;
       const line = frame.toString('utf8');
       if (!line.trim()) continue;
       let msg;
