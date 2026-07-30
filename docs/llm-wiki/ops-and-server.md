@@ -60,10 +60,13 @@ server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
 - Faucet test-reset: `docker exec deploy-faucet-1 rm /data/faucet-claims.json` + compose
   restart faucet (claims are one-per-IP-per-24h). Top-up: server-side mine script.
 - Triage the indexer with `/api/tx/<unknown txid>` and read the body's **`cause`** (never the
-  copy — upstream text is no longer relayed at all): **404 `not found`** = trio healthy (the
-  probe reached ElectrumX and came back); 502 `upstream-error` = backend up but answering
-  errors (still syncing, node warming); 502 `upstream-unreachable` = the link is actually
-  down; the wallet proxy's own `indexer-unreachable`/`faucet-unreachable` = that hop failed.
+  copy — upstream text is no longer relayed at all): **404 `tx-not-found`** = trio healthy AND
+  the node's index is usable (the probe reached ElectrumX, reached the node and came back with
+  a real answer); 502 `upstream-error` = the backend answered, but with an error — daemon
+  warming, txindex off or still building, ElectrumX busy; 502 `upstream-unreachable` = the link
+  is actually down; the wallet proxy's own `indexer-unreachable`/`faucet-unreachable` = that
+  hop failed. All three verdicts are reachable through this one probe, so a warming node can
+  no longer read as healthy.
   Real errors: `docker logs deploy-indexer-1` / `deploy-wallet-1` (`indexer: …` / `wallet: …`).
   Before this pass the probe answered 502 with a raw `daemon-error`/`ECONNREFUSED` repr and no
   `cause` — a not-yet-redeployed container still does.

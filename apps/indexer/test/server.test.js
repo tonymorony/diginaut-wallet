@@ -35,7 +35,10 @@ function fakeElectrum(handlers) {
         try {
           reply = { id: msg.id, jsonrpc: '2.0', result: impl(msg.params) };
         } catch (e) {
-          reply = { id: msg.id, jsonrpc: '2.0', error: { code: 1, message: e.message } };
+          // code 1 is what ElectrumX sends for a relayed daemon error (the
+          // daemon's own code lives inside the message); `rpcCode` on the thrown
+          // error models a backend that surfaces the daemon code directly.
+          reply = { id: msg.id, jsonrpc: '2.0', error: { code: e.rpcCode ?? 1, message: e.message } };
         }
         sock.write(JSON.stringify(reply) + '\n');
       }
@@ -656,8 +659,10 @@ const ERRORING_BACKEND = {
   'blockchain.headers.subscribe': () => { throw new Error('daemon error: DaemonError({\'code\': -28, \'message\': \'Verifying blocks...\'})'); },
   'blockchain.scripthash.listunspent': () => { throw new Error('electrum server 127.0.0.1:50001 could not read scripthash from mempool'); },
   'blockchain.scripthash.get_history': () => { throw new Error('daemon error: txindex not enabled'); },
+  // Core's wording verbatim (src/rpc/rawtransaction.cpp:379-381) as ElectrumX
+  // relays it: its own error, code 1, message = the Python DaemonError repr.
   'blockchain.transaction.get': () => {
-    throw new Error('daemon error: DaemonError({\'code\': -5, \'message\': \'No such mempool or blockchain transaction. Use -txindex\'})');
+    throw new Error('daemon error: DaemonError({\'code\': -5, \'message\': \'No such mempool or blockchain transaction. Use gettransaction for wallet transactions.\'})');
   },
 };
 
@@ -673,14 +678,96 @@ test('backend answers with an error → 502 cause upstream-error; the repr never
   }, ERRORING_BACKEND);
 });
 
-test('unknown txid → 404 not found, not a 502 carrying the DaemonError repr', async () => {
+test('unknown txid → 404 tx-not-found, not a 502 carrying the DaemonError repr', async () => {
   await withIndexer(async (base) => {
     const res = await fetch(`${base}/api/tx/${'0'.repeat(64)}`);
     assert.equal(res.status, 404);
     const text = await res.text();
-    assert.deepEqual(JSON.parse(text), { error: 'not found' });
+    // `cause` is what the wallet's recovery card reads to say "it never reached
+    // the network" — the unrouted-path 404 below carries none, so the two 404s
+    // are distinguishable even though their copy is identical.
+    assert.deepEqual(JSON.parse(text), { error: 'not found', cause: 'tx-not-found' });
     assertNoFingerprint(text, 'unknown txid');
+
+    const unrouted = await fetch(`${base}/api/nope`);
+    assert.equal(unrouted.status, 404);
+    assert.deepEqual(await unrouted.json(), { error: 'not found' });
   }, ERRORING_BACKEND);
+});
+
+// The 404 is the ONLY answer the wallet turns into "it never reached the
+// network — Rebroadcast is safe", so it has to mean exactly that. Every other
+// RPC error on this route is an outage verdict: mapping them all to 404 told an
+// operator probing /api/tx that a warming backend was healthy (ops table), and
+// would invite a second spend of coins the chain already holds.
+// The last two carry Core's -5 as well (rpcCode, i.e. a backend that surfaces
+// the daemon code directly): a node that cannot see CONFIRMED transactions at
+// all answers "No such mempool transaction…" for one that is on chain
+// (src/rpc/rawtransaction.cpp:375/377). Same code, opposite money verdict — so
+// the code alone must not be enough to earn the 404.
+const NOT_A_MISSING_TX = {
+  'daemon still warming': { message: 'daemon error: DaemonError({\'code\': -28, \'message\': \'Verifying blocks...\'})' },
+  'backend overloaded': { message: 'server busy - request timed out' },
+  'txindex off': {
+    rpcCode: -5,
+    message: 'No such mempool transaction. Use -txindex or provide a block hash to enable blockchain transaction queries. Use gettransaction for wallet transactions.',
+  },
+  'txindex still building': {
+    rpcCode: -5,
+    message: 'No such mempool transaction. Blockchain transactions are still in the process of being indexed. Use gettransaction for wallet transactions.',
+  },
+};
+
+test('an RPC error that is NOT "no such transaction" → 502 upstream-error, never 404', async () => {
+  for (const [what, { message, rpcCode }] of Object.entries(NOT_A_MISSING_TX)) {
+    await withIndexer(async (base) => {
+      const res = await fetch(`${base}/api/tx/${'0'.repeat(64)}`);
+      assert.equal(res.status, 502, what);
+      const text = await res.text();
+      assert.deepEqual(JSON.parse(text), { error: 'the balance index is unavailable', cause: 'upstream-error' }, what);
+      assertNoFingerprint(text, what);
+    }, {
+      'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+      'blockchain.transaction.get': () => { const e = new Error(message); if (rpcCode !== undefined) e.rpcCode = rpcCode; throw e; },
+    });
+  }
+});
+
+test('a backend that answers Core’s -5 code without the text still reads as tx-not-found', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/tx/${'0'.repeat(64)}`);
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: 'not found', cause: 'tx-not-found' });
+  }, {
+    'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+    'blockchain.transaction.get': () => {
+      const e = new Error('invalid parameter'); // no "no such … transaction" wording
+      e.rpcCode = -5;
+      throw e;
+    },
+  });
+});
+
+test('the tx exists but a PREVOUT lookup fails → 502, never "not found" about a real tx', async () => {
+  const REAL = '44'.repeat(32);
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/tx/${REAL}`);
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: 'the balance index is unavailable', cause: 'upstream-error' });
+  }, {
+    'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+    'blockchain.transaction.get': (params) => {
+      if (params[0] === REAL) {
+        return { txid: REAL, version: 2, confirmations: 3, blocktime: 1_720_000_000,
+          vin: [{ txid: '33'.repeat(32), vout: 0 }],
+          vout: [{ n: 0, value: 1, scriptPubKey: { address: 'dgbrt1qrecv00000000000000000000000000recv0', hex: '0014' } }] };
+      }
+      // the PREVOUT is the one the chain has never seen — the strongest
+      // "no such transaction" there is, and it still says nothing about the
+      // transaction the caller actually asked for
+      throw new Error('daemon error: DaemonError({\'code\': -5, \'message\': \'No such mempool or blockchain transaction. Use gettransaction for wallet transactions.\'})');
+    },
+  });
 });
 
 // An unthrottled proxy in front of ElectrumX, with no auth of its own: the

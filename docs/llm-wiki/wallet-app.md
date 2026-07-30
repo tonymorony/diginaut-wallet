@@ -26,7 +26,8 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   the header dot's failed-poll debounce), `dderrors.js`
   (consensus reject → friendly copy; spend/conflict families + `isAlreadyBroadcast`),
   `dca.js` (multiplier → BigInt bps), `autolock.js` (default 5 min; **absent ≠ 0/"Never"**),
-  `broadcastlog.js` (pre-broadcast journal + local txid + FAIL-AMBIGUOUS classifier),
+  `broadcastlog.js` (pre-broadcast journal + local txid + FAIL-AMBIGUOUS classifier +
+  `isTxUnknownToIndexer`, the "Check status" verdict),
   `nettimeout.js` (per-path fetch budgets > server's upstream budgets), `validate.js`
   (indexer JSON: strict for signer inputs, tolerant for display), `persistence.js`
   (storage.persist probe/request + `diginaut.hadVault` tombstone).
@@ -119,6 +120,14 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   raw transaction are the only users of, for a tx that may be in flight), a **resolved** row —
   `rec === null`, record already gone — says *Dismiss*, which is then true. Don't collapse the
   two back into one word.
+- **"Check status" verdict**: the card's `recCheck` handler asks `/api/indexer/tx/:txid`, and
+  `isTxUnknownToIndexer(err)` (broadcastlog.js) decides whether the answer earns *"never
+  reached the network — Rebroadcast is safe"*. It reads the **`cause` token first**
+  (`tx-not-found`; any other token is an outage and keeps the record) and only falls back to
+  the old relayed text for a server that predates the token. A copy-only match is what broke
+  it once already: the indexer's unknown-txid answer moved from ElectrumX's
+  `No such mempool or blockchain transaction…` to `404 not found`, and the verdict went
+  unreachable with no test to notice.
 - **Cross-module copy contract**: `SERVER_REFUSALS` in `broadcastlog.js` string-matches the
   proxy's own 413/`request body too large` and 429/`too many requests — ` (the only refusals
   it cannot detect structurally). `server.test.js` feeds the live response through
@@ -293,11 +302,11 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-17 unit suites (**222 tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server
-(CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity,
-keystore, icon-sprite, netchrome (incl. `backupSkipAllowed` + `foldNetHealth`),
-dderrors (incl. spend/conflict families), dca, autolock, connect
-(protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate
+17 unit suites (**PENDING tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
+guard/rate-limits/HSTS/CRLF-hash/static-ETag), vault, vendor-integrity, keystore, netchrome
+(incl. `backupSkipAllowed` + `foldNetHealth`), dderrors (incl. spend/conflict families), dca,
+autolock, connect (protocol pins), broadcastlog (txid vs Core fixtures, classifier,
+`isTxUnknownToIndexer`), icon-sprite, nettimeout, validate
 (strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
 export→wipe→restore), driver-paths (Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.

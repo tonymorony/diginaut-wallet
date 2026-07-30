@@ -12,13 +12,24 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
   `/api/health` (tip height).
 - **Error bodies never carry upstream text** (it names ElectrumX/host:port/DaemonError grammar
   to unauthenticated callers). Errors are tagged where they arise (`err.upstream`,
-  `err.electrumRpc`), logged via `console.error('indexer:', err)`, then answered as
-  `{error, cause}` — `error` is copy, **`cause` is the machine token**: 502
+  `err.electrumRpc`, `err.electrumRpcCode`), logged via `console.error('indexer:', err)`, then
+  answered as `{error, cause}` — `error` is copy, **`cause` is the machine token**: 502
   `upstream-unreachable` (transport) · 502 `upstream-error` (backend answered with an error)
-  · 500 `internal` (untagged = our own defect). Unknown txid on `/api/tx` → **404
-  `not found`** (that route alone reads an upstream RPC error as "no such tx"). Readers of
-  `cause`: `public/app.js` (`err.indexerCause` → "still syncing" copy),
-  `verify-dual-public.mjs`, `verify-mainnet-live.mjs`.
+  · 500 `internal` (untagged = our own defect) · 404 `tx-not-found` on `/api/tx` only.
+  Readers of `cause`: `public/app.js` (`err.indexerCause` → "still syncing" copy, gated on the
+  upstream/unreachable tokens), `public/broadcastlog.js` `isTxUnknownToIndexer` (the recovery
+  card's "Rebroadcast is safe" verdict), `verify-dual-public.mjs`, `verify-mainnet-live.mjs`.
+- **`tx-not-found` is scoped to the REQUESTED txid** — the route does that first
+  `blockchain.transaction.get` itself and only its failure can 404; `enrichTx`'s prevout
+  lookups (and every other RPC error) fall through to `upstream-error`. It is also scoped to
+  the errors that mean it: Core answers **-5** for four different things
+  (`src/rpc/rawtransaction.cpp:373-381`) and two of them — `Use -txindex …` and
+  `… still in the process of being indexed` — mean the node cannot see CONFIRMED transactions
+  at all, so the tx may well be on chain. Those stay `upstream-error`. ElectrumX relays the
+  daemon error inside its OWN error (code 1, message = Python `DaemonError` repr), which is
+  why the text is matched as well as the code. The wallet turns this 404 into
+  "it never reached the network — Rebroadcast is safe", so widening it is a money-safety
+  regression, not a copy change.
 - ElectrumX transport: raw TCP JSON-RPC; `server.version` handshake happens on every
   (re)connect — ElectrumX ≥1.4 kills connections whose first message is anything else.
   16 MiB frame cap; malformed lines skipped.

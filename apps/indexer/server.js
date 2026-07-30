@@ -49,10 +49,15 @@ const MAX_ELECTRUM_FRAME = 16 * 1024 * 1024;
 // the backend, its host:port and its error grammar to unauthenticated callers,
 // so they are logged and dropped. `upstream` = a backend problem either way;
 // `electrumRpc` narrows it to "the backend answered, with an error" — the only
-// signal that distinguishes a healthy link from a dead one once the text is gone.
-function tagUpstream(err, { rpc = false } = {}) {
+// signal that distinguishes a healthy link from a dead one once the text is
+// gone; `electrumRpcCode` carries the JSON-RPC code the backend sent, because
+// "no such transaction" is an ANSWER and every other RPC error is an outage.
+function tagUpstream(err, { rpc = false, code } = {}) {
   err.upstream = true;
-  if (rpc) err.electrumRpc = true;
+  if (rpc) {
+    err.electrumRpc = true;
+    if (code !== undefined) err.electrumRpcCode = code;
+  }
   return err;
 }
 
@@ -185,7 +190,7 @@ export class ElectrumClient {
       if (!entry) continue; // subscription notification — not used yet
       this.pending.delete(msg.id);
       msg.error
-        ? entry.reject(tagUpstream(new Error(msg.error.message || JSON.stringify(msg.error)), { rpc: true }))
+        ? entry.reject(tagUpstream(new Error(msg.error.message || JSON.stringify(msg.error)), { rpc: true, code: msg.error.code }))
         : entry.resolve(msg.result);
     }
   }
@@ -334,8 +339,10 @@ function spkAddress(spk) {
 // Core reports values as float DGB; sats is the integer we settle in.
 const valueToSats = (v) => BigInt(Math.round(v * 1e8));
 
-async function enrichTx(getTx, txid) {
-  const tx = await getTx(txid);
+// `tx` is the ALREADY-FETCHED verbose tx: the route does that first lookup
+// itself, because it is the only one whose failure can mean "no such
+// transaction" — the prevout lookups below are about other transactions.
+async function enrichTx(getTx, tx) {
   const type = parseDDVersion(tx.version).type || 'dgb';
   const ddMap = ddAmountsByVout(tx); // vout.n → DD cents (null for a plain DGB tx)
   const vout = tx.vout.map((o) => ({
@@ -377,6 +384,27 @@ async function enrichTx(getTx, txid) {
     vout,
   };
 }
+
+// The one upstream error that is an ANSWER rather than an outage: the chain has
+// never seen this txid. Core's getrawtransaction answers RPC code -5
+// (RPC_INVALID_ADDRESS_OR_KEY) in four shapes (src/rpc/rawtransaction.cpp:373-381),
+// and only two of them are that answer — the other two say the node cannot see
+// CONFIRMED transactions at all (txindex off, or still building), so the
+// transaction asked about may well be on chain. Those are a warming backend and
+// take the `upstream-error` path with everything else; the wallet turns this
+// 404 into "Rebroadcast is safe", so it must never cover them.
+// ElectrumX normally relays the daemon's error inside its OWN error (code 1)
+// whose message is a Python DaemonError repr, hence matching the text as well
+// as the code. Classifying HERE is fine — it is RELAYING upstream text that
+// leaks the backend to unauthenticated callers (#55).
+const NO_SUCH_TX = /no such (mempool or blockchain transaction|transaction found in the provided block)/i;
+const INDEX_NOT_READY = /use -txindex|still in the process of being indexed/i;
+const isTxUnknown = (err) => {
+  const message = String(err?.message ?? '');
+  return Boolean(err?.electrumRpc)
+    && (err.electrumRpcCode === -5 || NO_SUCH_TX.test(message))
+    && !INDEX_NOT_READY.test(message);
+};
 
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
@@ -435,23 +463,29 @@ export function startServer(overrides = {}) {
       }
       const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
       if (req.method === 'GET' && txMatch) {
+        let tx;
         try {
-          return sendJson(res, 200, await enrichTx(txCache.get, txMatch[1]));
+          // Through the cache on purpose: it memoizes the PROMISE, so a tagged
+          // rejection reaches every caller and the failure self-evicts —
+          // nothing caches the 404 — while a hot txid still costs one upstream
+          // read across positions/dd-utxos/tx.
+          tx = await txCache.get(txMatch[1]);
         } catch (err) {
-          // An unknown txid makes ElectrumX answer an RPC error whose message is
-          // its Python DaemonError repr. Only THIS route reads that as 404: on a
-          // tx lookup "the backend answered with an error" means no such tx —
-          // the caller's answer, not an outage. Transport failures still fall
-          // through to the classifier below, which is what tells an operator
-          // "the link is down" apart from "the trio is healthy" (ops wiki).
-          // (The cache memoizes the PROMISE, so a tagged rejection reaches every
-          // caller and the failure self-evicts — nothing caches the 404.)
-          if (err?.electrumRpc) {
+          // 404 is scoped to the REQUESTED txid, and to the errors that actually
+          // say "no such transaction", so the copy is true by construction. The
+          // wallet's recovery card reads this answer as "it never reached the
+          // network — rebroadcasting is safe" (app.js), so a warming daemon, a
+          // txindex problem or a failed PREVOUT lookup inside enrichTx must
+          // never land here: they fall through to `upstream-error`, which
+          // claims nothing about the transaction. That also keeps the ops
+          // triage probe honest (ops-and-server.md).
+          if (isTxUnknown(err)) {
             console.error('indexer: tx lookup:', err.message);
-            return sendJson(res, 404, { error: 'not found' });
+            return sendJson(res, 404, { error: 'not found', cause: 'tx-not-found' });
           }
           throw err;
         }
+        return sendJson(res, 200, await enrichTx(txCache.get, tx));
       }
       if (req.method === 'GET' && req.url === '/api/health') {
         const tip = await withElectrum('blockchain.headers.subscribe', []);

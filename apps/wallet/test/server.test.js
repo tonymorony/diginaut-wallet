@@ -990,6 +990,39 @@ test('an unreachable indexer answers a fixed body — never the upstream address
   });
 });
 
+// ---- The indexer's verdict survives the proxy hop ----
+// The browser never talks to the indexer directly, so `cause` is only a contract
+// if this hop forwards it untouched. The recovery card turns `tx-not-found` into
+// "it never reached the network — Rebroadcast is safe" and everything else into
+// "keep the record": a proxy that dropped or rewrote the token would silently
+// swap one for the other, and the server-side tests could not see it.
+test('an indexer {error, cause} reaches the browser byte-identical, 502 and 404 alike', async () => {
+  const { createServer } = await import('node:http');
+  const ANSWERS = {
+    [`/api/tx/${'0'.repeat(64)}`]: [404, { error: 'not found', cause: 'tx-not-found' }],
+    [`/api/tx/${'1'.repeat(64)}`]: [502, { error: 'the balance index is unavailable', cause: 'upstream-error' }],
+    ['/api/address/dgbrt1qfoo/utxos']: [500, { error: 'the balance index hit an unexpected error', cause: 'internal' }],
+  };
+  const indexer = createServer((req, res) => {
+    const [status, body] = ANSWERS[req.url];
+    const data = JSON.stringify(body);
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
+    res.end(data);
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  try {
+    await withConfiguredServer({ indexerUrl: `http://127.0.0.1:${indexer.address().port}` }, async (base) => {
+      for (const [path, [status, body]] of Object.entries(ANSWERS)) {
+        const res = await fetch(base + '/api/indexer' + path.slice('/api'.length));
+        assert.equal(res.status, status, path);
+        assert.equal(await res.text(), JSON.stringify(body), `${path} forwarded verbatim`);
+      }
+    });
+  } finally {
+    indexer.close();
+  }
+});
+
 test('an unreachable faucet answers a fixed body — never the upstream address', async () => {
   await withConfiguredServer({ faucetUrl: 'http://127.0.0.1:1' }, async (base) => {
     const res = await fetch(base + '/api/faucet/claim', {

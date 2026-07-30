@@ -7,12 +7,14 @@
 //                              failure has to degrade the trace, not the send.
 //   classifyBroadcastError   — must fail AMBIGUOUS. Getting this backwards
 //                              reintroduces the finding while looking fixed.
+//   isTxUnknownToIndexer     — the "Check status" verdict. True must mean the
+//                              chain has never seen it; an outage must not.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { planSpend, buildSignedSpendTx } from 'digidollar-js';
 import {
-  txidFromSignedHex, createBroadcastLog, classifyBroadcastError, BROADCAST_LOG_KEY,
+  txidFromSignedHex, createBroadcastLog, classifyBroadcastError, isTxUnknownToIndexer, BROADCAST_LOG_KEY,
 } from '../public/broadcastlog.js';
 import { friendlyRejectError } from '../public/dderrors.js';
 
@@ -252,4 +254,40 @@ test('apiFetch’s transport flag is the PRIMARY signal, ahead of any text', () 
 test('an indexer-shape refusal is not a node verdict', () => {
   const e = Object.assign(new Error('indexer returned malformed data'), { indexerData: true });
   assert.equal(kindOf(e), 'ambiguous');
+});
+
+// ---- "Check status": has the chain ever seen this transaction? ----
+// This is the ONLY input to the recovery card's "it most likely never reached
+// the network — Rebroadcast is safe" verdict, so it must be true of nothing
+// else. fetchIndexer (app.js) builds these errors: message = the body's `error`
+// copy, `indexerCause` = its `cause` token when the server sent one.
+const fromBody = (body) => Object.assign(new Error(body.error), body.cause ? { indexerCause: body.cause } : {});
+
+test('only the tx-not-found token means the chain has never seen it', () => {
+  assert.equal(isTxUnknownToIndexer(fromBody({ error: 'not found', cause: 'tx-not-found' })), true);
+  // Same 404 copy, no token: the indexer's unrouted-path answer. It says
+  // nothing about a transaction, and the token is what tells them apart.
+  assert.equal(isTxUnknownToIndexer(fromBody({ error: 'not found' })), false);
+});
+
+test('an outage is never read as "never broadcast" — the tagged verdict wins over the copy', () => {
+  // A warming backend, a failed prevout lookup and a dead hop all land here.
+  // Reading any of them as "never broadcast" invites a second spend.
+  for (const cause of ['upstream-error', 'upstream-unreachable', 'indexer-unreachable', 'internal']) {
+    assert.equal(isTxUnknownToIndexer(fromBody({ error: 'the balance index is unavailable', cause })), false, cause);
+  }
+  assert.equal(isTxUnknownToIndexer(new Error('HTTP 502')), false);
+  assert.equal(isTxUnknownToIndexer(Object.assign(new Error('could not reach the balance index (Failed to fetch)'), { transport: 'network' })), false);
+  assert.equal(isTxUnknownToIndexer(undefined), false);
+});
+
+test('a server that predates the token still resolves, via its relayed text', () => {
+  // Before the `cause` contract an unknown txid arrived as ElectrumX's relayed
+  // DaemonError repr (Core's wording, src/rpc/rawtransaction.cpp:379).
+  assert.equal(isTxUnknownToIndexer(new Error(
+    'daemon error: DaemonError({\'code\': -5, \'message\': \'No such mempool or blockchain transaction. Use gettransaction for wallet transactions.\'})',
+  )), true);
+  // the driver fake-indexer's unrouted answer, and a 404 with no JSON body
+  assert.equal(isTxUnknownToIndexer(new Error('unknown path')), true);
+  assert.equal(isTxUnknownToIndexer(new Error('HTTP 404')), true);
 });

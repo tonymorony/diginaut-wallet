@@ -17,7 +17,7 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError, backupSkipAllowed, foldNetHealth } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { MINT_FREEZE_EXPLANATION } from '/dderrors.js';
-import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/broadcastlog.js';
+import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError, isTxUnknownToIndexer } from '/broadcastlog.js';
 import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
 import { pickDgbCoin } from '/coinpick.js';
 import { ensurePersistence, readPersistence, persistenceCopy, markHadVault, clearHadVault, hadVault } from '/persistence.js';
@@ -4012,7 +4012,10 @@ $('w-recovery-list').addEventListener('click', (e) => {
         // the verdict stays on screen until the user dismisses it.
         broadcastLog.drop(txid);
       } catch (err) {
-        if (/No such mempool or blockchain transaction|unknown path|HTTP 404/i.test(err.message)) {
+        // The `cause` token decides, the old text is only the fallback: an
+        // outage and "the chain never saw it" are opposite money verdicts, and
+        // the servers stopped relaying upstream text (broadcastlog.js).
+        if (isTxUnknownToIndexer(err)) {
           note('The indexer has never seen this transaction — it most likely never reached the network. Rebroadcast is safe.');
         } else {
           throw err; // a real indexer outage answers nothing — keep the record
