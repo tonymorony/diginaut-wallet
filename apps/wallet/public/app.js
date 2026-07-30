@@ -312,6 +312,36 @@ function renderNetDot() {
   $('net-dot').className = 'dot ' + (bad ? 'bad' : ok ? 'good' : 'warn');
 }
 
+// ---- "We've moved" notice (ADR 0006) ----
+// Diginaut's canonical addresses are diginaut.space / testnet.diginaut.space.
+// The two ludere.space hosts keep serving indefinitely and are NEVER redirected:
+// the vault is IndexedDB, which is origin-scoped, so a redirect would drop a
+// funded user onto an empty wallet at a domain their keys are not in. So the
+// only migration signal is this line, and it has to say what "per site" costs.
+// Dismiss is localStorage, not the vault — it is a UI preference, and it must
+// survive an erase-all-wallets as well as apply before any vault exists.
+const MOVE_NOTICE_KEY = 'diginaut.movedNotice';
+const LEGACY_HOST_NEW_HOME = {
+  'dgb.ludere.space': 'https://testnet.diginaut.space',
+  'diginaut.ludere.space': 'https://diginaut.space',
+};
+function renderMoveNotice() {
+  const target = LEGACY_HOST_NEW_HOME[globalThis.location?.hostname ?? ''];
+  if (!target) return; // canonical domain, localhost, or a self-host: nothing moved
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(MOVE_NOTICE_KEY) === '1'; } catch { /* show it */ }
+  if (dismissed) return;
+  const link = $('w-move-link');
+  link.href = target;
+  link.textContent = target.replace(/^https:\/\//, '');
+  $('w-move-note').style.display = 'block';
+}
+$('w-move-dismiss').addEventListener('click', () => {
+  $('w-move-note').style.display = 'none';
+  try { localStorage.setItem(MOVE_NOTICE_KEY, '1'); } catch { /* re-shows next load */ }
+});
+renderMoveNotice();
+
 // ---- Mainnet beta interstitial (#54/#63) ----
 // One-time BLOCKING ack on first mainnet use, persisted in localStorage.
 // Continue is the only way through; Cancel keeps the modal (and the wallet)
