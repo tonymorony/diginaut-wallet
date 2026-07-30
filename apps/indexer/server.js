@@ -19,6 +19,11 @@ export function configFromEnv() {
       host: process.env.ELECTRUM_HOST || '127.0.0.1',
       port: Number(process.env.ELECTRUM_PORT) || 50001,
     },
+    // How long the scan paths may reuse a verbose tx body (see createTxCache).
+    // Well under DigiByte's 15s block time on purpose: at a block-length TTL
+    // the wallet's 8s poll could show a pending tx as pending for a whole
+    // extra block after it was mined.
+    txCacheTtlMs: Number(process.env.TX_CACHE_TTL_MS) || 5_000,
   };
 }
 
@@ -160,6 +165,43 @@ export class ElectrumClient {
   }
 }
 
+// ---- Shared verbose-tx cache ----
+// scanPositions, scanDDUtxos and enrichTx all resolve the same verbose
+// blockchain.transaction.get bodies, and the wallet re-polls every 8s — three
+// overlapping paths that memoized nothing, or memoized only within one call.
+// A tx body is immutable, so the only field that can go stale inside the TTL
+// is `confirmations`.
+//
+// Money safety: nothing that decides spendability is cached. The
+// collateral-unspent check in scanPositions and every UTXO set the wallet
+// spends from come from blockchain.scripthash.listunspent, which is never
+// memoized — same for get_history and headers.subscribe.
+const TX_CACHE_MAX = 500;
+
+/**
+ * Build a verbose-tx memo. Scoped to ONE server instance, never module-global:
+ * the test suite boots many servers in a single process, and shared state
+ * there makes tests order-dependent.
+ */
+export function createTxCache(withElectrum, ttlMs) {
+  const entries = new Map(); // txid → { at, promise }; iterates in insertion order
+  const get = (txid) => {
+    const hit = entries.get(txid);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+    // Memoize the PROMISE, not the result: callers that overlap on the same
+    // txid then share one upstream call instead of racing to make their own.
+    const promise = withElectrum('blockchain.transaction.get', [txid, true]);
+    entries.delete(txid); // re-insert at the tail so eviction stays insertion-ordered
+    entries.set(txid, { at: Date.now(), promise });
+    if (entries.size > TX_CACHE_MAX) entries.delete(entries.keys().next().value);
+    // A failed call must not be cached for the whole TTL — one ElectrumX blip
+    // would otherwise be replayed to every caller until it expired.
+    promise.catch(() => { if (entries.get(txid)?.promise === promise) entries.delete(txid); });
+    return promise;
+  };
+  return { get, entries };
+}
+
 /** Electrum scripthash: reversed sha256 of the scriptPubKey (segwit v0/v1). */
 export function addressToScripthash(address, expectedHrp) {
   const { hrp, version, programHex } = decodeWitnessAddress(address);
@@ -176,10 +218,10 @@ export function addressToScripthash(address, expectedHrp) {
 // this owner appears in the address's Electrum history; the OP_RETURN metadata
 // (vout[2]) carries amount/tier/unlock, and the collateral scripthash tells us
 // whether the position was since redeemed.
-async function scanPositions(withElectrum, programHex, history) {
+async function scanPositions(withElectrum, getTx, programHex, history) {
   const positions = [];
   for (const h of history) {
-    const tx = await withElectrum('blockchain.transaction.get', [h.tx_hash, true]);
+    const tx = await getTx(h.tx_hash);
     if (parseDDVersion(tx.version).type !== 'mint') continue;
     const opReturn = tx.vout.find((o) => o.scriptPubKey.hex.startsWith('6a'));
     if (!opReturn) continue;
@@ -232,14 +274,12 @@ function ddAmountsByVout(tx) {
 }
 
 /** Resolve the address's zero-value UTXOs to DD cents via their creating txs. */
-async function scanDDUtxos(withElectrum, unspent) {
+async function scanDDUtxos(getTx, unspent) {
   const out = [];
-  const txCache = new Map();
+  const ddMaps = new Map(); // per-call memo of the PARSED amounts; getTx dedupes the fetch
   for (const u of unspent.filter((x) => x.value === 0)) {
-    if (!txCache.has(u.tx_hash)) {
-      txCache.set(u.tx_hash, ddAmountsByVout(await withElectrum('blockchain.transaction.get', [u.tx_hash, true])));
-    }
-    const cents = txCache.get(u.tx_hash)?.get(u.tx_pos);
+    if (!ddMaps.has(u.tx_hash)) ddMaps.set(u.tx_hash, ddAmountsByVout(await getTx(u.tx_hash)));
+    const cents = ddMaps.get(u.tx_hash)?.get(u.tx_pos);
     if (cents === undefined) continue; // zero-value but not a DD token output
     out.push({ txid: u.tx_hash, vout: u.tx_pos, cents: String(cents), height: u.height });
   }
@@ -263,8 +303,8 @@ function spkAddress(spk) {
 // Core reports values as float DGB; sats is the integer we settle in.
 const valueToSats = (v) => BigInt(Math.round(v * 1e8));
 
-async function enrichTx(withElectrum, txid) {
-  const tx = await withElectrum('blockchain.transaction.get', [txid, true]);
+async function enrichTx(getTx, txid) {
+  const tx = await getTx(txid);
   const type = parseDDVersion(tx.version).type || 'dgb';
   const ddMap = ddAmountsByVout(tx); // vout.n → DD cents (null for a plain DGB tx)
   const vout = tx.vout.map((o) => ({
@@ -286,7 +326,7 @@ async function enrichTx(withElectrum, txid) {
   for (let idx = 0; idx < tx.vin.length; idx++) {
     const i = tx.vin[idx];
     if (i.coinbase !== undefined || idx >= MAX_VIN_RESOLVE) { vin.push({ address: null, valueSats: null }); inputsResolved = false; continue; }
-    if (!prevCache.has(i.txid)) prevCache.set(i.txid, await withElectrum('blockchain.transaction.get', [i.txid, true]));
+    if (!prevCache.has(i.txid)) prevCache.set(i.txid, await getTx(i.txid));
     const po = prevCache.get(i.txid)?.vout?.[i.vout];
     if (!po) { vin.push({ address: null, valueSats: null }); inputsResolved = false; continue; }
     vin.push({ address: spkAddress(po.scriptPubKey), valueSats: String(valueToSats(po.value)) });
@@ -320,6 +360,8 @@ export function startServer(overrides = {}) {
   // server.version happens inside connect() — once per CONNECTION, so a
   // dropped TCP session re-handshakes transparently on the next request (#32)
   const withElectrum = (method, params) => electrum.request(method, params);
+  // One verbose-tx memo per server instance, shared by every scan path below.
+  const txCache = createTxCache(withElectrum, config.txCacheTtlMs);
 
   const server = createServer(async (req, res) => {
     try {
@@ -335,14 +377,14 @@ export function startServer(overrides = {}) {
         }
         if (what === 'dd-utxos') {
           const unspent = await withElectrum('blockchain.scripthash.listunspent', [scripthash]);
-          const utxos = await scanDDUtxos(withElectrum, unspent);
+          const utxos = await scanDDUtxos(txCache.get, unspent);
           const totalCents = utxos.reduce((s, u) => s + BigInt(u.cents), 0n);
           return sendJson(res, 200, { address, totalCents: String(totalCents), utxos });
         }
         if (what === 'positions') {
           const history = await withElectrum('blockchain.scripthash.get_history', [scripthash]);
           const [positions, tip] = await Promise.all([
-            scanPositions(withElectrum, programHex, history),
+            scanPositions(withElectrum, txCache.get, programHex, history),
             withElectrum('blockchain.headers.subscribe', []),
           ]);
           return sendJson(res, 200, { address, tipHeight: tip.height, positions });
@@ -362,7 +404,7 @@ export function startServer(overrides = {}) {
       }
       const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
       if (req.method === 'GET' && txMatch) {
-        return sendJson(res, 200, await enrichTx(withElectrum, txMatch[1]));
+        return sendJson(res, 200, await enrichTx(txCache.get, txMatch[1]));
       }
       if (req.method === 'GET' && req.url === '/api/health') {
         const tip = await withElectrum('blockchain.headers.subscribe', []);

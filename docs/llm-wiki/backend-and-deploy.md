@@ -20,7 +20,13 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
 - Positions = mint whose collateral vout[0] is unspent and whose OP_RETURN owner key hashes
   to this address's DD-token program. DD amounts pair OP_RETURN cents **positionally** with
   zero-value `5120…` outputs.
-- Env: `PORT`, `DGB_HRP` (default dgbt), `ELECTRUM_HOST/PORT` (127.0.0.1:50001).
+- Verbose tx bodies are memoized per server instance and shared by
+  positions/dd-utxos/tx (`createTxCache`, max 500, promise-keyed so overlapping callers
+  share one upstream call, failures self-evict). TTL `TX_CACHE_TTL_MS` default 5000 —
+  keep it under the 15 s block time or pending→mined lags. `listunspent`, `get_history`
+  and `headers.subscribe` are never cached.
+- Env: `PORT`, `DGB_HRP` (default dgbt), `ELECTRUM_HOST/PORT` (127.0.0.1:50001),
+  `TX_CACHE_TTL_MS` (default 5000).
 
 ## apps/faucet (`server.js`, ~190 L, port 8788)
 

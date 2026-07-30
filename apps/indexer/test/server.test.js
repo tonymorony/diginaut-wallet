@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer as createTcpServer } from 'node:net';
 import { createHash } from 'node:crypto';
-import { startServer, ElectrumClient } from '../server.js';
+import { startServer, ElectrumClient, createTxCache } from '../server.js';
 
 // bech32m of program 0x11…×32 (regtest); scripthash = reversed sha256(scriptPubKey)
 const ADDR = 'dgbrt1pzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygszk8z3a';
@@ -497,4 +497,64 @@ test('framing: a multi-byte character split across a chunk boundary is not corru
   }, async (client) => {
     assert.equal((await client.request('blockchain.transaction.get', ['x', true])).label, LABEL);
   });
+});
+
+// ---- Shared verbose-tx cache ----
+// Driven directly: what matters here is the number of UPSTREAM calls, which
+// the HTTP seam tests above cannot see.
+const TX_BODY = (txid) => ({ txid, version: 2, vout: [] });
+
+test('tx cache: callers overlapping on one txid share a single upstream call', async () => {
+  const txid = 'c7'.repeat(32);
+  let calls = 0;
+  const slow = async (method, params) => {
+    assert.equal(method, 'blockchain.transaction.get');
+    assert.deepEqual(params, [txid, true]);
+    calls++;
+    await new Promise((r) => setTimeout(r, 25)); // stay in flight so the callers overlap
+    return TX_BODY(txid);
+  };
+  const cache = createTxCache(slow, 5_000);
+  const [a, b] = await Promise.all([cache.get(txid), cache.get(txid)]);
+  assert.equal(calls, 1, 'two overlapping callers, ONE upstream call');
+  assert.equal(a, b, 'both get the same body');
+  await cache.get(txid);
+  assert.equal(calls, 1, 'inside the TTL the body is reused');
+});
+
+test('tx cache: an entry past its TTL is re-fetched', async () => {
+  const txid = 'c8'.repeat(32);
+  let calls = 0;
+  const cache = createTxCache(async () => { calls++; return TX_BODY(txid); }, 20);
+  await cache.get(txid);
+  await new Promise((r) => setTimeout(r, 40));
+  await cache.get(txid);
+  assert.equal(calls, 2);
+});
+
+test('tx cache: a failed fetch is evicted, not served for the rest of the TTL', async () => {
+  const txid = 'c9'.repeat(32);
+  let calls = 0;
+  const flaky = async () => {
+    if (++calls === 1) throw new Error('electrum down');
+    return TX_BODY(txid);
+  };
+  const cache = createTxCache(flaky, 5_000);
+  await assert.rejects(cache.get(txid), /electrum down/);
+  await new Promise((r) => setTimeout(r, 0)); // let the eviction handler run
+  assert.equal((await cache.get(txid)).txid, txid, 'the next caller retries upstream');
+  assert.equal(calls, 2);
+});
+
+test('tx cache: it is bounded — the oldest entry makes room for the newest', async () => {
+  let calls = 0;
+  const cache = createTxCache(async (_method, [txid]) => { calls++; return TX_BODY(txid); }, 5_000);
+  const first = '00'.repeat(32);
+  await cache.get(first);
+  for (let i = 1; i <= 500; i++) await cache.get(String(i).padStart(64, '0'));
+  assert.equal(cache.entries.size, 500);
+  assert.equal(cache.entries.has(first), false);
+  const before = calls;
+  await cache.get(first);
+  assert.equal(calls, before + 1, 'an evicted txid is fetched again');
 });
