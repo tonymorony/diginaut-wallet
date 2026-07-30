@@ -12,7 +12,7 @@ import {
 } from '/lib/index.js';
 import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
-import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain, s2dOriginHost } from '/connect.js';
+import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain, s2dOriginHost, LEGACY_HOST_MOVED_TO } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
@@ -320,13 +320,12 @@ function renderNetDot() {
 // only migration signal is this line, and it has to say what "per site" costs.
 // Dismiss is localStorage, not the vault — it is a UI preference, and it must
 // survive an erase-all-wallets as well as apply before any vault exists.
+// The host→destination map is LEGACY_HOST_MOVED_TO in connect.js, beside the
+// era allow-list it must agree with — a second copy here would be the same
+// shape of defect the ceremony checkbox just stopped being.
 const MOVE_NOTICE_KEY = 'diginaut.movedNotice';
-const LEGACY_HOST_NEW_HOME = {
-  'dgb.ludere.space': 'https://testnet.diginaut.space',
-  'diginaut.ludere.space': 'https://diginaut.space',
-};
 function renderMoveNotice() {
-  const target = LEGACY_HOST_NEW_HOME[globalThis.location?.hostname ?? ''];
+  const target = LEGACY_HOST_MOVED_TO.get(globalThis.location?.hostname ?? '');
   if (!target) return; // canonical domain, localhost, or a self-host: nothing moved
   let dismissed = false;
   try { dismissed = localStorage.getItem(MOVE_NOTICE_KEY) === '1'; } catch { /* show it */ }

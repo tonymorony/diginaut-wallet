@@ -145,6 +145,18 @@ export function s2dOriginHost(message) {
   return new URL(line.slice(ORIGIN_PREFIX.length)).host;
 }
 
+/** Legacy host → the canonical origin that replaced it, for the "we've moved"
+ *  notice. The keys are exactly LEGACY_S2D_HOSTS (a unit test pins that both
+ *  ways, so a host added to the allow-list without a move target fails the suite
+ *  instead of silently losing its notice), and the values are read out of the
+ *  era-2 messages' own Origin lines — the notice can therefore never point at a
+ *  domain the frozen bytes do not name. The pairing itself is per network:
+ *  the testnet host moves to the v3 origin, the mainnet host to the v4 one. */
+export const LEGACY_HOST_MOVED_TO = new Map([
+  ['dgb.ludere.space', `https://${s2dOriginHost(S2D_MESSAGE_TESTNET2)}`],
+  ['diginaut.ludere.space', `https://${s2dOriginHost(S2D_MESSAGE_MAIN2)}`],
+]);
+
 const te = new TextEncoder();
 const SECP_N = secp256k1.Point.Fn.ORDER;
 const HALF_N = SECP_N >> 1n;

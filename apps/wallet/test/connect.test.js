@@ -10,7 +10,7 @@ import { base58 } from '@scure/base';
 import {
   S2D_MESSAGE, S2D_VERSION, S2D_MESSAGE_MAIN, S2D_VERSION_MAIN,
   S2D_MESSAGE_TESTNET2, S2D_VERSION_TESTNET2, S2D_MESSAGE_MAIN2, S2D_VERSION_MAIN2,
-  LEGACY_S2D_HOSTS, s2dForChain, s2dForVersion, s2dOriginHost,
+  LEGACY_S2D_HOSTS, LEGACY_HOST_MOVED_TO, s2dForChain, s2dForVersion, s2dOriginHost,
   eip191Digest, canonicalizeEvmSignature, recoverEthAddress,
   verifySolanaSignature, entropyFromSignature, mnemonicFromEntropy, fingerprintOfEntropy,
   shortAddress,
@@ -160,6 +160,26 @@ test('s2dForVersion resolves every minted version, and only by the stored number
   assert.equal(s2dForVersion('4').message, S2D_MESSAGE_MAIN2, 'a stringy record number still resolves');
   assert.equal(s2dForVersion(undefined).message, S2D_MESSAGE, 'legacy record with no msgVersion is v1');
   assert.equal(s2dForVersion(99).message, S2D_MESSAGE, 'an unknown version is v1, never a throw');
+});
+
+test('every legacy host has a move target and every move target has a legacy host', () => {
+  // One list, two consumers: s2dForChain reads LEGACY_S2D_HOSTS for the era,
+  // app.js reads LEGACY_HOST_MOVED_TO for the "we've moved" notice. A host added
+  // to one and not the other keeps its old bytes but silently loses its notice
+  // (or points somewhere with no vault), so the key sets are pinned both ways.
+  assert.deepEqual([...LEGACY_HOST_MOVED_TO.keys()].sort(), [...LEGACY_S2D_HOSTS].sort());
+  // and the destinations are the era-2 origins themselves, not a third copy
+  assert.equal(LEGACY_HOST_MOVED_TO.get('dgb.ludere.space'), 'https://testnet.diginaut.space');
+  assert.equal(LEGACY_HOST_MOVED_TO.get('diginaut.ludere.space'), 'https://diginaut.space');
+  // and the pairing is per NETWORK: whichever era-1 message pins this host, the
+  // target is the era-2 message of the SAME network — never the other one's.
+  const SAME_NETWORK = [[S2D_MESSAGE, S2D_MESSAGE_TESTNET2], [S2D_MESSAGE_MAIN, S2D_MESSAGE_MAIN2]];
+  for (const [host, target] of LEGACY_HOST_MOVED_TO) {
+    const pair = SAME_NETWORK.find(([era1]) => s2dOriginHost(era1) === host);
+    assert.ok(pair, `${host} must be the origin a v1/v2 message pins`);
+    assert.equal(target, `https://${s2dOriginHost(pair[1])}`, `${host} moves to its own network's home`);
+    assert.ok(!target.includes(host), `${host} must not point at itself`);
+  }
 });
 
 test('s2dOriginHost reads the host OUT of the frozen bytes (ceremony checkbox)', () => {
