@@ -97,6 +97,18 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   and that origin keeps its old vaults while deriving different wallets, silently. Unknown
   hostname → the NEW era (a self-host on v1 would pin an origin it isn't); unknown chain →
   that era's TESTNET message. `s2dForVersion()` maps 1–4 for reconnect; unknown/absent → v1.
+- **Reconnect is provenance-scoped, first derive is context-scoped.** `deriveOnce` gets
+  `known.source.msgVersion` — the bytes that MADE the wallet — never `s2dForChain(...)`, which
+  answers "which bytes would a new wallet use here". They agreed while a host's era was fixed
+  forever; ADR-0006 moves it for every non-legacy host, so a pre-move v1 source would have been
+  re-derived against v3, missed its fingerprint, and shown `showWeb3Mismatch` — accusing the
+  *extension* of drifting for a change the app made. The network axis is deliberately not
+  re-read either: "a testnet wallet finds nothing on mainnet" is enforced by `findSource` over
+  an origin-scoped vault, and re-picking by chain resurrects the same false accusation on any
+  origin whose node changes chain. `verify-connect-derive` §7 covers it.
+- `LEGACY_S2D_HOSTS` (era allow-list) and `LEGACY_HOST_MOVED_TO` (host → canonical origin, for
+  the move notice) both live in `connect.js`; the move targets are read out of the era-2
+  messages' `Origin:` lines and a unit test pins the key sets equal both ways.
 - `s2dOriginHost(message)` reads the host out of the message's `Origin:` line. The ceremony
   checkbox (`#w-web3-origin`, filled by `armWeb3Disclosure()` before the step is displayed) is
   the only consumer — it was a hardcoded `dgb.ludere.space`, so the **mainnet** ceremony told
@@ -188,11 +200,11 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   `maybeShowMainnetAck()` with it, so **mainnet served no risk interstitial**. Now one node,
   `#w-web3-group`. Caught only by `verify-mainnet-live` / `verify-beta-posture`, neither
   registered when this bit. `verify-beta-posture` **is registered since** (`run-drivers.sh`
-  = 13, alongside `verify-mainnet-bringup`, which never touches the ack modal).
+  = 14, alongside `verify-mainnet-bringup`, which never touches the ack modal).
   `verify-mainnet-live` drives the **deployed** site (`argv[2]`, default
   `https://diginaut.space` since the domain switch; the legacy `https://diginaut.ludere.space`
   is still a valid target, 3-min node warm-up) and so stays out of the local gate —
-  the blocking interstitial still has no coverage in `run-drivers.sh`. Don't read "13 green"
+  the blocking interstitial still has no coverage in `run-drivers.sh`. Don't read "14 green"
   as "mainnet ack is tested".
 - Title is a state, not a constant: `setConnectMode()` → *Back up your seed phrase* / *Erase
   all wallets* / *Unlock your wallets* / *Add a wallet* (vault unlocked) / *Create or restore a

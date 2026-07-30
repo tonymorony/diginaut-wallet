@@ -31,7 +31,8 @@ before acting on it.
   mainnet ceremony named the testnet domain. It now renders from the selected message's own
   `Origin:` line (`s2dOriginHost`).
 - New localStorage key `diginaut.movedNotice` (the legacy-host "we've moved" strip). Baseline
-  after this branch: **205 wallet tests**; driver set still 13.
+  after this branch: **206 wallet tests**; driver set still 14 (12 `SELF_CONTAINED` + 2
+  `NEEDS_STACK` in `run-drivers.sh`).
 
 ## Active: copy pass (branch `design/copy-truthful-labels`)
 

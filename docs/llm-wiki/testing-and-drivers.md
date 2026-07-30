@@ -36,7 +36,12 @@ separately (PR #124), not part of that run.
   `verify-crosswire`, `verify-wallet-mgmt`, `verify-receive-index`, `verify-receive-ui`,
   `verify-send-amount`, `verify-wallet-switch` (was the CI flake — **fixed 2026-07-27**, see
   gotchas), `verify-oracle-refresh`; branch #130 adds
-  `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider);
+  `verify-connect-derive` (sign-to-derive, **7** scenarios, fake EIP-6963 provider — §7 is the
+  era-crossing reconnect: it mints a `msgVersion: 1` source through the app's own
+  `connect.js` + `vault.js` over the real IndexedDB, because the pre-ADR-0006 build that would
+  have left one cannot be run, then asserts the reconnect signs the **v1** bytes and matches.
+  It waits on "settled either way" and then `check()`s which way, so a regression prints the
+  diagnosis instead of dying on a 20 s `waitFor` timeout);
   `verify-web3-mainnet` (the same fake provider against a **mainnet-shaped** node — the
   combination neither of the other two covered). It guards the two properties that make the
   mainnet door safe, and guards them *positively*: the fake wallet **throws on any message but

@@ -192,9 +192,12 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
   **mainnet** ceremony named the **testnet** domain, next to a signing popup whose own last
   line said the opposite. The host is now `#w-web3-origin`, written by `armWeb3Disclosure()`
   from `s2dOriginHost()` of the exact frozen message being signed, and it changes per network
-  **and** per origin era (ADR-0006: v1/v2 on the `ludere.space` hosts, v3/v4 elsewhere). The
-  sentence around it is load-bearing and pinned by `verify-connect-derive` /
-  `verify-web3-mainnet`; reword it there and in both drivers, and never put a literal host back.
+  **and** per origin era (ADR-0006: v1/v2 on the `ludere.space` hosts, v3/v4 elsewhere).
+  **What the drivers pin is the HOST, not the sentence:** `verify-connect-derive` and
+  `verify-web3-mainnet` both compare `#w-web3-origin`'s `textContent` against
+  `s2dOriginHost()`, so re-wording *"I understand: only … may ever ask for this signature"*
+  turns nothing red. Keeping the sentence in step is convention, enforced by review — and
+  never put a literal host back, because that half *is* enforced.
 - **Load-bearing strings** (never reword alone; full table in `.claude/agents/ux-writer.md`):
   the four `S2D_MESSAGE*` bodies in `connect.js` (**consensus-grade** — a diff re-derives every
   user's wallet), the proxy refusals `broadcastlog.js` string-matches, a node's raw reject text,
