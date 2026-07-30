@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer as createTcpServer } from 'node:net';
 import { createHash } from 'node:crypto';
-import { startServer, ElectrumClient, createTxCache } from '../server.js';
+import { startServer, ElectrumClient, createTxCache, configFromEnv } from '../server.js';
 
 // bech32m of program 0x11…×32 (regtest); scripthash = reversed sha256(scriptPubKey)
 const ADDR = 'dgbrt1pzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygszk8z3a';
@@ -450,31 +450,48 @@ async function withElectrumClient(onMessage, fn) {
 }
 const HANDSHAKE = ['FakeElectrumX 0.0', '1.4'];
 
-test('framing: a 12MB single-line frame delivered in 64KB writes assembles correctly and fast', async () => {
+test('framing: a 12MB single-line frame delivered in 4KB chunks assembles correctly and fast', async () => {
   const BIG = 'x'.repeat(12 * 1024 * 1024);
   await withElectrumClient((sock, msg) => {
     const result = msg.method === 'server.version' ? HANDSHAKE : { data: BIG };
     const frame = JSON.stringify({ id: msg.id, jsonrpc: '2.0', result }) + '\n';
-    for (let i = 0; i < frame.length; i += 65536) sock.write(frame.slice(i, i + 65536)); // like a real TCP stream
+    // One 4KB slice per event-loop turn. Writing the slices back-to-back does
+    // NOT deliver 4KB chunks — the kernel coalesces them and the reader still
+    // gets ~64KB reads, which is not the shape this guards. Chunk COUNT is what
+    // the quadratic parser was quadratic in, so the pacing is the point.
+    let i = 0;
+    const pump = () => {
+      if (i >= frame.length) return;
+      sock.write(frame.slice(i, i + 4096));
+      i += 4096;
+      setImmediate(pump);
+    };
+    pump();
   }, async (client) => {
     const t0 = performance.now();
     const res = await client.request('blockchain.transaction.get', ['big', true]);
     const elapsed = performance.now() - t0;
     assert.equal(res.data, BIG);
-    // Coarse guard, not a benchmark: measured in isolation the flatten-and-
-    // rescan-per-chunk framing costs ~430ms of CPU at this size against ~16ms
-    // linear, so only a severe regression trips this. The load-bearing
-    // assertion is the one above — that a chunked multi-MB frame arrives whole.
+    // Decisive, not a benchmark: at ~3000 chunks the flatten-and-rescan-per-
+    // chunk framing measures ~6s against ~0.22s linear, so this bound goes red
+    // if that parser is reintroduced. (Delivered in 64KB chunks the old parser
+    // finished in ~550ms and this assertion proved nothing.)
     assert.ok(elapsed < 2000, `framing took ${Math.round(elapsed)}ms — O(n²) regression?`);
   });
 });
 
 test('framing: several pipelined frames arriving in one chunk are all dispatched', async () => {
+  const queued = [];
   await withElectrumClient((sock, msg) => {
-    const result = msg.method === 'server.version' ? HANDSHAKE : `pong:${msg.method}`;
-    sock.write(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result }) + '\n');
+    if (msg.method === 'server.version') {
+      return sock.write(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result: HANDSHAKE }) + '\n');
+    }
+    queued.push(Buffer.from(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result: `pong:${msg.method}` }) + '\n'));
+    // Flush all three in ONE write. Writing them separately left it to loopback
+    // segment packing whether the multi-frame-per-chunk path — the for(;;) loop
+    // and its scan reset between frames — ran at all on a given run.
+    if (queued.length === 3) sock.write(Buffer.concat(queued));
   }, async (client) => {
-    // concurrent requests → the replies typically coalesce into a single chunk
     assert.deepEqual(
       await Promise.all([client.request('a'), client.request('b'), client.request('c')]),
       ['pong:a', 'pong:b', 'pong:c'],
@@ -500,8 +517,25 @@ test('framing: a multi-byte character split across a chunk boundary is not corru
 });
 
 // ---- Shared verbose-tx cache ----
-// Driven directly: what matters here is the number of UPSTREAM calls, which
-// the HTTP seam tests above cannot see.
+// The first test pins the cache BOUNDARY through the real HTTP seam; the rest
+// drive createTxCache directly, where the mechanics (in-flight dedupe, expiry,
+// eviction) are visible and the seam's timing is not in the way.
+
+test('tx cache seam: a second dd-utxos read re-queries the UTXO set but reuses the tx body', async () => {
+  // The money-safety invariant, in one assertion. What decides spendability
+  // (listunspent) must be asked upstream every time; the immutable tx body may
+  // be shared. A refactor that widened the cache over the UTXO set would serve
+  // a stale spendable set, and this is the test that would go red.
+  await withIndexer(async (base, seen) => {
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await fetch(`${base}/api/address/${TRANSFER_RECIPIENT_ADDR}/dd-utxos`)).status, 200);
+    }
+    const calls = (method) => seen.filter((m) => m.method === method).length;
+    assert.equal(calls('blockchain.scripthash.listunspent'), 2, 'the spendable set is NEVER memoized');
+    assert.equal(calls('blockchain.transaction.get'), 1, 'the tx body is shared across the two reads');
+  }, DD_UTXO_HANDLERS);
+});
+
 const TX_BODY = (txid) => ({ txid, version: 2, vout: [] });
 
 test('tx cache: callers overlapping on one txid share a single upstream call', async () => {
@@ -530,6 +564,36 @@ test('tx cache: an entry past its TTL is re-fetched', async () => {
   await new Promise((r) => setTimeout(r, 40));
   await cache.get(txid);
   assert.equal(calls, 2);
+});
+
+// Synchronous on purpose: node:test runs a file's tests in order, so mutating
+// process.env without awaiting cannot leak into a concurrently-built server.
+test('config: TX_CACHE_TTL_MS=0 survives as 0 and is not read as "unset"', () => {
+  const saved = process.env.TX_CACHE_TTL_MS;
+  try {
+    process.env.TX_CACHE_TTL_MS = '0';
+    assert.equal(configFromEnv().txCacheTtlMs, 0, '0 is the kill switch, not a missing value');
+    process.env.TX_CACHE_TTL_MS = '250';
+    assert.equal(configFromEnv().txCacheTtlMs, 250);
+    delete process.env.TX_CACHE_TTL_MS;
+    assert.equal(configFromEnv().txCacheTtlMs, 5_000, 'unset → default');
+    process.env.TX_CACHE_TTL_MS = 'nonsense';
+    assert.equal(configFromEnv().txCacheTtlMs, 5_000, 'unparseable → default, never NaN');
+  } finally {
+    if (saved === undefined) delete process.env.TX_CACHE_TTL_MS;
+    else process.env.TX_CACHE_TTL_MS = saved;
+  }
+});
+
+test('tx cache: TX_CACHE_TTL_MS=0 is the kill switch — every get misses', async () => {
+  // configFromEnv validates rather than `|| 5000` so an operator triaging a
+  // staleness report can turn the cache off without a code change.
+  const txid = 'ca'.repeat(32);
+  let calls = 0;
+  const cache = createTxCache(async () => { calls++; return TX_BODY(txid); }, 0);
+  await cache.get(txid);
+  await cache.get(txid);
+  assert.equal(calls, 2, 'a zero TTL memoizes nothing');
 });
 
 test('tx cache: a failed fetch is evicted, not served for the rest of the TTL', async () => {
