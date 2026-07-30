@@ -22,8 +22,12 @@ read, never executed.
 
 ## Claim scoreboard
 
-29 claims examined: **0 fabricated**. ~19 verified, ~9 partial (real mechanism, overstated or
-mis-scoped framing), plus 2 misattributions. All 8 adversarial spot-checks of the strongest
+31 fork claims examined: **0 fabricated** — 21 verified, 10 partial (real mechanism, overstated
+or mis-scoped framing); 21 + 10 = 31, no third bucket. Two of the partials are misattributions
+rather than overstatements: the "outside-attacker audit" and the CI/Dependabot pair, both
+inherited Diginaut work. Separately, 5 hard-invariant checks of our own: ALLOWED_METHODS,
+vendor.lock, netKnown and ADR-0002 all intact; "nothing new phones home" is partial (their
+GitHub backup adds an outbound destination). All 8 adversarial spot-checks of the strongest
 verdicts held. The three big framing corrections:
 
 1. **The "outside-attacker security audit, fixed every finding" is the same audit event this
@@ -63,7 +67,10 @@ survives their "erase all".
 
 Mapper cross-checked every item against main@`4e2733b` (incl. #142/#143 overlap) and the hard
 invariants (ALLOWED_METHODS, vendor.lock, netKnown, ADR-0002). Full rationale per item in the
-session workflow output; summary:
+session workflow output; summary below. Every verdict was code-cited in that run, but only the
+ones reproduced here with a `file:line` are reproducible from this tree — the rest are summary
+verdicts whose evidence was not preserved in the repo. Re-verify an uncited verdict before
+acting on it.
 
 ### Adopt — small, real Diginaut bugs/wins, low coupling
 
@@ -75,7 +82,7 @@ session workflow output; summary:
 | `kdf.iterations` bound in `parseKeystoreFile` | S | Our live bug; hostile keystore pins browser in PBKDF2. Floor ≤600k is backward-compatible. |
 | Error-message leak fixes (indexer 502 relay, wallet catch-all 500, "indexer unreachable: host:port") | M | Keep faucet's #55 pattern. **Never genericize handleRpc's 502** — dderrors/broadcastlog match node reject tokens; that's a #137 money-safety property. |
 | Bind hardening (default 127.0.0.1 + `BIND_HOST`) | S | All three services bind 0.0.0.0 today. Must land with compose env in same commit or Caddy→wallet breaks. |
-| SECURITY.md | S | Only claim where the fork did work we haven't. Rewrite (their "snapshots after" caveat is false for us; add non-GitHub contact); enable GitHub PVR in settings. |
+| SECURITY.md | S | Only claim where the fork did work we haven't. Rewrite (their "snapshots after" caveat is false for us). **Done in #170**, which states GitHub PVR as the only private channel today; a non-GitHub contact (email + PGP) is still wanted and needs an owner-supplied address. Enabling GitHub PVR in repo settings is a merge gate for #170. |
 | Static-asset cache headers (`no-cache` + 304; prefer ETag over mtime) | S | serveFrom sends content-type only; no cache-busting anywhere; fixes the "phones run days-old code" class for us too. Apply to /vendor as well (vendor bump must not pair stale crypto with new app.js). |
 | Net-dot debounce (2 failed polls; truthful "inactive" answers still immediate) | S | Kills the deploy-restart red-dot flash. |
 | Confirmation precedence in historyRow | S | **Real Diginaut bug** (ElectrumX index lag vs node confirmations → confirmed tx renders "pending"; we already model the lag: indexerLagBlocks). Adapt: keep `final`/`${c} conf` strings (design-system + drivers pin them), require `c >= FINAL_CONF && h.height > 0` for `final` (untrusted indexer must not stamp finality alone). Add the missing regression fixture. |
@@ -104,10 +111,13 @@ session workflow output; summary:
   dedupe addresses server-side.
 - **Gift keys / mint-to-order** (M lib + M UI): strongest feature candidate. Additive
   `ownerKeyHex` on buildSignedMintTx + checksummed `ddgift1…` bech32m envelope that hard-rejects
-  address HRPs (prevents the tweak(tweak(P)) stranding they shipped once). Preconditions:
-  ADR-0002 amendment restated as "the **owner** can redeem and transfer"; regtest acceptance run
-  as part of the merge (their e2e is `skip: !RPC_URL`); **stranded-gift recovery CLI ships in the
-  same release** (fix its ddCents-burn defect first; export `tapTweakPrivKey` deliberately).
+  address HRPs (prevents the tweak(tweak(P)) stranding they shipped once). Preconditions: an
+  **owner-approved ADR-0002 amendment — not settled**; mint-to-order is exactly what relaxes
+  the rule (the minter can neither redeem nor transfer what they gifted), so write the
+  amendment before any code and don't assume "the **owner** can redeem and transfer" is where
+  it lands; regtest acceptance run as part of the merge (their e2e is `skip: !RPC_URL`);
+  **stranded-gift recovery CLI ships in the same release** (fix its ddCents-burn defect first;
+  export `tapTweakPrivKey` deliberately).
   Core-recipient parsing (`parseRawOwnerKey` + reworked spike as a manual-gate driver) makes it
   more than an in-app novelty (M). Treat their "mainnet confirmation" narrative as testimony,
   not evidence — reproduce before any wiki stamp.
