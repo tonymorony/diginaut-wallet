@@ -101,6 +101,11 @@ mainnet rather than defaulting to healthy (feeds into #53).
   (`minting-frozen-volatility`); ≥50% within 7 d freezes all DD operations
   (`all-operations-frozen`). The wallet should map these mempool reject strings
   to friendly errors (→ #53).
+  *(Correction 2026-07-29, from volatility.h:63-75: this list was incomplete — a
+  ≥30% move within 24 h ALSO freezes all DD ops (`FREEZE_ALL_24H_BPS=3000`), and
+  the 8,640-block cooldown is a floor, not a duration: unfreezing additionally
+  requires volatility back under thresholds (volatility.cpp:314-320). Current
+  summary: `docs/llm-wiki/consensus-facts.md` § Volatility freezes & fees.)*
 - **Oracle price sanity bounds**: consensus rejects oracle bundles with prices
   outside **$0.0001–$100.00 per DGB** (`ORACLE_MIN_PRICE_MICRO_USD = 100`,
   `ORACLE_MAX_PRICE_MICRO_USD = 100000000`, `src/primitives/oracle.h`). Sub-cent

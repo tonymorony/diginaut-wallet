@@ -2,6 +2,7 @@
 
 Verified: 2026-07-27, branch `design/copy-truthful-labels`, main @ `67004d8`
 (#134 connect-wallet, #135 llm-wiki, #137 external audit, #138 icons + connect modal merged).
+Lock & Earn map section verified 2026-07-30, branch `discovery/dd-defi-yield`, main @ `4e2733b`.
 This page rots fastest — reconcile with `git log` + the tracker before acting on it.
 
 ## Shipped
@@ -17,14 +18,29 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
   `docs/runbooks/server-migration-2026-07.md` exists locally but is **untracked** (user
   decision pending) — don't treat it as reachable from a fresh clone.
 
-## Active: copy pass (branch `design/copy-truthful-labels`)
+## Active: DD Lock & Earn pilot — wayfinder map #144
+
+- **Map:** <https://github.com/tonymorony/diginaut-wallet/issues/144> — self-custodial DD lock
+  + trustless floor, M0 on **testnet only**. One ticket per session via `/wayfinder`; frontier
+  = the map's open, unblocked, unclaimed child issues (native sub-issues + blocked-by wired).
+- **Owner decision 2026-07-30: the whole effort accumulates on feature branch
+  `prototype/lock-earn`** — per-ticket work branches off it and PRs back into it; one
+  reviewed feature→main merge when the pilot is ready. `main`'s docs and wiki stay quiet
+  about Lock & Earn until then (deliberate — that includes the freeze-tier correction).
+- Basis docs (landed by ticket #145 via PR #159): spec `docs/specs/dd-lock-and-earn-pilot.md`
+  (v0.1.0), research `docs/discovery/dd-defi-yield.md`, state-model prototype in
+  `prototypes/lock-earn/` on this branch (reference-only code; it validated the mechanism).
+- Standing rules live in the map body's Notes (execution in scope, branching, the
+  one-template-library invariant, label = mechanism, baselines).
+
+## Copy pass (shipped as #139; the deferrals below are still open)
 
 - Follows the #138 community report. Fixes where a label named a different security model than
   the handler implements: the guest/header CTA (three states — the **locked** case was the
   worst, offering "Connect wallet" over a wallet already on the device), the recovery card's
   destructive *Dismiss*, and the mainnet banner's unqualified "no backup". "Connect" now
   survives only on the web3 door, where it is true. Conventions: `design-system.md` § UX copy.
-- Baseline at branch point: **192 wallet tests, 13/13 drivers** — unchanged by this branch.
+- Baseline at branch point: **192 wallet tests, 13/13 drivers** — unchanged by #139.
 - Deferred to a follow-up (audited but not fixed): the **post-eviction sheet** — hero says
   *Restore a wallet* while the sheet titles *Create or restore a wallet*, focuses
   `w-create-choice` and paints create as the sole `.door.primary` (fix the three together);
@@ -71,6 +87,9 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
 
 ## Loose ends
 
+- `dderrors.js`'s `all-operations-frozen` copy names only the 50%/7d tier; the ≥30%/24h
+  tier (consensus-facts.md § Volatility freezes & fees) also raises it, and
+  `dderrors.test.js` pins the literal "50%" → #160.
 - Launch map #50: only **#59 real-funds verification** remains (needs user's DGB + non-zero
   oracle price; oracle showed price 0 at activation).
 - PR #132 (driver assertion fixes) — merged 2026-07-26 (`4125fe4`).
