@@ -14,7 +14,7 @@ import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
 import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain, s2dOriginHost, LEGACY_HOST_MOVED_TO } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
+import { networkChrome, betaCapError, backupSkipAllowed, foldNetHealth } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { MINT_FREEZE_EXPLANATION } from '/dderrors.js';
 import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/broadcastlog.js';
@@ -307,6 +307,15 @@ function statusLine(active, textActive, textInactive) {
 
 // header dot = aggregate of softfork state + oracle freshness
 const netHealth = { dd: null, oracle: null };
+const netMisses = { dd: 0, oracle: 0 }; // consecutive failed polls, per source
+/** Record one poll outcome: the ANSWER (true/false), or null if it failed.
+ *  Debouncing applies to failures ONLY — see foldNetHealth for why an answered
+ *  inactive/stale must still land on the first poll. */
+function recordHealth(key, answer) {
+  const next = foldNetHealth({ flag: netHealth[key], misses: netMisses[key] }, answer);
+  netHealth[key] = next.flag;
+  netMisses[key] = next.misses;
+}
 function renderNetDot() {
   const bad = netHealth.dd === false || netHealth.oracle === false;
   const ok = netHealth.dd === true && netHealth.oracle === true;
@@ -495,11 +504,11 @@ async function loadStatus() {
     const tr = dep?.deployments?.taproot;
     const ddActive = dd?.active === true || dd?.bip9?.status === 'active';
     chainState.ddActive = ddActive; // the mint flow refuses to start when inactive
-    netHealth.dd = ddActive;
+    recordHealth('dd', ddActive); // an answered "not active" is truth, not a miss
     $('s-dd').innerHTML = statusLine(ddActive, 'active', dd?.bip9?.status || 'not active');
     $('s-tr').innerHTML = statusLine(tr?.active === true, 'active', tr?.bip9?.status || 'not active');
   } catch (e) {
-    netHealth.dd = false;
+    recordHealth('dd', null); // the poll failed to answer — debounced
     $('s-err').textContent += (e ? ' · deployment: ' + e.message : '');
   }
   renderNetDot();
@@ -526,7 +535,7 @@ async function loadOracle() {
       $('o-price').textContent = '$' + price.price_usd.toLocaleString('en-US', { maximumFractionDigits: 5 }) + (price.is_stale ? ' (stale)' : '');
       lastPriceUsd = price.price_usd;
       if (price.price_micro_usd) lastPriceMicroUsd = BigInt(price.price_micro_usd);
-      netHealth.oracle = !price.is_stale;
+      recordHealth('oracle', !price.is_stale); // an answered "stale" is truth, not a miss
       renderFiat();
       updateMintEstimate();
       // seed the calculator price with the live oracle price
@@ -538,7 +547,7 @@ async function loadOracle() {
       }
     }
   } catch (e) {
-    netHealth.oracle = false;
+    recordHealth('oracle', null); // the poll failed to answer — debounced
     $('o-hint').innerHTML = `<span class="err">oracle: ${esc(e.message)}</span>`;
   }
   renderNetDot();

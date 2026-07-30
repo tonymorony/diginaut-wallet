@@ -30,6 +30,27 @@ export function backupSkipAllowed(chain) {
   return chain === 'test' || chain === 'testnet' || chain === 'regtest';
 }
 
+/** Consecutive FAILED polls before a header-dot flag may go false. */
+export const NET_HEALTH_MISS_LIMIT = 2;
+
+/** Fold one poll outcome into a header-dot health flag. `answer` is what the
+ * poll SAID — true (active / fresh) or false (inactive / stale) — or null when
+ * the poll itself failed to answer. Returns the next `{flag, misses}`, where
+ * `misses` counts the current run of consecutive failures.
+ *
+ * Only FAILURES are debounced. A single dropped poll — a ~2-3s deploy restart,
+ * a phone throttling a dimmed tab — used to paint the dot red for a whole poll
+ * interval, which reads as "the network disconnected"; one blip is noise, two
+ * in a row is a signal. An ANSWERED negative is truth and lands immediately:
+ * these flags also gate the mint review's price quote, so delaying a real
+ * inactive/stale answer would postpone a "do not trust this quote" signal —
+ * the one direction this must never be slow in. */
+export function foldNetHealth(prev, answer) {
+  if (answer != null) return { flag: answer, misses: 0 };
+  const misses = prev.misses + 1;
+  return { flag: misses >= NET_HEALTH_MISS_LIMIT ? false : prev.flag, misses };
+}
+
 export function networkChrome(chain) {
   switch (chain) {
     case 'test':

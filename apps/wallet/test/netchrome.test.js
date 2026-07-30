@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { networkChrome, betaCapError, backupSkipAllowed, BETA_TX_CAP_USD } from '../public/netchrome.js';
+import { networkChrome, betaCapError, backupSkipAllowed, foldNetHealth, NET_HEALTH_MISS_LIMIT, BETA_TX_CAP_USD } from '../public/netchrome.js';
 
 // One build serves every network (#61): wording is decided at runtime from the
 // node's reported chain, never baked into the HTML. The mainnet beta posture
@@ -96,4 +96,40 @@ test('backup skip: an unknown chain fails STRICT — unlike betaCapError, which 
 test('backup skip: the allow-list is closed — no chain outside the three is skippable', () => {
   assert.deepEqual(['main', 'mainnet', 'test', 'testnet', 'regtest', 'signet', '']
     .filter(backupSkipAllowed), ['test', 'testnet', 'regtest']);
+});
+
+// ---- Header-dot health: only FAILED polls are debounced ----
+
+test('net health: one failed poll keeps the last known answer, two in a row flip it', () => {
+  let s = { flag: true, misses: 0 };
+  s = foldNetHealth(s, null);
+  assert.deepEqual(s, { flag: true, misses: 1 }, 'a single miss is noise (a deploy restart, a throttled tab)');
+  s = foldNetHealth(s, null);
+  assert.deepEqual(s, { flag: false, misses: 2 }, 'two consecutive misses are a signal');
+  assert.equal(NET_HEALTH_MISS_LIMIT, 2);
+});
+
+test('net health: an ANSWERED negative lands on the first poll and resets the run', () => {
+  // The whole point of the debounce: it may only delay "we could not ask".
+  // These flags gate the mint review's USD entry, so a real inactive/stale
+  // answer is a "do not trust this quote" signal and must never be postponed.
+  assert.deepEqual(foldNetHealth({ flag: true, misses: 0 }, false), { flag: false, misses: 0 });
+  assert.deepEqual(foldNetHealth({ flag: true, misses: 1 }, false), { flag: false, misses: 0 });
+});
+
+test('net health: a good answer clears the miss run — misses must be CONSECUTIVE', () => {
+  let s = { flag: true, misses: 0 };
+  s = foldNetHealth(s, null);
+  s = foldNetHealth(s, true);
+  assert.deepEqual(s, { flag: true, misses: 0 });
+  s = foldNetHealth(s, null);
+  assert.equal(s.flag, true, 'miss, answer, miss is not two in a row');
+});
+
+test('net health: an unknown flag stays unknown through the first miss', () => {
+  // Boot state is null (neither good nor bad — renderNetDot paints it amber);
+  // a first-poll failure must not promote that to a red "disconnected".
+  let s = foldNetHealth({ flag: null, misses: 0 }, null);
+  assert.deepEqual(s, { flag: null, misses: 1 });
+  assert.deepEqual(foldNetHealth(s, null), { flag: false, misses: 2 });
 });
