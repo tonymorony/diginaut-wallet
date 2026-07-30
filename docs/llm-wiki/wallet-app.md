@@ -71,12 +71,18 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   fetch goes through `apiFetch` with a `nettimeout.js` budget; failures carry
   `err.transport = 'timeout'|'network'` — downstream code keys off the FLAG, never the copy.
   Price staleness: `PRICE_MAX_AGE_MS = 180s` demotes USD entry (and disarms Max).
-- **Who retries, and on what.** `fetchIndexer` alone: `[500, 1000, 2000]` ms keyed STRICTLY on
-  `err.transport`, so a 4xx or an `INDEXER_SHAPES` refusal rethrows on the first attempt. The
-  FULL ladder is the first load's budget only (`indexerFirstLoad` clears at the first money
-  paint) — after that one retry, because `refreshMoney` fans out to (index+3)×6 reads per tick.
-  `rpc()` must **never** grow one: `broadcastTx` rides it, and a re-sent `sendrawtransaction`
-  is the #C1 double-send.
+- **Who retries, and on what.** `fetchIndexer` alone: `[500, 1000, 2000]` ms, and what counts
+  as transient lives in ONE predicate, `transientIndexerFailure` (nettimeout.js) — `err.transport`
+  (dead browser↔wallet-server hop) **or** the wallet server's own 502 relay of a dead indexer
+  hop, which is the deploy-restart shape and arrives as a normal response. That relay is matched
+  by both its message (`indexer unreachable`) and a `cause: 'indexer-unreachable'` body token, so
+  it survives either merge order with the indexer error contract. A 4xx, the 503 "no indexer
+  configured" or an `INDEXER_SHAPES` refusal rethrows on the first attempt. Two caps: the FULL
+  ladder is the first load's budget only (`indexerFirstLoad` clears at the first money paint) —
+  after that one retry, because `refreshMoney` fans out to (index+3)×6 reads per tick — and
+  `INDEXER_RETRY_BUDGET_MS` (10 s, < one hop's 20 s timeout) bounds the retries by wall clock, so
+  a HUNG hop surfaces in ~one timeout instead of stacking four. `rpc()` must **never** grow a
+  ladder: `broadcastTx` rides it, and a re-sent `sendrawtransaction` is the #C1 double-send.
 - Header dot: `foldNetHealth` (netchrome.js) needs TWO consecutive FAILED polls before
   `netHealth.dd`/`.oracle` goes false — a ~2-3 s deploy restart used to paint it red. Only
   failures are debounced; an answered inactive/stale lands on the first tick, because these
@@ -272,7 +278,7 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-16 unit suites (**209 tests** as of 2026-07-31, this branch) under `test/`, `npm test` — server
+17 unit suites (**222 tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server
 (CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity,
 keystore, icon-sprite, netchrome (incl. `backupSkipAllowed` + `foldNetHealth`),
 dderrors (incl. spend/conflict families), dca, autolock, connect

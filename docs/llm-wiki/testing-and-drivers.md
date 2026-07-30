@@ -59,9 +59,10 @@ separately (PR #124), not part of that run.
   `verify-history`, `verify-fiat-sendmax`, `verify-disclaimer`.
   `verify-history` (17 checks) also owns the confirmation-badge precedence: its inline fake
   serves a tx at index height 0 with 24 node confirmations (must read `24 conf`, never
-  `pending`) and one with an invented 9999 on no block (must never read `final`). It asserts
-  the badge's CLASS as well as its words — the tick is an `<svg>`, so text alone cannot prove a
-  row did NOT claim finality.
+  `pending`) and one claiming 9999 the index has no block for (must stay `9999 conf`, never
+  `final`). Both assert the badge's EXACT `class|text` — the tick is an `<svg>`, so text alone
+  cannot prove a row did not claim finality, and a `!/final/` test would also pass if the
+  fixture row vanished (verified: renaming the row turns the check red).
   `verify-oracle-bounds` passes its 5 mint-gate checks and then **hangs on
   `timeout: wallet unlocked after reload`** under Chrome 150 — reproduced identically on
   `origin/main` (2026-07-31), so it is environmental, not a regression. Don't chase it from a
