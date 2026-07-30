@@ -1534,7 +1534,8 @@ async function openWeb3Picker() {
   // Belt for the boot race, re-aimed for the mainnet rollout. It used to refuse
   // mainnet outright; now that mainnet is supported the danger has moved, and
   // it is worse: WHICH network we are on selects the frozen derivation bytes
-  // (ADR 0005), and s2dForChain falls back to v1 for an unknown chain. A click
+  // (ADR 0005), and s2dForChain falls back to this origin's TESTNET message for
+  // an unknown chain (v1 on a legacy host, v3 elsewhere — ADR 0006). A click
   // landing before the chain poll resolves would therefore derive the TESTNET
   // wallet against a mainnet node — a wallet the user could fund and then never
   // re-derive from this door. So the guard is netKnown, not the chain's name.
@@ -1593,7 +1594,9 @@ $('w-web3-list').addEventListener('click', async (e) => {
     if (run !== web3Run) return; // ceremony abandoned while the popup was open
     web3Address = address;
     const known = vault.status === 'unlocked' ? vault.findSource(entry.kind, address) : null;
-    if (known) { await verifyReconnect(entry, address, run); return; }
+    // The stored record travels with it: re-deriving has to re-sign the bytes
+    // that MADE this wallet, and only the record knows which those were.
+    if (known) { await verifyReconnect(entry, address, run, known.source.msgVersion); return; }
     armWeb3Disclosure();
   } catch (err) {
     if (run !== web3Run) return;
@@ -1604,17 +1607,29 @@ $('w-web3-list').addEventListener('click', async (e) => {
 // One signature, re-derive, compare the stored fingerprint (spec §8). Match →
 // verified switch. Mismatch → hard stop; the explicit new-wallet path must
 // then run the FULL ceremony — one signature has not proven determinism.
-async function verifyReconnect(entry, address, run) {
+async function verifyReconnect(entry, address, run, msgVersion) {
   renderWeb3VerifySteps('sign');
-  // Reconnect is chain-scoped: on mainnet you are re-deriving your MAINNET
-  // wallet, so sign that network's bytes. A testnet wallet legitimately fails
-  // to match here — per ADR 0005 it is a different wallet, not a mismatch.
-  // s2dForChain now also picks the ORIGIN era (ADR 0006), and that keeps this
-  // honest for free: the vault is origin-scoped, and the keystore export
-  // envelope carries only the mnemonic (never the source record), so a source
-  // this call can find was minted at THIS origin and is therefore this origin's
-  // era by construction. There is no path that puts a v1 source in a v3 vault.
-  const derived = await deriveOnce(entry, address, s2dForChain(gateChain()).version);
+  // Reconnect is PROVENANCE-scoped, not chain- or origin-scoped: it signs the
+  // bytes that made this wallet, read from the source record — which is what
+  // ADR 0005 always said (`s2dForVersion()` on reconnect) and what deriveOnce
+  // has always expected. Until #164 this passed s2dForChain(...).version, and
+  // the question it answers is the wrong one: "which bytes would a NEW wallet
+  // use here" instead of "which bytes made THIS one".
+  //
+  // Harmless while a host's era was fixed forever; not harmless the moment an
+  // era assignment moves. ADR 0006 moves it for every non-legacy host that
+  // already has era-1 sources — localhost, 127.0.0.1, every self-host — so a
+  // v1 source would have been re-derived against v3, missed its fingerprint,
+  // and shown showWeb3Mismatch, which accuses the EXTENSION of changing how it
+  // signs for a change the app made. deriveOnce runs this through
+  // s2dForVersion, so an absent or corrupt msgVersion still falls to v1.
+  //
+  // The network axis is deliberately NOT re-read here. "A testnet wallet
+  // correctly finds nothing on mainnet" (ADR 0005) is enforced by findSource
+  // over an origin-scoped vault, one step up — not by re-picking the message.
+  // Re-picking it would resurrect exactly the same false accusation on any
+  // origin whose node changes chain under one vault (a dev box, a self-host).
+  const derived = await deriveOnce(entry, address, msgVersion);
   if (run !== web3Run) return;
   renderWeb3VerifySteps('done');
   const exact = vault.findSource(derived.source.kind, derived.source.address, derived.source.fp);
