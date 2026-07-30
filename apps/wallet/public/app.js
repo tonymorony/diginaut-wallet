@@ -21,7 +21,10 @@ import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/
 import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
 import { pickDgbCoin } from '/coinpick.js';
 import { ensurePersistence, readPersistence, persistenceCopy, markHadVault, clearHadVault, hadVault } from '/persistence.js';
-import { NET_TIMEOUT_MS, isTimeoutError, timeoutMessage } from '/nettimeout.js';
+import {
+  NET_TIMEOUT_MS, isTimeoutError, timeoutMessage,
+  INDEXER_RETRY_MS, INDEXER_RETRY_BUDGET_MS, transientIndexerFailure,
+} from '/nettimeout.js';
 import {
   validateUtxosResponse, validateHistoryResponse, validatePositionsResponse,
   validateDdUtxosResponse, validateTxDetail,
@@ -2490,16 +2493,19 @@ const INDEXER_SHAPES = [
   [/^\/tx\/([0-9a-f]{64})$/, (json) => validateTxDetail(json)],
 ];
 
-// Transport-failure ladder. One attempt meant a login racing a service restart
+// Transient-failure ladder. One attempt meant a login racing a service restart
 // (~2-3s) collapsed the whole panel to "the balance index is unreachable" over
-// a hop that was about to come back. Keyed STRICTLY off `err.transport`, the
-// flag #H1's nettimeout layer sets: an HTTP 4xx or an INDEXER_SHAPES refusal is
-// the index's honest answer, and retrying it only makes the honest error slower.
+// a hop that was about to come back. What counts as transient is decided in one
+// place, `transientIndexerFailure` (nettimeout.js): the dead browser↔server hop
+// AND the wallet server's own 502 relay of a dead indexer hop — which is the
+// shape a deploy restart usually takes, and it arrives as a normal response.
+// An honest answer (4xx, "no indexer configured", an INDEXER_SHAPES refusal)
+// rethrows on the first attempt; retrying it only makes it slower.
 //
 // Deliberately NOT in rpc(): broadcastTx() flows through that, and
 // auto-retrying sendrawtransaction is the double-send hazard the #C1 broadcast
 // journal exists to prevent.
-const INDEXER_RETRY_MS = [500, 1_000, 2_000];
+//
 // Fan-out: the full ladder is for the first load only. refreshMoney fans out to
 // (index+3)x6 reads and re-runs every MONEY_POLL_MS, so once the panel is
 // painted the budget is ONE short retry — the poll chain awaits itself and a
@@ -2507,21 +2513,40 @@ const INDEXER_RETRY_MS = [500, 1_000, 2_000];
 // once per page session; a later wallet switch is not a first load.
 let indexerFirstLoad = true;
 
-async function fetchIndexer(path) {
-  const ladder = indexerFirstLoad ? INDEXER_RETRY_MS : INDEXER_RETRY_MS.slice(0, 1);
+/** One read, classified: `{json}` on success, `{err, transient}` on failure.
+ *  Split out so the ladder sees BOTH failure shapes the same way — a rejected
+ *  fetch (a dead hop) and a non-ok RESPONSE (which may still be a dead hop,
+ *  relayed by our own proxy). A body that is not JSON at all rejects here and
+ *  is not retried: that is a misrouted response, not a transport blip. */
+async function indexerAttempt(path) {
   let res;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
-      break;
-    } catch (e) {
-      const transient = e?.transport === 'timeout' || e?.transport === 'network';
-      if (!transient || attempt >= ladder.length) throw e;
-      await new Promise((r) => setTimeout(r, ladder[attempt]));
-    }
+  try {
+    res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
+  } catch (err) {
+    return { err, transient: transientIndexerFailure({ transport: err?.transport }) };
   }
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  if (res.ok) return { json };
+  return {
+    err: new Error(json.error || `HTTP ${res.status}`),
+    transient: transientIndexerFailure({ status: res.status, body: json }),
+  };
+}
+
+async function fetchIndexer(path) {
+  const ladder = indexerFirstLoad ? INDEXER_RETRY_MS : INDEXER_RETRY_MS.slice(0, 1);
+  // Time bound, not just an attempt count: see INDEXER_RETRY_BUDGET_MS. The
+  // deadline gates the SLEEPS — the attempt already in flight keeps its own
+  // NET_TIMEOUT_MS.indexer budget, so the worst case is the rungs that fit plus
+  // one hop (~23s), against ~83s for an attempt-counted ladder.
+  const deadline = Date.now() + INDEXER_RETRY_BUDGET_MS;
+  let json;
+  for (let attempt = 0; ; attempt++) {
+    const out = await indexerAttempt(path);
+    if (!out.err) { json = out.json; break; }
+    if (!out.transient || attempt >= ladder.length || Date.now() + ladder[attempt] > deadline) throw out.err;
+    await new Promise((r) => setTimeout(r, ladder[attempt]));
+  }
   for (const [re, validate] of INDEXER_SHAPES) {
     const m = re.exec(path);
     if (m) return validate(json, m[1]);
@@ -2801,8 +2826,11 @@ function historyRow(h) {
   // its node badly enough that we model the lag elsewhere (indexerLagBlocks,
   // #H5). While it lags, a mined tx sits at height 0 in the index and the old
   // `h.height === 0` veto pinned the row to "pending" against N confirmations.
-  // `final` still needs BOTH signals: the indexer is untrusted (#55), and a
-  // count alone would let a lying index stamp settlement on a mempool tx.
+  // `final` still needs BOTH signals to AGREE — the node's count is at
+  // FINAL_CONF and the index carries a height for that tx — so index lag can
+  // never produce a false settlement claim in either direction. That is a lag
+  // guarantee, not a trust one: both fields are relayed by the same indexer, so
+  // a compromised one could invent them together (it also serves the balance).
   const pendingBadge = `<span class="tx-conf pending">${icon('clock')}pending</span>`;
   const conf = c === null
     ? (h.height === 0 ? pendingBadge : '<span class="tx-conf partial">confirmed</span>')

@@ -42,9 +42,11 @@ export const NET_HEALTH_MISS_LIMIT = 2;
  * a phone throttling a dimmed tab — used to paint the dot red for a whole poll
  * interval, which reads as "the network disconnected"; one blip is noise, two
  * in a row is a signal. An ANSWERED negative is truth and lands immediately:
- * these flags also gate the mint review's price quote, so delaying a real
- * inactive/stale answer would postpone a "do not trust this quote" signal —
- * the one direction this must never be slow in. */
+ * `netHealth.oracle` gates `priceUsable()` — the send flow's USD entry and Max
+ * — so delaying a real inactive/stale answer would postpone a "do not trust
+ * this quote" signal, the one direction this must never be slow in. (The mint
+ * review is not gated by these flags: it re-fetches the price and rejects a
+ * stale one itself.) */
 export function foldNetHealth(prev, answer) {
   if (answer != null) return { flag: answer, misses: 0 };
   const misses = prev.misses + 1;
