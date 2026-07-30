@@ -2,7 +2,7 @@
 
 Verified: 2026-07-31 @ branch `fix/server-hardening`. Prod usage of these: ops-and-server.md.
 
-## apps/indexer (`server.js`, ~440 L, port 8789)
+## apps/indexer (`server.js`, ~490 L, port 8789)
 
 Address-level façade over a **stock** ElectrumX (ADR-0003; extend-don't-fork). Per-address
 queries only — xpubs never reach it; tx direction deliberately not computed server-side.
@@ -46,7 +46,7 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
 - Env: `PORT`, `BIND_HOST` (default `127.0.0.1`), `DGB_HRP` (default dgbt),
   `ELECTRUM_HOST/PORT` (127.0.0.1:50001), `TX_CACHE_TTL_MS` (default 5000, `0` = off).
 
-## apps/faucet (`server.js`, ~190 L, port 8788)
+## apps/faucet (`server.js`, ~195 L, port 8788)
 
 Testnet-only hot wallet **on the shared node**. No mock mode by design (down = says so).
 

@@ -5,7 +5,7 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Layout
 
-- `server.js` (~530 L) — zero-dep Node HTTP server: static host for `public/`, `/lib/`
+- `server.js` (~800 L) — zero-dep Node HTTP server: static host for `public/`, `/lib/`
   (digidollar-js), `/vendor/` (crypto deps); `/api/rpc` allow-list proxy; `/api/indexer/*`
   (path regex-restricted); `/api/faucet/claim`; `/api/price-history`; `/api/config`.
   Owns CSP headers, vendor-integrity boot gate, cross-wire chain guard, price sampler,
