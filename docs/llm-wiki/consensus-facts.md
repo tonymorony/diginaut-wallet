@@ -80,7 +80,9 @@ Primary docs: `docs/discovery/mainnet-consensus-facts.md`, `regtest-oracle-findi
   destroys the DD (`validation.cpp:800-805`). The taproot sighash commits nVersion under every
   hash type — pinned templates close the hazard.
 - DD inputs must be **confirmed** (no DD mempool chains, `validation.cpp:1810-1813`); zero-value
-  P2TR anchor outputs are impossible in DD txs (every zero-value P2TR needs a ≥$1 amount).
+  P2TR anchor outputs are impossible in DD **transfers** (every zero-value P2TR is classified as
+  a DD output and must carry a ≥$1 envelope amount; redeem change is the one carve-out — see
+  § Validation asymmetries).
 - Transfer envelopes ride the default 83-byte OP_RETURN relay cap with no DD exemption
   (`policy.h:74`) → ~8–20 DD outputs per standard transfer.
 

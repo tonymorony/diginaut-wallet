@@ -5,7 +5,9 @@ Brainstorm + feasibility research, 2026-07-29. Method: 10-agent workflow — 5 r
 stablecoin yield economics; DigiByte/DD ecosystem), a 3-lens design panel (20 proposals),
 then two adversarial verifiers: every consensus claim re-checked against Core source with
 file:line evidence, every yield claim attacked for payer realism. Line refs are v9.26.2-2
-(≈ v9.26.4). Hard constraint honored throughout: **no DGB consensus changes**.
+(≈ v9.26.4). Hard constraint honored throughout: **no DGB consensus changes**. Convention:
+consensus claims are file:line-verified against Core; ecosystem- and market-status claims
+rest on the Appendix sources, as of 2026-07-29.
 
 ## 0. Verdict in one paragraph
 
