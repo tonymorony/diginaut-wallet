@@ -94,7 +94,8 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   still decides on height. Copy rule: `design-system.md`. Fixtures: `verify-history`.
 - Broadcast path: `broadcastTx(hex, meta)` journals to `diginaut.broadcasts` BEFORE sending;
   ambiguous outcomes keep the record and surface the `#w-recovery` card (chain-scoped,
-  survives lock/switch, netKnown-gated). A definite reject's message passes through
+  survives lock/switch, netKnown-gated; only `w-erase-go` wipes the journal — § Backup &
+  browser storage). A definite reject's message passes through
   UNMODIFIED (verify-honest-quotes pins this). Stale-tip warning rows (`w-*-c-stale`) are
   written at REVIEW time only — never re-read state in the `w-*-go` handlers (L6 property).
   Card row titles drop to `r.kind` while `vault.status !== 'unlocked'` (amount + counterparty
@@ -161,11 +162,19 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   mapping onto `.dot.good/.bad/.warn`, and the tombstone helpers over
   `HAD_VAULT_KEY = 'diginaut.hadVault'`. Never `await` `probePersistence({request:true})` on a
   create/unlock path — a denied or slow browser prompt would freeze `busy()` (#C2).
-- **localStorage keys are now four**: `diginaut.autolock`, `diginaut-mainnet-ack`,
-  `diginaut.hadVault`, `diginaut.movedNotice` (the legacy-host "we've moved" strip, `#w-move-note`
-  — shown only on the two `LEGACY_S2D_HOSTS`, dismissal is a UI preference so it lives here and
-  **not** in the vault: it must apply before any vault exists and survive erase-all).
-  The tombstone is written wherever a vault exists (create, add-wallet,
+- **localStorage inventory — five keys, and what the erase ceremony reaches.**
+  `diginaut.hadVault` (tombstone) and `diginaut.broadcasts` (the journal: signed raw tx hex +
+  counterparty/amount, 20 records / 30 days) are both wiped by `w-erase-go`, before
+  `show('none')`. `diginaut.autolock` and `diginaut-mainnet-ack` are preferences naming no
+  wallet, amount or counterparty — they deliberately survive it. `diginaut.movedNotice` (the
+  legacy-host "we've moved" strip, `#w-move-note` — shown only on the two `LEGACY_S2D_HOSTS`)
+  also survives: dismissal is a UI preference that must apply before any vault exists and
+  survive erase-all, so it lives here and **not** in the vault. `broadcastLog.clearAll()`
+  belongs to that ceremony ALONE: never lock, autolock, wallet switch, or last-wallet removal
+  (a per-wallet removal, not "leave nothing here"), where the chain-scoped journal is the only
+  way back from an ambiguous broadcast. `w-erase-go` also clears the in-memory `recoveryStatus`,
+  or the card keeps rendering verdicts for records that no longer exist.
+- The tombstone is written wherever a vault exists (create, add-wallet,
   unlock, boot-with-vault) and cleared by **exactly two** deliberate erase paths —
   `w-erase-go` and last-wallet removal — always **before** `show('none')`. It must NOT be
   cleared by `vault.js`'s v1→v2 `deleteKeystore()`: a vault still exists there. Tombstone +

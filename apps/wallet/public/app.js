@@ -1906,6 +1906,15 @@ $('w-erase-cancel').addEventListener('click', () => setConnectMode('unlock'));
 $('w-erase-go').addEventListener('click', () =>
   busy($('w-erase-go'), 'w-erase-err', async () => {
     await keystore.deleteAllRecords();
+    // The journal is the other durable artifact this app owns: signed raw
+    // transaction hex plus the counterparty and amount of every unresolved
+    // broadcast, for up to 30 days. It outlives lock and wallet switch on
+    // purpose, but "erase all wallets on this device" is where that stops —
+    // leaving it behind on a shared machine is exactly what the ceremony
+    // promises not to do. The in-memory verdicts go with it, or the card keeps
+    // rendering resolved rows for records that no longer exist.
+    broadcastLog.clearAll();
+    recoveryStatus.clear();
     // #C2: a deliberate erase is not an eviction. Clear BEFORE show(), or the
     // recovery hero flashes at the user who just chose to erase.
     clearHadVault(globalThis.localStorage);
