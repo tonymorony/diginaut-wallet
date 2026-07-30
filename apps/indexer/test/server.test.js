@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer as createTcpServer } from 'node:net';
 import { createHash } from 'node:crypto';
-import { startServer } from '../server.js';
+import { startServer, ElectrumClient } from '../server.js';
 
 // bech32m of program 0x11…×32 (regtest); scripthash = reversed sha256(scriptPubKey)
 const ADDR = 'dgbrt1pzyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygszk8z3a';
@@ -419,4 +419,82 @@ test('electrum backend down → 502 with an error body, not a hang', async () =>
   } finally {
     server.close();
   }
+});
+
+// ---- Frame assembly ----
+// These drive ElectrumClient directly against a fake ElectrumX socket, below
+// the façade: the seam tests above always get their frames in one chunk, and
+// chunking is exactly where a multi-MB verbose-tx body is won or lost.
+async function withElectrumClient(onMessage, fn) {
+  const electrum = createTcpServer((sock) => {
+    sock.setNoDelay(true); // don't let Nagle coalesce writes a test split on purpose
+    let buf = '';
+    sock.on('data', (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const msg = JSON.parse(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        onMessage(sock, msg);
+      }
+    });
+  });
+  await new Promise((r) => electrum.listen(0, r));
+  const client = new ElectrumClient({ host: '127.0.0.1', port: electrum.address().port });
+  try {
+    await fn(client);
+  } finally {
+    client.sock?.destroy();
+    electrum.close();
+  }
+}
+const HANDSHAKE = ['FakeElectrumX 0.0', '1.4'];
+
+test('framing: a 12MB single-line frame delivered in 64KB writes assembles correctly and fast', async () => {
+  const BIG = 'x'.repeat(12 * 1024 * 1024);
+  await withElectrumClient((sock, msg) => {
+    const result = msg.method === 'server.version' ? HANDSHAKE : { data: BIG };
+    const frame = JSON.stringify({ id: msg.id, jsonrpc: '2.0', result }) + '\n';
+    for (let i = 0; i < frame.length; i += 65536) sock.write(frame.slice(i, i + 65536)); // like a real TCP stream
+  }, async (client) => {
+    const t0 = performance.now();
+    const res = await client.request('blockchain.transaction.get', ['big', true]);
+    const elapsed = performance.now() - t0;
+    assert.equal(res.data, BIG);
+    // Coarse guard, not a benchmark: measured in isolation the flatten-and-
+    // rescan-per-chunk framing costs ~430ms of CPU at this size against ~16ms
+    // linear, so only a severe regression trips this. The load-bearing
+    // assertion is the one above — that a chunked multi-MB frame arrives whole.
+    assert.ok(elapsed < 2000, `framing took ${Math.round(elapsed)}ms — O(n²) regression?`);
+  });
+});
+
+test('framing: several pipelined frames arriving in one chunk are all dispatched', async () => {
+  await withElectrumClient((sock, msg) => {
+    const result = msg.method === 'server.version' ? HANDSHAKE : `pong:${msg.method}`;
+    sock.write(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result }) + '\n');
+  }, async (client) => {
+    // concurrent requests → the replies typically coalesce into a single chunk
+    assert.deepEqual(
+      await Promise.all([client.request('a'), client.request('b'), client.request('c')]),
+      ['pong:a', 'pong:b', 'pong:c'],
+    );
+  });
+});
+
+test('framing: a multi-byte character split across a chunk boundary is not corrupted', async () => {
+  // Decoding each chunk on its own turns the split sequence into replacement
+  // characters — JSON.parse still SUCCEEDS, so the frame is silently wrong.
+  const LABEL = 'café — 日本';
+  await withElectrumClient((sock, msg) => {
+    if (msg.method === 'server.version') {
+      return sock.write(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result: HANDSHAKE }) + '\n');
+    }
+    const frame = Buffer.from(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result: { label: LABEL } }) + '\n', 'utf8');
+    const at = frame.indexOf(0xc3) + 1; // between the two bytes of 'é' (C3 A9)
+    sock.write(frame.subarray(0, at));
+    setTimeout(() => sock.write(frame.subarray(at)), 10); // force two 'data' events
+  }, async (client) => {
+    assert.equal((await client.request('blockchain.transaction.get', ['x', true])).label, LABEL);
+  });
 });

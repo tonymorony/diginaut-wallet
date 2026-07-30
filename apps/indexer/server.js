@@ -23,18 +23,25 @@ export function configFromEnv() {
 }
 
 // ---- Minimal Electrum client: newline-delimited JSON-RPC over TCP ----
+// (exported so apps/indexer/test can drive the frame assembler directly)
 // Cap the unframed read buffer: a compromised/broken ElectrumX must not be able
 // to exhaust indexer memory with an endless line that never sends a newline (#55).
+// Counted in BYTES — the assembler holds raw chunks, not a decoded string.
 const MAX_ELECTRUM_FRAME = 16 * 1024 * 1024;
 
-class ElectrumClient {
+export class ElectrumClient {
   constructor({ host, port }) {
     this.host = host;
     this.port = port;
     this.sock = null;
     this.nextId = 1;
     this.pending = new Map();
-    this.buf = '';
+    // Frame assembly keeps the RAW chunks and resumes the '\n' search where
+    // the last pass stopped (see #onData) — no chunk is ever scanned twice.
+    this.chunks = [];
+    this.chunksLength = 0;
+    this.scanChunk = 0;  // first chunk not yet fully scanned for '\n'
+    this.scanOffset = 0; // byte offset in that chunk where scanning resumes
   }
 
   connect() {
@@ -46,9 +53,16 @@ class ElectrumClient {
       const sock = createConnection(this.port, this.host);
       sock.setNoDelay(true);
       sock.on('connect', () => resolve());
-      sock.on('data', (d) => this.#onData(d));
+      // Guard every socket event by IDENTITY: a socket we tear down (frame
+      // overflow) fires 'close' asynchronously, and by then the next request
+      // may already have opened a fresh session. The dead socket must not null
+      // its successor, reject the requests the successor carries, or feed its
+      // late bytes into the successor's frame assembler.
+      sock.on('data', (d) => { if (this.sock === sock) this.#onData(d); });
       const fail = (err) => {
+        if (this.sock !== sock) return; // a newer session owns this client now
         this.sock = null;
+        this.#resetFrames(); // a half-assembled frame belongs to the dead socket
         reject(err ?? new Error('electrum connection closed'));
         for (const { reject: rj } of this.pending.values()) rj(err ?? new Error('electrum connection closed'));
         this.pending.clear();
@@ -71,19 +85,59 @@ class ElectrumClient {
     });
   }
 
+  #resetFrames() {
+    this.chunks = [];
+    this.chunksLength = 0;
+    this.scanChunk = 0;
+    this.scanOffset = 0;
+  }
+
   #onData(d) {
-    this.buf += d;
-    if (this.buf.length > MAX_ELECTRUM_FRAME) {
-      this.buf = '';
+    // Electrum frames are single-line JSON, and a verbose-tx body is megabytes
+    // arriving in ~64KB chunks with no newline until the very end. `buf += d`
+    // plus `buf.indexOf('\n')` re-flattened and re-scanned the WHOLE buffer on
+    // every chunk — quadratic, and the shared session means that CPU is stolen
+    // from every other request. Buffering raw chunks and scanning only the NEW
+    // bytes pays one concat per COMPLETED frame instead.
+    //
+    // Scanning for the byte 0x0a is also what makes this UTF-8-safe: `string +=
+    // Buffer` decodes each chunk on its own, so a multi-byte character split
+    // across a chunk boundary silently became replacement characters. A UTF-8
+    // continuation byte is >= 0x80 and can never be mistaken for a newline.
+    this.chunks.push(d);
+    this.chunksLength += d.length;
+    if (this.chunksLength > MAX_ELECTRUM_FRAME) {
+      // Drop the session too: we just failed every request in flight on it, and
+      // the only way to resync a stream mid-frame is to skip to the next
+      // newline. A fresh connection is cheaper and unambiguous.
+      this.#resetFrames();
       const err = new Error('electrum response exceeded frame limit');
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
+      this.sock?.destroy();
       return;
     }
-    let nl;
-    while ((nl = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, nl);
-      this.buf = this.buf.slice(nl + 1);
+    for (;;) {
+      // Find the next '\n', resuming where the previous pass gave up.
+      let nlChunk = -1;
+      let nlPos = -1;
+      for (let i = this.scanChunk; i < this.chunks.length; i++) {
+        const p = this.chunks[i].indexOf(0x0a, i === this.scanChunk ? this.scanOffset : 0);
+        if (p >= 0) { nlChunk = i; nlPos = p; break; }
+        this.scanChunk = i + 1;
+        this.scanOffset = 0;
+      }
+      if (nlChunk < 0) return;
+      // Assemble the completed frame ONCE and drop the bytes it consumed. What
+      // follows the newline has never been scanned, so the next pass restarts
+      // at 0 without re-reading anything.
+      const frame = Buffer.concat([...this.chunks.slice(0, nlChunk), this.chunks[nlChunk].subarray(0, nlPos)]);
+      const rest = this.chunks[nlChunk].subarray(nlPos + 1);
+      this.chunks = rest.length ? [rest, ...this.chunks.slice(nlChunk + 1)] : this.chunks.slice(nlChunk + 1);
+      this.chunksLength -= frame.length + 1; // the frame plus its newline
+      this.scanChunk = 0;
+      this.scanOffset = 0;
+      const line = frame.toString('utf8');
       if (!line.trim()) continue;
       let msg;
       try {

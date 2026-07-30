@@ -13,6 +13,10 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
 - ElectrumX transport: raw TCP JSON-RPC; `server.version` handshake happens on every
   (re)connect — ElectrumX ≥1.4 kills connections whose first message is anything else.
   16 MiB frame cap; malformed lines skipped.
+- Framing is linear (`ElectrumClient#onData`): raw chunks + a resumable 0x0a scan, one
+  concat per completed frame — never flatten-and-rescan per chunk (multi-MB verbose-tx
+  bodies made that quadratic). Byte-level, so a split multi-byte char can't corrupt a
+  frame. The 16 MiB cap counts BYTES; overflow destroys the socket.
 - Positions = mint whose collateral vout[0] is unspent and whose OP_RETURN owner key hashes
   to this address's DD-token program. DD amounts pair OP_RETURN cents **positionally** with
   zero-value `5120…` outputs.
