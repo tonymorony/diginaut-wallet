@@ -1199,6 +1199,8 @@ let receiveScanGen = -1;      // walletGen whose scan COMPLETED (see walletGen: 
 let receiveScanBusy = -1;     // walletGen whose scan is in flight
 let receiveScanFailGen = -1;  // walletGen the failure count below belongs to
 let receiveScanFails = 0;
+let receiveFrontier = -1;     // deepest index the money poll has seen used on chain
+let receiveFrontierGen = -1;  // walletGen that frontier belongs to
 // Backoff for a failing indexer. No ceiling on purpose: capping the retries
 // reintroduces a slower version of the bug this replaces — a wallet that has
 // silently stopped looking for its own coins — and the last step is a minute,
@@ -1269,6 +1271,35 @@ async function syncReceiveIndex() {
   renderAddress();
   refreshMoney();
   rememberReceiveIndex(); // teach this device what the chain just taught us
+}
+
+/** Re-arm the scan when the money poll finds on-chain activity AT or PAST the
+ * handout counter. Without this, rediscovery runs once per open: with the same
+ * seed live on a second device, a payment landing at the top of the watch
+ * window (index+2) is seen, but the window never widens — so the NEXT payment,
+ * one index further, stays invisible until the wallet is re-opened.
+ *
+ * EDGE-triggered on the frontier, deliberately not level-triggered: a wallet
+ * sitting at a funded frontier the scan cannot advance would otherwise re-walk
+ * the chain every 8s straight into the proxy's rate limit (#H4).
+ *
+ * Called from inside refreshMoney's generation guard, so wallet.index and
+ * addressUse still belong to the wallet on screen. */
+function maybeRearmReceiveScan() {
+  if (receiveFrontierGen !== walletGen) { receiveFrontierGen = walletGen; receiveFrontier = -1; }
+  let frontier = -1;
+  addressUse.forEach((use, i) => { if (use.used && i > frontier) frontier = i; });
+  if (frontier <= receiveFrontier) return;
+  receiveFrontier = frontier;
+  // Activity BELOW the counter is the ordinary case — an address this device
+  // handed out has finally been paid — and the window already covers it. Only
+  // activity at or past the counter means someone walked the chain further
+  // than this device knows about.
+  if (frontier < wallet.index) return;
+  // ONLY receiveScanGen: re-arming receiveScanBusy would let a second walk
+  // start under the one in flight and double the fan-out.
+  receiveScanGen = -1;
+  syncReceiveIndex();
 }
 
 /** Persist the handout counter. Best effort by design: losing it costs an
@@ -2681,6 +2712,7 @@ async function refreshMoney() {
       at.sats += r.utxos.reduce((n, u) => n + Number(u.valueSats), 0);
       addressUse.set(index, at);
     });
+    maybeRearmReceiveScan();
     renderPrevAddresses(); // no-op unless the list is open
     const utxos = perAddr.flatMap((r) => r.utxos);
     const confirmed = utxos.filter((u) => u.height > 0).reduce((n, u) => n + Number(u.valueSats), 0);
