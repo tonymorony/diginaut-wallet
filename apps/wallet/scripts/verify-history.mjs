@@ -66,13 +66,14 @@ function build() {
     feeSats: null,
     vin: [{ address: EXT_X, valueSats: '777000000' }],
     vout: [{ n: 0, address: WALLET, valueSats: '777000000', ddCents: null }] });                 // received +7.77, lagging index
-  // The hostile inverse of the same shape: the indexer is untrusted (#55), so
-  // a count it invented for a tx no block has carried must not buy the final
-  // badge — that badge names a settlement state the chain has not reached.
+  // The inverse of the same disagreement: a settled-looking count over a tx the
+  // index carries no block for. `final` needs both signals to agree, so the row
+  // must stay at its count — the badge names a settlement state the index has
+  // not corroborated.
   addTx(tx32('b8'), 0, { confirmations: 9999, time: now - 60, type: 'dgb',
     feeSats: null,
     vin: [{ address: EXT_X, valueSats: '333000000' }],
-    vout: [{ n: 0, address: WALLET, valueSats: '333000000', ddCents: null }] });                 // received +3.33, lying count
+    vout: [{ n: 0, address: WALLET, valueSats: '333000000', ddCents: null }] });                 // received +3.33, count with no block
   for (let i = 0; i < 6; i++) {
     addTx(tx32(String.fromCharCode(101) + i), 984 - i, { confirmations: 20, time: now - 200000 - i, type: 'dgb',
       feeSats: null,
@@ -154,8 +155,11 @@ try {
   // address index's height, but the final badge needs both to agree.
   const lagging = await confBadge('+7.77 DGB');
   check(lagging === 'tx-conf partial|24 conf', `a mined tx the index still lists at height 0 shows its count, not pending (got "${lagging}")`);
-  const lying = await confBadge('+3.33 DGB');
-  check(!/final/.test(lying), `an invented count on a tx with no block does not buy the final badge (got "${lying}")`);
+  // Exact value, not `!/final/`: 'no row' and 'no badge' also fail that test,
+  // so a vanished fixture row would pin nothing.
+  const uncorroborated = await confBadge('+3.33 DGB');
+  check(uncorroborated === 'tx-conf partial|9999 conf',
+    `a count with no block behind it in the index stays a count, never final (got "${uncorroborated}")`);
   check(/ago|\d{4}-\d\d-\d\d/.test(t), 'entries carry a timestamp / relative date');
   await evaluate(`document.querySelector('#w-history').scrollIntoView({block:'center'})`);
   await shot('92-history-enriched.png');
