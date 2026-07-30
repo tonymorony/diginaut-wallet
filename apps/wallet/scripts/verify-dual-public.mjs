@@ -51,13 +51,13 @@ async function checkSide(base, { label, chain, faucet }) {
     `rpc proxy serves getblockchaininfo on "${chain}" (height ${info.body?.result?.blocks ?? '?'})`);
 
   // exercise the wallet→indexer→ElectrumX chain, not just the config flag.
-  // The probe txid doesn't exist, and since #69 the indexer wraps ANY enrich
-  // error as its own 502 — so status alone can't tell "trio answered" from
-  // "trio unreachable". The body can: an electrum/daemon error message means
-  // the request went wallet→indexer→ElectrumX→node and came back; a transport
-  // error (ECONNREFUSED/timeout/unreachable) means a link in the trio is down.
+  // The probe txid doesn't exist, so a healthy trio answers 404 "not found":
+  // the request went wallet→indexer→ElectrumX→node and came back. A 502 whose
+  // `cause` is *-unreachable means a link in the trio is down. Read `cause`
+  // first — the servers no longer relay upstream text, so their copy carries no
+  // verdict; `error` is the fallback for a server that predates the token.
   const idx = await getJson(base, `/api/indexer/tx/${'0'.repeat(64)}`);
-  const idxErr = String(idx.body?.error ?? '');
+  const idxErr = String(idx.body?.cause ?? idx.body?.error ?? '');
   const answered = idx.status < 500 || /daemon error|no such|not found/i.test(idxErr);
   check(answered && !/econnrefused|etimedout|unreachable|socket/i.test(idxErr),
     `indexer chain answers (status ${idx.status}${idxErr ? `, ${idxErr.slice(0, 60)}` : ''})`);

@@ -14,6 +14,10 @@ const SCRIPTHASH = createHash('sha256')
   .update(Buffer.concat([Buffer.from([0x51, 0x20]), Buffer.from('11'.repeat(32), 'hex')]))
   .digest().reverse().toString('hex');
 
+// A handler that THROWS answers a JSON-RPC error, exactly as ElectrumX does for
+// an unknown txid — that is how the façade's "backend answered, with an error"
+// branch gets exercised. (It also keeps a stray unexpected call from becoming an
+// uncaught throw inside a 'data' listener, which would take the test run down.)
 function fakeElectrum(handlers) {
   const seen = [];
   const server = createTcpServer((sock) => {
@@ -27,7 +31,13 @@ function fakeElectrum(handlers) {
         const msg = JSON.parse(line);
         seen.push(msg);
         const impl = handlers[msg.method] ?? (() => { throw new Error('unexpected: ' + msg.method); });
-        sock.write(JSON.stringify({ id: msg.id, jsonrpc: '2.0', result: impl(msg.params) }) + '\n');
+        let reply;
+        try {
+          reply = { id: msg.id, jsonrpc: '2.0', result: impl(msg.params) };
+        } catch (e) {
+          reply = { id: msg.id, jsonrpc: '2.0', error: { code: 1, message: e.message } };
+        }
+        sock.write(JSON.stringify(reply) + '\n');
       }
     });
   });
@@ -408,14 +418,30 @@ test('reconnect after a dropped TCP session re-does the server.version handshake
   }
 });
 
-test('electrum backend down → 502 with an error body, not a hang', async () => {
+// ---- Error bodies carry no backend fingerprint ----
+// This service answers unauthenticated callers through the wallet's proxy. An
+// upstream error string names ElectrumX, its host:port, its Python DaemonError
+// grammar and the node's txindex/mempool wording — free reconnaissance. The
+// body is a fixed verdict token; the real error goes to the server-side log.
+const NO_BACKEND_NAME = /daemon|electrum|txindex|mempool/i;
+const NO_BACKEND_ADDRESS = /127\.0\.0\.1|ECONNREFUSED|scripthash/;
+function assertNoFingerprint(bodyText, what) {
+  assert.doesNotMatch(bodyText, NO_BACKEND_NAME, what);
+  assert.doesNotMatch(bodyText, NO_BACKEND_ADDRESS, what);
+}
+
+test('electrum backend down → 502 cause upstream-unreachable, no fingerprint, not a hang', async () => {
   const server = startServer({ port: 0, hrp: 'dgbrt', electrum: { host: '127.0.0.1', port: 1 } });
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    const res = await fetch(`${base}/api/address/${ADDR}/utxos`);
-    assert.equal(res.status, 502);
-    assert.ok((await res.json()).error);
+    for (const path of [`/api/address/${ADDR}/utxos`, `/api/tx/${'ab'.repeat(32)}`, '/api/health']) {
+      const res = await fetch(base + path);
+      assert.equal(res.status, 502, path);
+      const text = await res.text();
+      assert.deepEqual(JSON.parse(text), { error: 'the balance index is unavailable', cause: 'upstream-unreachable' }, path);
+      assertNoFingerprint(text, path);
+    }
   } finally {
     server.close();
   }
@@ -621,4 +647,46 @@ test('tx cache: it is bounded — the oldest entry makes room for the newest', a
   const before = calls;
   await cache.get(first);
   assert.equal(calls, before + 1, 'an evicted txid is fetched again');
+});
+// The backend ANSWERING with an error is a different operational fact from the
+// link being down (ops-and-server.md reads exactly this to triage a live site),
+// so the two keep distinct tokens even though both are 502s.
+const ERRORING_BACKEND = {
+  'server.version': () => ['FakeElectrumX 0.0', '1.4'],
+  'blockchain.headers.subscribe': () => { throw new Error('daemon error: DaemonError({\'code\': -28, \'message\': \'Verifying blocks...\'})'); },
+  'blockchain.scripthash.listunspent': () => { throw new Error('electrum server 127.0.0.1:50001 could not read scripthash from mempool'); },
+  'blockchain.scripthash.get_history': () => { throw new Error('daemon error: txindex not enabled'); },
+  'blockchain.transaction.get': () => {
+    throw new Error('daemon error: DaemonError({\'code\': -5, \'message\': \'No such mempool or blockchain transaction. Use -txindex\'})');
+  },
+};
+
+test('backend answers with an error → 502 cause upstream-error; the repr never reaches the caller', async () => {
+  await withIndexer(async (base) => {
+    for (const path of [`/api/address/${ADDR}/utxos`, `/api/address/${ADDR}/history`, `/api/address/${ADDR}/positions`, '/api/health']) {
+      const res = await fetch(base + path);
+      assert.equal(res.status, 502, path);
+      const text = await res.text();
+      assert.deepEqual(JSON.parse(text), { error: 'the balance index is unavailable', cause: 'upstream-error' }, path);
+      assertNoFingerprint(text, path);
+    }
+  }, ERRORING_BACKEND);
+});
+
+test('unknown txid → 404 not found, not a 502 carrying the DaemonError repr', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/tx/${'0'.repeat(64)}`);
+    assert.equal(res.status, 404);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { error: 'not found' });
+    assertNoFingerprint(text, 'unknown txid');
+  }, ERRORING_BACKEND);
+});
+
+test('a 400 on a bad address describes the CALLER’s input and names no backend', async () => {
+  await withIndexer(async (base) => {
+    const res = await fetch(`${base}/api/address/nonsense/utxos`);
+    assert.equal(res.status, 400);
+    assertNoFingerprint(await res.text(), 'bad address');
+  });
 });

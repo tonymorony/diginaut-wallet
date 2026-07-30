@@ -59,6 +59,11 @@ server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
   `digibyte-cli` calls over ssh are fine**; `pkill` over ssh: always `-x`, never `-f`.
 - Faucet test-reset: `docker exec deploy-faucet-1 rm /data/faucet-claims.json` + compose
   restart faucet (claims are one-per-IP-per-24h). Top-up: server-side mine script.
-- Indexer 502 on `/api/tx/<unknown txid>` is **by design** since #69 — read the body:
-  `daemon-error` = trio healthy; `ECONNREFUSED` = link actually down.
+- Triage the indexer with `/api/tx/<unknown txid>` and read the body's **`cause`** (never the
+  copy — upstream text is no longer relayed at all): **404 `not found`** = trio healthy (the
+  probe reached ElectrumX and came back); 502 `upstream-error` = backend up but answering
+  errors (still syncing, node warming); 502 `upstream-unreachable` = the link is actually
+  down. The real error is in `docker logs deploy-indexer-1` (`indexer: …`).
+  Before this pass the probe answered 502 with a raw `daemon-error`/`ECONNREFUSED` repr and no
+  `cause` — a not-yet-redeployed container still does.
 - Config backups live server-side/user-side (0700) — never commit.

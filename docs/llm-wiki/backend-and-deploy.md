@@ -9,7 +9,16 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
 
 - Endpoints: `/api/address/:addr/{utxos,history,positions,dd-utxos}`, `/api/tx/:txid`
   (enriched: confirmations/time/type/feeSats, prevout fan-out capped at 40 → `feeSats:null`),
-  `/api/health` (tip height). Upstream failure → 502.
+  `/api/health` (tip height).
+- **Error bodies never carry upstream text** (it names ElectrumX/host:port/DaemonError grammar
+  to unauthenticated callers). Errors are tagged where they arise (`err.upstream`,
+  `err.electrumRpc`), logged via `console.error('indexer:', err)`, then answered as
+  `{error, cause}` — `error` is copy, **`cause` is the machine token**: 502
+  `upstream-unreachable` (transport) · 502 `upstream-error` (backend answered with an error)
+  · 500 `internal` (untagged = our own defect). Unknown txid on `/api/tx` → **404
+  `not found`** (that route alone reads an upstream RPC error as "no such tx"). Readers of
+  `cause`: `public/app.js` (`err.indexerCause` → "still syncing" copy),
+  `verify-dual-public.mjs`, `verify-mainnet-live.mjs`.
 - ElectrumX transport: raw TCP JSON-RPC; `server.version` handshake happens on every
   (re)connect — ElectrumX ≥1.4 kills connections whose first message is anything else.
   16 MiB frame cap; malformed lines skipped.

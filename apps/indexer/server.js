@@ -39,6 +39,18 @@ export function configFromEnv() {
 // Counted in BYTES — the assembler holds raw chunks, not a decoded string.
 const MAX_ELECTRUM_FRAME = 16 * 1024 * 1024;
 
+// Every failure that came from the ElectrumX side is TAGGED at the point it
+// arises, because the HTTP layer never sees its text: raw upstream strings name
+// the backend, its host:port and its error grammar to unauthenticated callers,
+// so they are logged and dropped. `upstream` = a backend problem either way;
+// `electrumRpc` narrows it to "the backend answered, with an error" — the only
+// signal that distinguishes a healthy link from a dead one once the text is gone.
+function tagUpstream(err, { rpc = false } = {}) {
+  err.upstream = true;
+  if (rpc) err.electrumRpc = true;
+  return err;
+}
+
 export class ElectrumClient {
   constructor({ host, port }) {
     this.host = host;
@@ -73,8 +85,9 @@ export class ElectrumClient {
         if (this.sock !== sock) return; // a newer session owns this client now
         this.sock = null;
         this.#resetFrames(); // a half-assembled frame belongs to the dead socket
-        reject(err ?? new Error('electrum connection closed'));
-        for (const { reject: rj } of this.pending.values()) rj(err ?? new Error('electrum connection closed'));
+        const e = tagUpstream(err ?? new Error('electrum connection closed'));
+        reject(e);
+        for (const { reject: rj } of this.pending.values()) rj(e);
         this.pending.clear();
       };
       sock.on('error', fail);
@@ -90,7 +103,7 @@ export class ElectrumClient {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`electrum timeout: ${method}`));
+        if (this.pending.delete(id)) reject(tagUpstream(new Error(`electrum timeout: ${method}`)));
       }, 15_000).unref();
     });
   }
@@ -120,7 +133,7 @@ export class ElectrumClient {
       // the only way to resync a stream mid-frame is to skip to the next
       // newline. A fresh connection is cheaper and unambiguous.
       this.#resetFrames();
-      const err = new Error('electrum response exceeded frame limit');
+      const err = tagUpstream(new Error('electrum response exceeded frame limit'));
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
       const dead = this.sock;
@@ -166,7 +179,9 @@ export class ElectrumClient {
       const entry = this.pending.get(msg.id);
       if (!entry) continue; // subscription notification — not used yet
       this.pending.delete(msg.id);
-      msg.error ? entry.reject(new Error(msg.error.message || JSON.stringify(msg.error))) : entry.resolve(msg.result);
+      msg.error
+        ? entry.reject(tagUpstream(new Error(msg.error.message || JSON.stringify(msg.error)), { rpc: true }))
+        : entry.resolve(msg.result);
     }
   }
 
@@ -415,7 +430,23 @@ export function startServer(overrides = {}) {
       }
       const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
       if (req.method === 'GET' && txMatch) {
-        return sendJson(res, 200, await enrichTx(txCache.get, txMatch[1]));
+        try {
+          return sendJson(res, 200, await enrichTx(txCache.get, txMatch[1]));
+        } catch (err) {
+          // An unknown txid makes ElectrumX answer an RPC error whose message is
+          // its Python DaemonError repr. Only THIS route reads that as 404: on a
+          // tx lookup "the backend answered with an error" means no such tx —
+          // the caller's answer, not an outage. Transport failures still fall
+          // through to the classifier below, which is what tells an operator
+          // "the link is down" apart from "the trio is healthy" (ops wiki).
+          // (The cache memoizes the PROMISE, so a tagged rejection reaches every
+          // caller and the failure self-evicts — nothing caches the 404.)
+          if (err?.electrumRpc) {
+            console.error('indexer: tx lookup:', err.message);
+            return sendJson(res, 404, { error: 'not found' });
+          }
+          throw err;
+        }
       }
       if (req.method === 'GET' && req.url === '/api/health') {
         const tip = await withElectrum('blockchain.headers.subscribe', []);
@@ -423,7 +454,22 @@ export function startServer(overrides = {}) {
       }
       sendJson(res, 404, { error: 'not found' });
     } catch (err) {
-      sendJson(res, 502, { error: String(err.message || err) });
+      // This service is reachable unauthenticated through the wallet's proxy, so
+      // the error TEXT stays here: it carries ElectrumX's Python DaemonError
+      // reprs, `electrum timeout: <method>` (naming the backend's RPC grammar)
+      // and socket errors naming ELECTRUM_HOST:PORT. Log the real thing — the
+      // most useful line we have — and answer a fixed, machine-readable verdict.
+      console.error('indexer:', err);
+      // `error` is copy a user may end up reading through the wallet; `cause` is
+      // the machine token, and it keeps TWO upstream verdicts because an
+      // operator curling this service must tell "the backend answered, so the
+      // trio is healthy" from "the link is actually down" with no fingerprint
+      // left to read (ops-and-server.md). Same copy for both: to a user holding
+      // a wallet there is no difference — no balances either way.
+      const unavailable = 'the balance index is unavailable';
+      if (err?.electrumRpc) return sendJson(res, 502, { error: unavailable, cause: 'upstream-error' });
+      if (err?.upstream) return sendJson(res, 502, { error: unavailable, cause: 'upstream-unreachable' });
+      sendJson(res, 500, { error: 'internal error', cause: 'internal' }); // untagged = our own defect
     }
   });
 

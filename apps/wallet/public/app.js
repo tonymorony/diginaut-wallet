@@ -2527,8 +2527,15 @@ async function indexerAttempt(path) {
   }
   const json = await res.json();
   if (res.ok) return { json };
+  const err = new Error(json.error || `HTTP ${res.status}`);
+  // The FLAG, not the copy — same contract as apiFetch's `transport` (#H1).
+  // Both servers on this path now answer a fixed `cause` token with the
+  // upstream detail stripped, so the copy is free to change without silently
+  // turning an outage into an unexplained raw string in the UI. The cause rides
+  // every retry attempt's error, so the ladder's final throw still carries it.
+  if (json.cause) err.indexerCause = json.cause;
   return {
-    err: new Error(json.error || `HTTP ${res.status}`),
+    err,
     transient: transientIndexerFailure({ status: res.status, body: json }),
   };
 }
@@ -2728,10 +2735,11 @@ async function refreshMoney() {
     // names the problem — don't prefix it again (#H2).
     if (e.indexerData) { $('w-open-err').textContent = e.message; return; }
     // transport-level failures mean the index isn't serving yet (e.g. initial
-    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED. The regex
-    // only ever matched errors the SERVER produced; e.transport covers the
-    // client-side timeout/dead-hop cases, whose copy matches none of these (#H1).
-    $('w-open-err').textContent = e.transport || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
+    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED.
+    // e.indexerCause is the server-side verdict (the servers stopped relaying
+    // upstream text at all); e.transport covers the client-side timeout/dead-hop
+    // cases (#H1). The regex stays for a server that predates the token.
+    $('w-open-err').textContent = e.transport || e.indexerCause || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
       ? 'indexer: the balance index is still syncing — balances and history will appear once it catches up (your on-chain funds are unaffected)'
       : 'indexer: ' + e.message;
   }
