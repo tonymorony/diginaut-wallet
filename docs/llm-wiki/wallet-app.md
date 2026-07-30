@@ -1,7 +1,7 @@
 # apps/wallet
 
-Verified: 2026-07-27 @ branch `design/copy-truthful-labels` (#138 icon system + connect modal,
-then the CTA/recovery/banner copy pass).
+Verified: 2026-07-31 @ branch `feat/diginaut-space-domain` (#138 icon system + connect modal,
+the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Layout
 
@@ -90,6 +90,17 @@ then the CTA/recovery/banner copy pass).
 
 ## Sign-to-derive (branch #130)
 
+- **Four frozen messages, two axes** (ADR-0005 network × ADR-0006 origin era): v1 testnet /
+  v2 mainnet on the `ludere.space` hosts, v3 testnet (333 B, `be8ffbacb1…`) / v4 mainnet
+  (317 B, `51b9fe9bce…`) everywhere else. `s2dForChain(chain, hostname)` picks the pair by
+  **serving hostname** — `LEGACY_S2D_HOSTS` is an allow-list and is **permanent**: drop a host
+  and that origin keeps its old vaults while deriving different wallets, silently. Unknown
+  hostname → the NEW era (a self-host on v1 would pin an origin it isn't); unknown chain →
+  that era's TESTNET message. `s2dForVersion()` maps 1–4 for reconnect; unknown/absent → v1.
+- `s2dOriginHost(message)` reads the host out of the message's `Origin:` line. The ceremony
+  checkbox (`#w-web3-origin`, filled by `armWeb3Disclosure()` before the step is displayed) is
+  the only consumer — it was a hardcoded `dgb.ludere.space`, so the **mainnet** ceremony told
+  users the **testnet** domain was the only site allowed to ask. Never re-hardcode a host there.
 - `connect.js`: frozen `S2D_MESSAGE` v1 (321 bytes, testnet-scoped, origin-pinned);
   `canonicalizeEvmSignature` (strict 65-byte, low-s); `recoverEthAddress` (local ecrecover);
   `verifySolanaSignature` (zip215:false); entropy = SHA-256(canonical 64 bytes, v excluded) →
@@ -116,8 +127,11 @@ then the CTA/recovery/banner copy pass).
   mapping onto `.dot.good/.bad/.warn`, and the tombstone helpers over
   `HAD_VAULT_KEY = 'diginaut.hadVault'`. Never `await` `probePersistence({request:true})` on a
   create/unlock path — a denied or slow browser prompt would freeze `busy()` (#C2).
-- **localStorage keys are now three**: `diginaut.autolock`, `diginaut-mainnet-ack`,
-  `diginaut.hadVault`. The tombstone is written wherever a vault exists (create, add-wallet,
+- **localStorage keys are now four**: `diginaut.autolock`, `diginaut-mainnet-ack`,
+  `diginaut.hadVault`, `diginaut.movedNotice` (the legacy-host "we've moved" strip, `#w-move-note`
+  — shown only on the two `LEGACY_S2D_HOSTS`, dismissal is a UI preference so it lives here and
+  **not** in the vault: it must apply before any vault exists and survive erase-all).
+  The tombstone is written wherever a vault exists (create, add-wallet,
   unlock, boot-with-vault) and cleared by **exactly two** deliberate erase paths —
   `w-erase-go` and last-wallet removal — always **before** `show('none')`. It must NOT be
   cleared by `vault.js`'s v1→v2 `deleteKeystore()`: a vault still exists there. Tombstone +
@@ -176,7 +190,8 @@ then the CTA/recovery/banner copy pass).
   registered when this bit. `verify-beta-posture` **is registered since** (`run-drivers.sh`
   = 13, alongside `verify-mainnet-bringup`, which never touches the ack modal).
   `verify-mainnet-live` drives the **deployed** site (`argv[2]`, default
-  `https://diginaut.ludere.space`, 3-min node warm-up) and so stays out of the local gate —
+  `https://diginaut.space` since the domain switch; the legacy `https://diginaut.ludere.space`
+  is still a valid target, 3-min node warm-up) and so stays out of the local gate —
   the blocking interstitial still has no coverage in `run-drivers.sh`. Don't read "13 green"
   as "mainnet ack is tested".
 - Title is a state, not a constant: `setConnectMode()` → *Back up your seed phrase* / *Erase
@@ -211,7 +226,7 @@ then the CTA/recovery/banner copy pass).
 
 ## Tests
 
-15 unit suites (192 tests) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
+15 unit suites (**205 tests** as of 2026-07-31) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
 guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity, keystore, netchrome (incl.
 `backupSkipAllowed`), dderrors (incl. spend/conflict families), dca, autolock, connect
 (protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate

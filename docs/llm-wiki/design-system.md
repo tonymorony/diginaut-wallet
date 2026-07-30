@@ -1,7 +1,7 @@
 # Design system
 
-Verified: 2026-07-27 @ branch `design/copy-truthful-labels` (#138, the copy pass, then the
-sprite-coverage sweep).
+Verified: 2026-07-31 @ branch `feat/diginaut-space-domain` (#138, the copy pass, the
+sprite-coverage sweep, then the diginaut.space domain switch).
 
 Visual + copy conventions shared by every surface. Behavioural facts about a specific screen
 live in `wallet-app.md`; this page is only "how it should look and read".
@@ -148,6 +148,11 @@ The topbar is the tightest row in the app: at 430px it has **398px** and the gue
   `dgbt1p`) or the Disconnect label (**the app's only manual lock** — `lockWallet()` has no
   other caller but the autolock timer). Both were rejected; two right-aligned rows is the
   correct answer down there.
+- The legacy-host "we've moved" strip (`#w-move-note`, ADR-0006) costs the header **nothing**:
+  it is in normal flow below `.backup-strip`, so it cannot overlap the sticky `.net-banner` or
+  crowd the topbar. It reuses the backup strip's geometry with an **informational** tone
+  (`--accent-5`) — deliberately neither amber nor red, since both warning levels are already
+  spoken for (amber = testnet/backup, red = mainnet beta) and a domain change is news, not risk.
 - **Nothing here is guarded by CI, twice over:** `verify-beta-posture` reads the `.hidden`
   *property* (`!net-pill.hidden`), which a CSS `display:none` never sets, and the drivers run at
   desktop width where these rules do not apply. Check mobile by hand.
@@ -181,6 +186,20 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
   already qualified it). Say what is absent, not that nothing exists.
 - **Keep an accurate jargon term in the one place it is accurate.** "Connect" is correct on
   the web3 sign-to-derive door and nowhere else; using it only there teaches the distinction.
+- **A string that quotes a load-bearing value must be GENERATED from that value.** The
+  sign-to-derive checkbox — *"I understand: only **{host}** may ever ask for this signature.
+  Any other site asking for it is stealing my funds."* — hardcoded `dgb.ludere.space`, so the
+  **mainnet** ceremony named the **testnet** domain, next to a signing popup whose own last
+  line said the opposite. The host is now `#w-web3-origin`, written by `armWeb3Disclosure()`
+  from `s2dOriginHost()` of the exact frozen message being signed, and it changes per network
+  **and** per origin era (ADR-0006: v1/v2 on the `ludere.space` hosts, v3/v4 elsewhere). The
+  sentence around it is load-bearing and pinned by `verify-connect-derive` /
+  `verify-web3-mainnet`; reword it there and in both drivers, and never put a literal host back.
+- **Load-bearing strings** (never reword alone; full table in `.claude/agents/ux-writer.md`):
+  the four `S2D_MESSAGE*` bodies in `connect.js` (**consensus-grade** — a diff re-derives every
+  user's wallet), the proxy refusals `broadcastlog.js` string-matches, a node's raw reject text,
+  and the driver-asserted picker strings. The ux-writer table still lists only v1 — read it as
+  covering all four.
 - **Name the consequence, not the mechanism** — "New 24-word seed phrase, you'll write it down
   next" over "Create new wallet".
 - **Never soften a risk to reduce friction.** The backup ceremony, mainnet interstitial,

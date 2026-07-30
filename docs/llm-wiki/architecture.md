@@ -28,7 +28,10 @@ browser (keys live HERE) ──► wallet server :8787/:8791 ──┬─► /ap
 4. Fund-moving code passes the differential harness first: JS-built txs byte-identical to
    Core-built on regtest (ADR-0001/0002).
 5. `digidollar-js` stays pure — deterministic functions, zero I/O (ADR-0004).
-6. Derived (sign-to-derive) seeds never span networks — per-network frozen messages (ADR-0005).
+6. Derived (sign-to-derive) seeds never span networks — per-network frozen messages (ADR-0005),
+   and never span origin eras — per-domain frozen messages, selected by serving hostname
+   (ADR-0006). Frozen bytes are never rewritten; a domain move mints a new version, and
+   `LEGACY_S2D_HOSTS` in `connect.js` is permanent.
 
 ## ADR digest
 
@@ -39,6 +42,7 @@ browser (keys live HERE) ──► wallet server :8787/:8791 ──┬─► /ap
 | 0003 | Balance queries via own indexer (ElectrumX façade); xpubs never leave the browser |
 | 0004 | Protocol layer = pure library (`packages/digidollar-js`), monorepo package, zero I/O |
 | 0005 | Sign-to-derive messages are per-network → derived seeds don't span networks |
+| 0006 | A domain move mints NEW s2d messages (v3/v4), never rewrites frozen ones; legacy hosts allow-listed forever, never redirected |
 
 ## Workspaces
 
