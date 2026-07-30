@@ -63,7 +63,8 @@ server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
   copy — upstream text is no longer relayed at all): **404 `not found`** = trio healthy (the
   probe reached ElectrumX and came back); 502 `upstream-error` = backend up but answering
   errors (still syncing, node warming); 502 `upstream-unreachable` = the link is actually
-  down. The real error is in `docker logs deploy-indexer-1` (`indexer: …`).
+  down; the wallet proxy's own `indexer-unreachable`/`faucet-unreachable` = that hop failed.
+  Real errors: `docker logs deploy-indexer-1` / `deploy-wallet-1` (`indexer: …` / `wallet: …`).
   Before this pass the probe answered 502 with a raw `daemon-error`/`ECONNREFUSED` repr and no
   `cause` — a not-yet-redeployed container still does.
 - Config backups live server-side/user-side (0700) — never commit.

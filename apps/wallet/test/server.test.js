@@ -891,3 +891,68 @@ test('HSTS is per-server, not process-global — one instance must not leak into
     plain.close();
   }
 });
+
+// ---- A proxy failure names no backend ----
+// Both proxies used to answer `<peer> unreachable: ${err.message}`, printing the
+// configured INDEXER_URL / FAUCET_URL host:port (and the OS error) to any
+// caller — a map of an otherwise-unpublished internal network.
+const NO_BACKEND_TRACE = /127\.0\.0\.1|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|:\d{4,5}/;
+
+test('an unreachable indexer answers a fixed body — never the upstream address', async () => {
+  await withConfiguredServer({ indexerUrl: 'http://127.0.0.1:1' }, async (base) => {
+    const res = await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos');
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { error: 'the balance index is unavailable', cause: 'indexer-unreachable' });
+    assert.doesNotMatch(text, NO_BACKEND_TRACE);
+  });
+});
+
+test('an unreachable faucet answers a fixed body — never the upstream address', async () => {
+  await withConfiguredServer({ faucetUrl: 'http://127.0.0.1:1' }, async (base) => {
+    const res = await fetch(base + '/api/faucet/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: 'dgbrt1qfoo' }),
+    });
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { error: 'the Faucet is unavailable', cause: 'faucet-unreachable' });
+    assert.doesNotMatch(text, NO_BACKEND_TRACE);
+  });
+});
+
+// The counterweight to the two above: /api/rpc must keep relaying the node's
+// reject string WORD FOR WORD. Genericizing it would turn every definite reject
+// into "may have been broadcast" and hand the user back the rebuild-and-send
+// path onto the same coins — a money-safety regression, not a leak fix.
+test('/api/rpc still relays the node reject verbatim, so a reject stays a reject (#H3)', async () => {
+  const { createServer } = await import('node:http');
+  const REJECT = 'bad-txns-inputs-missingorspent';
+  const node = createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    const { method, id } = JSON.parse(raw);
+    const body = method === 'getblockchaininfo'
+      ? { id, result: { chain: 'test', blocks: 100, headers: 100, initialblockdownload: false } }
+      : method === 'sendrawtransaction'
+        ? { id, error: { code: -26, message: REJECT } }
+        : { id, result: { price_micro_usd: 13_420, is_stale: false } };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise((r) => node.listen(0, r));
+  try {
+    await withConfiguredServer({
+      rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+    }, async (base) => {
+      const res = await postRpc(base, { method: 'sendrawtransaction', params: ['00'] });
+      assert.equal(res.status, 502);
+      const { error } = await res.json();
+      assert.equal(error, REJECT, 'the node reject string reaches the browser unchanged');
+      assert.equal(classifyBroadcastError(new Error(error)).kind, 'reject');
+    });
+  } finally {
+    node.close();
+  }
+});

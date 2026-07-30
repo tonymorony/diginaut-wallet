@@ -199,7 +199,12 @@ async function handleIndexer(req, res, { indexerUrl, guard }) {
     res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
     res.end(body);
   } catch (err) {
-    sendJson(res, 502, { error: `indexer unreachable: ${String(err.message || err)}` });
+    // Not `indexer unreachable: ${err.message}` — that named the configured
+    // INDEXER_URL host:port (plus ECONNREFUSED/DNS text) to any caller. Same
+    // `{error, cause}` shape the indexer itself answers: copy for the user,
+    // token for the UI's flag check and for an operator triaging the hop.
+    console.error('wallet: indexer fetch:', err);
+    sendJson(res, 502, { error: 'the balance index is unavailable', cause: 'indexer-unreachable' });
   }
 }
 
@@ -226,7 +231,9 @@ async function handleFaucetClaim(req, res, { faucetUrl, guard, maxBodyBytes, tru
     res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
     res.end(body);
   } catch (err) {
-    sendJson(res, 502, { error: `faucet unreachable: ${String(err.message || err)}` });
+    // same rule as the indexer proxy: FAUCET_URL's host:port stays server-side
+    console.error('wallet: faucet fetch:', err);
+    sendJson(res, 502, { error: 'the Faucet is unavailable', cause: 'faucet-unreachable' });
   }
 }
 
@@ -613,6 +620,15 @@ async function handleRpc(req, res, { rpc, mockMode, guard, maxBodyBytes }) {
     if (method === 'getblockchaininfo' && result?.chain) guard?.seen(result.chain);
     sendJson(res, 200, { result, mock: mockMode });
   } catch (err) {
+    // DELIBERATELY VERBATIM — do not genericize this one the way the indexer and
+    // faucet proxies were. The node's reject string IS the answer: broadcastlog's
+    // classifyBroadcastError string-matches its tokens (bad-txns-inputs-*,
+    // txn-mempool-conflict, txn-already-in-mempool, the DigiDollar bad-dd-*
+    // families) to decide reject vs already-broadcast vs ambiguous. Strip it and
+    // every definite reject degrades to "this MAY have been broadcast", which
+    // hands the user back the rebuild-and-send path onto the same coins.
+    // Unlike the indexer's ElectrumX, this upstream is the node whose address the
+    // caller can already read from /api/config (rpcUrl) — nothing new leaks.
     sendJson(res, 502, { error: String(err.message || err), mock: mockMode });
   }
 }
@@ -718,7 +734,11 @@ export function startServer(overrides = {}) {
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {
-      sendJson(res, 500, { error: String(err.message || err) });
+      // Last-resort catch: whatever threw here was NOT handled deliberately, so
+      // its message is unbounded — a filesystem path, a stack-shaped string, an
+      // upstream body. Log it, answer a fixed line.
+      console.error('wallet:', err);
+      sendJson(res, 500, { error: 'internal error', cause: 'internal' });
     }
   });
 

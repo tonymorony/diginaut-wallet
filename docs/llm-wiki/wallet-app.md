@@ -51,6 +51,14 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   `startServer(overrides)` incl. `now` for the rate-limit clock.
 - Body caps → 413; fixed-window per-IP limits → 429 + retry-after, limiter runs BEFORE
   guard/body/upstream. `rateBucket()` must mirror the routing conditions exactly.
+- **Error bodies**: the indexer/faucet proxy failures and the catch-all 500 answer
+  `{error, cause}` with the upstream detail logged (`console.error('wallet: …')`), never
+  relayed — `err.message` there named INDEXER_URL/FAUCET_URL host:port. Causes:
+  `indexer-unreachable`, `faucet-unreachable`, `internal`.
+  **`handleRpc`'s 502 is the deliberate exception and must stay verbatim** — `broadcastlog.js`
+  `classifyBroadcastError` string-matches the node's reject tokens, so genericizing it turns
+  every definite reject into "may have been broadcast" (money-safety, #H3). The node's address
+  is already public in `/api/config.rpcUrl`, so nothing new leaks. Pinned by a test.
 
 ## Client state (module-level in app.js)
 
