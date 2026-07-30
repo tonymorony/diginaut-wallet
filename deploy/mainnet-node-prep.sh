@@ -82,7 +82,11 @@ if "rpcbind=0.0.0.0" not in ctext:
 if "rpcallowip=172.16.0.0/12" not in ctext:
     cadd.append("rpcallowip=172.16.0.0/12")
 
-for line in ("TESTNET_DOMAINS=dgb.ludere.space", "MAINNET_DOMAINS=diginaut.ludere.space"):
+# Both eras, canonical last: Caddy serves every listed host as its own site and
+# the legacy ludere.space pair is never redirected (ADR 0006) — a browser vault
+# is origin-scoped, so a redirect would strand funded users.
+for line in ("TESTNET_DOMAINS=dgb.ludere.space, testnet.diginaut.space",
+             "MAINNET_DOMAINS=diginaut.ludere.space, diginaut.space"):
     key = line.split("=")[0]
     if key + "=" not in etext:
         eadd.append(line)
