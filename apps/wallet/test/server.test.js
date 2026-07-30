@@ -197,6 +197,43 @@ test('the ETag is derived from the bytes, not the path or mtime', async () => {
   });
 });
 
+// The other half of the same finding: static content going stale is a bad
+// deploy, an API answer going stale is money. These carry no validator, so
+// there is nothing to revalidate against — they must not be stored at all.
+test('every API answer is no-store, success and failure alike', async () => {
+  const { createServer } = await import('node:http');
+  const indexer = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ address: 'x', utxos: [] }));
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  try {
+    await withConfiguredServer({ indexerUrl: `http://127.0.0.1:${indexer.address().port}` }, async (base) => {
+      const paths = [
+        '/api/config', // stale here can serve chainMismatch:false after a cross-wire (#64)
+        '/api/price-history',
+        '/api/indexer/address/dgbrt1qfoo/utxos', // stale here feeds coin selection spent coins
+        '/api/indexer/tx/nothex', // a refusal is as cacheable as an answer
+      ];
+      for (const path of paths) {
+        const res = await fetch(base + path);
+        assert.equal(res.headers.get('cache-control'), 'no-store', `${path} (status ${res.status})`);
+        await res.arrayBuffer();
+      }
+      // the POST routes answer through the same seam
+      const claim = await fetch(base + '/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: 'dgbrt1qfoo' }),
+      });
+      assert.equal(claim.headers.get('cache-control'), 'no-store', `/api/faucet/claim (status ${claim.status})`);
+      await claim.arrayBuffer();
+    });
+  } finally {
+    indexer.close();
+  }
+});
+
 test('a 304 keeps the hardening headers — writeHead must not drop them (#55)', async () => {
   await withServer(async (base) => {
     const first = await fetch(base + '/app.js');

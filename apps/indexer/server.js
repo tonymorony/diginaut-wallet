@@ -508,7 +508,10 @@ export function startServer(overrides = {}) {
       const unavailable = 'the balance index is unavailable';
       if (err?.electrumRpc) return sendJson(res, 502, { error: unavailable, cause: 'upstream-error' });
       if (err?.upstream) return sendJson(res, 502, { error: unavailable, cause: 'upstream-unreachable' });
-      sendJson(res, 500, { error: 'internal error', cause: 'internal' }); // untagged = our own defect
+      // Untagged = our own defect. The copy names the actor because it reaches
+      // the user verbatim through the wallet's fetchIndexer; `internal error`
+      // was status-speak that named neither an actor nor a next step.
+      sendJson(res, 500, { error: 'the balance index hit an unexpected error', cause: 'internal' });
     }
   });
 

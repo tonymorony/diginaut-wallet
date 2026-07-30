@@ -55,11 +55,23 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 - **Error bodies**: the indexer/faucet proxy failures and the catch-all 500 answer
   `{error, cause}` with the upstream detail logged (`console.error('wallet: …')`), never
   relayed — `err.message` there named INDEXER_URL/FAUCET_URL host:port. Causes:
-  `indexer-unreachable`, `faucet-unreachable`, `internal`.
+  `indexer-unreachable`, `faucet-unreachable`, `internal`. The `error` copy names the ACTOR
+  ("the wallet server hit an unexpected error"), because it reaches the user verbatim through
+  `fetchIndexer` → `busy()` and can land in `#w-send-err` mid-review. `internal` never earns
+  the "still syncing" line in `refreshMoney` — only `upstream-error`, `upstream-unreachable`,
+  `indexer-unreachable` and `e.transport` do; a defect on our side gets its own copy, with no
+  promise that waiting clears it.
   **`handleRpc`'s 502 is the deliberate exception and must stay verbatim** — `broadcastlog.js`
   `classifyBroadcastError` string-matches the node's reject tokens, so genericizing it turns
   every definite reject into "may have been broadcast" (money-safety, #H3). The node's address
   is already public in `/api/config.rpcUrl`, so nothing new leaks. Pinned by a test.
+- **Caching, both halves**: **API responses are `no-store`** (`sendJson` + both proxy
+  passthroughs — /api/config, /api/price-history, /api/indexer/*, /api/faucet/claim, and every
+  error body), **static is `no-cache` + ETag**. Same finding: with neither header a browser
+  applies heuristic freshness (RFC 9111 §4.2.2). Stale static is a bad deploy; stale JSON is
+  money — a cached `…/utxos` feeds coin selection already-spent outputs, a cached
+  `/api/config` serves `chainMismatch:false` after a cross-wire. `no-store`, not `no-cache`:
+  these carry no validator to revalidate against. Pinned by a test.
 - **Static caching** (`serveFrom`): `cache-control: no-cache` + a content-hash ETag (sha256 of
   the bytes, base64url, 27 chars) on EVERY static path incl. `/lib` and `/vendor`;
   `if-none-match` → 304. Before this there was no validator at all, so browsers applied
@@ -302,13 +314,15 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-17 unit suites (**PENDING tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
-guard/rate-limits/HSTS/CRLF-hash/static-ETag), vault, vendor-integrity, keystore, netchrome
-(incl. `backupSkipAllowed` + `foldNetHealth`), dderrors (incl. spend/conflict families), dca,
-autolock, connect (protocol pins), broadcastlog (txid vs Core fixtures, classifier,
-`isTxUnknownToIndexer`), icon-sprite, nettimeout, validate
-(strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
-export→wipe→restore), driver-paths (Windows-path idiom must never return).
+17 unit suites (2026-07-31: 235 tests on `fix/server-hardening`, 224 on
+`fix/wallet-scan-storage-hygiene` — re-measure once both merge) under `test/`, `npm test` —
+server (CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash/static-ETag), vault,
+vendor-integrity, keystore (incl. the imported file's KDF bounds), netchrome (incl.
+`backupSkipAllowed` + `foldNetHealth`), dderrors (incl. spend/conflict families), dca, autolock,
+connect (protocol pins), broadcastlog (txid vs Core fixtures, classifier, `clearAll`,
+`isTxUnknownToIndexer`), icon-sprite, nettimeout, validate (strict/tolerant + MAX_MONEY drift
+pin), persistence, backup-roundtrip (M2: real WebCrypto export→wipe→restore), driver-paths
+(Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
 
 ## See also

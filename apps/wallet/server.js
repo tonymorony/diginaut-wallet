@@ -201,7 +201,8 @@ async function handleIndexer(req, res, { indexerUrl, guard }) {
   try {
     const upstream = await fetch(`${indexerUrl}/api${rel}`, { signal: AbortSignal.timeout(15_000) });
     const body = await upstream.text();
-    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
+    // no-store for the same reason as sendJson's — these ARE the balance reads
+    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(body);
   } catch (err) {
     // Not `indexer unreachable: ${err.message}` — that named the configured
@@ -233,7 +234,7 @@ async function handleFaucetClaim(req, res, { faucetUrl, guard, maxBodyBytes, tru
       signal: AbortSignal.timeout(30_000),
     });
     const body = await upstream.text();
-    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
+    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(body);
   } catch (err) {
     // same rule as the indexer proxy: FAUCET_URL's host:port stays server-side
@@ -472,9 +473,21 @@ async function callNode(rpc, method, params) {
   return json.result;
 }
 
+// `no-store`, on every API answer, for the same reason static assets got a
+// validator: with neither header a browser picks its own expiry (heuristic
+// freshness, RFC 9111 §4.2.2) and may re-serve a JSON body it fetched days ago.
+// Static content going stale is a bad deploy; THIS going stale is money — a
+// cached /api/indexer/…/utxos feeds coin selection outputs that are already
+// spent, and a cached /api/config can serve `chainMismatch:false` after the
+// deployment was cross-wired, which is the one flag the #64 guard renders from.
+// Not `no-cache`: these have no validator to revalidate against.
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(data),
+    'cache-control': 'no-store',
+  });
   res.end(data);
 }
 
@@ -777,9 +790,13 @@ export function startServer(overrides = {}) {
     } catch (err) {
       // Last-resort catch: whatever threw here was NOT handled deliberately, so
       // its message is unbounded — a filesystem path, a stack-shaped string, an
-      // upstream body. Log it, answer a fixed line.
+      // upstream body. Log it, answer a fixed line. That line names the actor,
+      // because it reaches the user verbatim through fetchIndexer → busy() and
+      // can land in #w-send-err mid-review; `internal error` was status-speak.
+      // No "nothing was sent" reassurance: this also wraps /api/rpc, so it
+      // cannot claim a broadcast failed to reach the node.
       console.error('wallet:', err);
-      sendJson(res, 500, { error: 'internal error', cause: 'internal' });
+      sendJson(res, 500, { error: 'the wallet server hit an unexpected error', cause: 'internal' });
     }
   });
 

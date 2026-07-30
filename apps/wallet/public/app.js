@@ -1907,7 +1907,9 @@ $('w-faucet').addEventListener('click', (e) =>
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: $('w-address').textContent }),
         budget: NET_TIMEOUT_MS.faucet, // outlives the server's own 30s upstream budget
-        what: 'the faucet',
+        // "the Faucet" — the same glossary spelling the server's own faucet
+        // copy uses, and both can land in #w-open-err minutes apart
+        what: 'the Faucet',
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
@@ -2739,9 +2741,16 @@ async function refreshMoney() {
     // e.indexerCause is the server-side verdict (the servers stopped relaying
     // upstream text at all); e.transport covers the client-side timeout/dead-hop
     // cases (#H1). The regex stays for a server that predates the token.
-    $('w-open-err').textContent = e.transport || e.indexerCause || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
+    // Only these tokens mean "wait and it clears": `internal` is a defect on our
+    // side, and promising it will catch up is a promise nothing can keep.
+    const syncing = e.transport
+      || ['upstream-error', 'upstream-unreachable', 'indexer-unreachable'].includes(e.indexerCause)
+      || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message);
+    $('w-open-err').textContent = syncing
       ? 'indexer: the balance index is still syncing — balances and history will appear once it catches up (your on-chain funds are unaffected)'
-      : 'indexer: ' + e.message;
+      : e.indexerCause === 'internal'
+        ? 'indexer: the balance index failed on this deployment — this one will not clear by waiting (your on-chain funds are unaffected)'
+        : 'indexer: ' + e.message;
   }
 }
 
