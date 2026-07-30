@@ -150,6 +150,34 @@ function p2wpkhWitness(sighash, privKeyHex) {
   return [concat(der, Uint8Array.from([0x01])), secp256k1.getPublicKey(hexToBytes(privKeyHex), true)];
 }
 
+// ---- The flexible leg (fee on transfer/redeem, funding on mint) ----
+// Every DigiDollar transaction needs one plain DGB input, and that input is the
+// only one consensus leaves free: the DD token legs and the collateral are
+// bound to the owner key, but the DGB leg can be any coin the wallet can sign.
+// Core proves both shapes in this repo's own captures — redeem-tx.json vin[3]
+// and mint-tx.json vin[0] are [DER sig, compressed pubkey] P2WPKH stacks. That
+// matters because mint change is P2WPKH by construction (see the header), so a
+// builder that took only key-path P2TR here could not spend what it had just
+// created.
+
+/** scriptPubKey (hex) of the DGB leg: witness-v0 when tagged, else key-path P2TR. */
+function dgbLegScriptHex(utxo, privKeyHex) {
+  return utxo.type === 'p2wpkh'
+    ? bytesToHex(p2wpkhScript(privKeyHex))
+    : bytesToHex(p2trScript(ddTokenOutputKey(xOnlyPubKey(privKeyHex))));
+}
+
+/** Witness stack for the DGB leg: BIP-143 ECDSA for v0, BIP-341 schnorr for P2TR. */
+function signDgbLeg({ utxo, privKeyHex, version, locktime, inputs, outputs, inputIndex }) {
+  if (utxo.type === 'p2wpkh') {
+    return p2wpkhWitness(bip143Sighash({ version, locktime, inputs, outputs, inputIndex }), privKeyHex);
+  }
+  return [schnorr.sign(
+    taprootSighash({ version, locktime, inputs, outputs, inputIndex }),
+    hexToBytes(tapTweakPrivKey(privKeyHex)),
+  )];
+}
+
 export function serializeTx({ version, locktime, inputs, outputs, witnesses }) {
   const parts = [u32le(version), Uint8Array.from([0x00, 0x01])]; // segwit marker+flag
   parts.push(varint(inputs.length));
@@ -214,16 +242,22 @@ export function buildTransferOutputs({
 
 /**
  * Build and sign a complete DigiDollar transfer transaction, client-side.
- * Both UTXOs must be key-path-only P2TR of `privKeyHex` (the sender owner key):
- * the DD token UTXO (on-chain value 0) and a DGB UTXO that pays the fee.
+ * The DD token UTXO (on-chain value 0) must be a key-path-only P2TR of
+ * `privKeyHex` (the sender owner key) — consensus binds the DD leg to it. The
+ * DGB UTXO that pays the fee only has to belong to the same wallet: pass
+ * `feePrivKeyHex` when it sits on another of the wallet's keys, and
+ * `feeUtxo.type: 'p2wpkh'` when it is a witness-v0 coin (the shape mint change
+ * lands in), which is then signed per BIP-143. Core itself pays DigiDollar fees
+ * from v0 coins — test/fixtures/redeem-tx.json vin[3] is a [DER, pubkey] stack.
  * DGB change below CHANGE_FOLD_SATS is folded into the fee rather than emitted
  * as a dust output that would get the whole transfer rejected.
  * Returns { hex, ddChangeCents, dgbChangeSats } — dgbChangeSats is 0n when folded.
  */
 export function buildSignedTransferTx({
   ddUtxo, // { txidHex, vout, ddCents: bigint } — the DD token output being spent (value 0)
-  feeUtxo, // { txidHex, vout, valueSats: bigint }
+  feeUtxo, // { txidHex, vout, valueSats: bigint, type?: 'p2tr'|'p2wpkh' }
   privKeyHex,
+  feePrivKeyHex = privKeyHex, // fee coin's own key; defaults to the single-key anatomy
   recipients, // [{ outputKeyHex, cents: bigint }]
   feeSats = 12_000_000n, // 0.12 DGB ≥ Core's DD fee floor
   dgbChangeScriptHex, // optional: route DGB change here (default: Core's P2WPKH convention)
@@ -238,23 +272,31 @@ export function buildSignedTransferTx({
 
   const ownerKey = xOnlyPubKey(privKeyHex);
   const ownerScriptHex = bytesToHex(p2trScript(ddTokenOutputKey(ownerKey)));
+  const feeScriptHex = dgbLegScriptHex(feeUtxo, feePrivKeyHex);
   const inputs = [
     { txidHex: ddUtxo.txidHex, vout: ddUtxo.vout, valueSats: 0n, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
-    { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
+    { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: feeScriptHex, sequence: 0xffffffff },
   ];
+  const FEE_INPUT_INDEX = 1; // transfer anatomy: DD token leg, then the fee leg
   const outputs = buildTransferOutputs({
     recipients,
     ddChangeCents,
     changeOwnerKeyHex: ownerKey,
     dgbChangeSats,
+    // Default unchanged on purpose: the DGB change keeps going to the SENDER's
+    // P2WPKH, not the fee key's. Both in-repo callers pass this explicitly, and
+    // a fee coin borrowed from another key must not silently redirect change.
     dgbChangeScriptHex: dgbChangeScriptHex ?? bytesToHex(p2wpkhScript(privKeyHex)),
   });
 
   const version = buildDDVersion('transfer');
   const tweakedKey = hexToBytes(tapTweakPrivKey(privKeyHex));
-  const witnesses = inputs.map((_, inputIndex) => [
-    schnorr.sign(taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex }), tweakedKey),
-  ]);
+  const witnesses = inputs.map((_, inputIndex) => {
+    if (inputIndex === FEE_INPUT_INDEX) {
+      return signDgbLeg({ utxo: feeUtxo, privKeyHex: feePrivKeyHex, version, locktime: 0, inputs, outputs, inputIndex });
+    }
+    return [schnorr.sign(taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex }), tweakedKey)];
+  });
 
   const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses });
   return { hex, ddChangeCents, dgbChangeSats };
@@ -266,7 +308,8 @@ export function buildSignedTransferTx({
 //   vin[0]  collateral P2TR — SCRIPT-PATH spend of the Normal leaf,
 //           witness [sig64, leafScript, controlBlock], sequence 0xfffffffe (CLTV)
 //   vin[1+] DD token UTXOs to burn — key-path, sequence 0xfffffffe
-//   vin[N]  DGB fee UTXO — key-path, sequence 0xffffffff
+//   vin[N]  DGB fee UTXO — key-path P2TR or P2WPKH, any wallet key,
+//           sequence 0xffffffff (the fixture's own vin[3] is P2WPKH)
 //   vout[0] full collateral back to the owner
 //   vout[…] DD change P2TR + OP_RETURN "DD" <3> <change> — only if change > 0
 //   vout[…] DGB fee change — last
@@ -304,16 +347,19 @@ export function buildRedeemOutputs({
 /**
  * Build and sign a complete DigiDollar redemption, client-side (Normal path).
  * The collateral is spent via the Normal tapscript leaf (expired CLTV + owner
- * signature — no oracle signatures involved); DD UTXOs and the fee UTXO must
- * be key-path-only P2TR of `privKeyHex`. The full collateral value returns to
- * the owner's key-path P2TR. DGB change below CHANGE_FOLD_SATS is folded into
- * the fee. Returns { hex, ddChangeCents, dgbChangeSats } — 0n when folded.
+ * signature — no oracle signatures involved); the DD UTXOs must be key-path-only
+ * P2TR of `privKeyHex`. The fee UTXO is the flexible leg: `feePrivKeyHex` for a
+ * coin on another wallet key, `feeUtxo.type: 'p2wpkh'` for a witness-v0 coin.
+ * The full collateral value returns to the owner's key-path P2TR. DGB change
+ * below CHANGE_FOLD_SATS is folded into the fee.
+ * Returns { hex, ddChangeCents, dgbChangeSats } — 0n when folded.
  */
 export function buildSignedRedeemTx({
   collateralUtxo, // { txidHex, vout, valueSats, lockHeight, ddCents } — the mint's vout[0]
   ddUtxos, // [{ txidHex, vout, ddCents }] — burned; must sum to ≥ collateralUtxo.ddCents
-  feeUtxo, // { txidHex, vout, valueSats }
+  feeUtxo, // { txidHex, vout, valueSats, type?: 'p2tr'|'p2wpkh' }
   privKeyHex,
+  feePrivKeyHex = privKeyHex, // fee coin's own key; defaults to the single-key anatomy
   feeSats = 16_000_000n, // 0.16 DGB ≥ Core's DD fee floor
   dgbChangeScriptHex, // optional: route DGB change here (default: Core's P2WPKH convention)
 }) {
@@ -337,8 +383,17 @@ export function buildSignedRedeemTx({
   const inputs = [
     { txidHex: collateralUtxo.txidHex, vout: collateralUtxo.vout, valueSats: collateralUtxo.valueSats, scriptPubKeyHex: collateralScriptHex, sequence: 0xfffffffe },
     ...ddUtxos.map((u) => ({ txidHex: u.txidHex, vout: u.vout, valueSats: 0n, scriptPubKeyHex: ownerScriptHex, sequence: 0xfffffffe })),
-    { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: ownerScriptHex, sequence: 0xffffffff },
+    { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, scriptPubKeyHex: dgbLegScriptHex(feeUtxo, feePrivKeyHex), sequence: 0xffffffff },
   ];
+  // Bookkept, not inferred: the fee leg follows the collateral and every burn
+  // leg. Signing it as "the last input" would silently mis-sign the day this
+  // anatomy grows a trailing input, and a mis-signed leg is an unspendable
+  // position. The check costs nothing and can only fire on a build-order bug.
+  const feeInputIndex = 1 + ddUtxos.length;
+  const feeInput = inputs[feeInputIndex];
+  if (feeInput?.txidHex !== feeUtxo.txidHex || feeInput.vout !== feeUtxo.vout) {
+    throw new RangeError('redeem input order does not put the fee coin where the signer expects it');
+  }
   const outputs = buildRedeemOutputs({
     collateralReturnSats: collateralUtxo.valueSats,
     collateralReturnScriptHex: ownerScriptHex,
@@ -362,6 +417,9 @@ export function buildSignedRedeemTx({
         hexToBytes(normalRedemptionLeafHex(leafParams)),
         hexToBytes(collateralControlBlockHex(leafParams)),
       ];
+    }
+    if (inputIndex === feeInputIndex) {
+      return signDgbLeg({ utxo: feeUtxo, privKeyHex: feePrivKeyHex, version, locktime, inputs, outputs, inputIndex });
     }
     return [schnorr.sign(taprootSighash({ version, locktime, inputs, outputs, inputIndex }), tweakedKey)];
   });
@@ -506,11 +564,14 @@ export function buildSignedSpendTx({
 
 /**
  * Build and sign a complete DigiDollar mint transaction, client-side.
- * The funding UTXO must be a key-path-only P2TR of `privKeyHex` (the owner key).
+ * The funding UTXO belongs to `privKeyHex` (which also owns the position): a
+ * key-path-only P2TR by default, or the key's witness-v0 coin with
+ * `utxo.type: 'p2wpkh'` — the shape this very builder emits as change, and the
+ * shape Core funds its own mints from (test/fixtures/mint-tx.json vin[0]).
  * Returns { hex, unlockHeight, collateralSats, changeSats }.
  */
 export function buildSignedMintTx({
-  utxo, // { txidHex, vout, valueSats: bigint }
+  utxo, // { txidHex, vout, valueSats: bigint, type?: 'p2tr'|'p2wpkh' }
   privKeyHex,
   ddCents,
   tierId,
@@ -535,8 +596,11 @@ export function buildSignedMintTx({
   // ValidateMintTransaction), so dropping vout[3] does not disturb the layout.
   if (changeSats < CHANGE_FOLD_SATS) changeSats = 0n;
 
-  const fundingScript = p2trScript(ddTokenOutputKey(ownerKey)); // key-path-only P2TR of owner
-  const inputs = [{ ...utxo, scriptPubKeyHex: bytesToHex(fundingScript), sequence: 0xfffffffd }];
+  // Key-path-only P2TR of the owner, or the owner's P2WPKH when the coin is
+  // tagged: the mint sighash commits to this script, so the funding shape and
+  // the signing path have to be chosen together.
+  const fundingScriptHex = dgbLegScriptHex(utxo, privKeyHex);
+  const inputs = [{ ...utxo, scriptPubKeyHex: fundingScriptHex, sequence: 0xfffffffd }];
   const outputs = [
     { valueSats: collateralSats, script: p2trScript(collateralOutputKey({ ownerKeyHex: ownerKey, lockHeight: unlockHeight, ddCents })) },
     { valueSats: 0n, script: p2trScript(ddTokenOutputKey(ownerKey)) },
@@ -545,9 +609,9 @@ export function buildSignedMintTx({
   if (changeSats > 0n) outputs.push({ valueSats: changeSats, script: p2wpkhScript(privKeyHex) });
 
   const version = buildDDVersion('mint');
-  const sighash = taprootSighash({ version, locktime: 0, inputs, outputs, inputIndex: 0 });
-  const sig = schnorr.sign(sighash, hexToBytes(tapTweakPrivKey(privKeyHex))); // 64B, SIGHASH_DEFAULT
+  // 64B schnorr, SIGHASH_DEFAULT — or [DER, pubkey] when the funding coin is v0
+  const witness = signDgbLeg({ utxo, privKeyHex, version, locktime: 0, inputs, outputs, inputIndex: 0 });
 
-  const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses: [[sig]] });
+  const hex = serializeTx({ version, locktime: 0, inputs, outputs, witnesses: [witness] });
   return { hex, unlockHeight, collateralSats, changeSats };
 }
