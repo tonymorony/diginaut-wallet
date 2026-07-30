@@ -2490,8 +2490,36 @@ const INDEXER_SHAPES = [
   [/^\/tx\/([0-9a-f]{64})$/, (json) => validateTxDetail(json)],
 ];
 
+// Transport-failure ladder. One attempt meant a login racing a service restart
+// (~2-3s) collapsed the whole panel to "the balance index is unreachable" over
+// a hop that was about to come back. Keyed STRICTLY off `err.transport`, the
+// flag #H1's nettimeout layer sets: an HTTP 4xx or an INDEXER_SHAPES refusal is
+// the index's honest answer, and retrying it only makes the honest error slower.
+//
+// Deliberately NOT in rpc(): broadcastTx() flows through that, and
+// auto-retrying sendrawtransaction is the double-send hazard the #C1 broadcast
+// journal exists to prevent.
+const INDEXER_RETRY_MS = [500, 1_000, 2_000];
+// Fan-out: the full ladder is for the first load only. refreshMoney fans out to
+// (index+3)x6 reads and re-runs every MONEY_POLL_MS, so once the panel is
+// painted the budget is ONE short retry — the poll chain awaits itself and a
+// long ladder on every read would stretch a tick past its own interval. Set
+// once per page session; a later wallet switch is not a first load.
+let indexerFirstLoad = true;
+
 async function fetchIndexer(path) {
-  const res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
+  const ladder = indexerFirstLoad ? INDEXER_RETRY_MS : INDEXER_RETRY_MS.slice(0, 1);
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
+      break;
+    } catch (e) {
+      const transient = e?.transport === 'timeout' || e?.transport === 'network';
+      if (!transient || attempt >= ladder.length) throw e;
+      await new Promise((r) => setTimeout(r, ladder[attempt]));
+    }
+  }
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   for (const [re, validate] of INDEXER_SHAPES) {
@@ -2662,6 +2690,7 @@ async function refreshMoney() {
     $('loading-veil').style.display = 'none';
     $('w-money').style.display = 'grid';
     if (firstShow) renderSparkline(lastPriceSeries); // real width only now
+    indexerFirstLoad = false; // the index has answered — steady-state retry budget from here
   } catch (e) {
     // Same reasoning as the success path: the outgoing wallet's indexer error
     // is not the incoming wallet's, and tearing down the veil here would
