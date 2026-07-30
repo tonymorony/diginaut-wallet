@@ -2,7 +2,7 @@
 
 Run the full stack — wallet, indexer, faucet, ElectrumX — against **your own
 DigiByte node** with one `docker compose up`. (The reference deployment lives at
-<https://dgb.ludere.space>, stood up exactly this way.) Nothing here custodies user
+<https://testnet.diginaut.space>, stood up exactly this way.) Nothing here custodies user
 funds: keys live in each visitor's browser (ADR-0001); the node only answers
 reads and relays client-signed transactions through a strict RPC allow-list.
 

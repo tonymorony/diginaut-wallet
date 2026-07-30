@@ -22,6 +22,11 @@ allow-lists — an unrecognised chain falls to v1, which cannot touch mainnet fu
 worth restating for support: one extension account now yields two unrelated Diginaut wallets,
 and re-deriving a testnet wallet while on mainnet correctly finds nothing.
 
+**Superseded in scope, not in principle, by [ADR 0006](0006-domain-moves-mint-new-s2d-messages.md)
+(2026-07-31):** the move to `diginaut.space` minted v3/v4 for the new origins and left v1/v2
+byte-frozen for the legacy hosts, so selection is now by (serving hostname, chain). The
+per-network property here is unchanged — it just holds within each origin era.
+
 Decided in the custody grilling
 ([#129](https://github.com/tonymorony/diginaut-wallet/issues/129)) of the web3-wallet connect
 map ([#126](https://github.com/tonymorony/diginaut-wallet/issues/126)); protocol details in

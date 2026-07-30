@@ -7,7 +7,7 @@ Things we consciously punted, with the reason. Revisit before the trigger listed
 - **Point tx history at a real block explorer.** The Activity list links txids via the
   `EXPLORER_TX_URL` prefix (e.g. `https://<explorer>/tx/`); it is unset on regtest, so links
   render as plain text. Set it in the server env once a public DigiByte-testnet explorer is
-  chosen for dgb.ludere.space.
+  chosen for the public testnet instance.
 
 ## Branding & legal (before public launch)
 
