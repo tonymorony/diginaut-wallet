@@ -8,7 +8,9 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58 } from '@scure/base';
 import {
-  S2D_MESSAGE, S2D_VERSION, S2D_MESSAGE_MAIN, S2D_VERSION_MAIN, s2dForChain, s2dForVersion,
+  S2D_MESSAGE, S2D_VERSION, S2D_MESSAGE_MAIN, S2D_VERSION_MAIN,
+  S2D_MESSAGE_TESTNET2, S2D_VERSION_TESTNET2, S2D_MESSAGE_MAIN2, S2D_VERSION_MAIN2,
+  LEGACY_S2D_HOSTS, s2dForChain, s2dForVersion, s2dOriginHost,
   eip191Digest, canonicalizeEvmSignature, recoverEthAddress,
   verifySolanaSignature, entropyFromSignature, mnemonicFromEntropy, fingerprintOfEntropy,
   shortAddress,
@@ -50,6 +52,42 @@ test('the frozen v2 mainnet message is byte-for-byte pinned (331 bytes, pinned S
   assert.equal(digest, 'efd237737852aef965742854516e7f8af61c7cc26e8f6cc6dc7222972a335b40');
 });
 
+test('the frozen v3 testnet.diginaut.space message is pinned (333 bytes, pinned SHA-256)', async () => {
+  // Minted by ADR 0006 for the domain move. The pin exists from the day the
+  // bytes are written, not from the day someone derives against them: the
+  // moment this ships, every diginaut.space wallet is a function of these
+  // exact bytes and they can never be edited again.
+  const bytes = new TextEncoder().encode(S2D_MESSAGE_TESTNET2);
+  assert.equal(S2D_VERSION_TESTNET2, 3);
+  assert.equal(bytes.length, 333);
+  assert.ok(S2D_MESSAGE_TESTNET2.startsWith('Diginaut sign-to-derive v3\nNetwork: DigiByte testnet\n'));
+  assert.ok(!S2D_MESSAGE_TESTNET2.endsWith('\n'), 'no trailing newline — it would change the bytes');
+  const digest = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+  assert.equal(digest, 'be8ffbacb1a05219a0d6bc83cbb77cbdb998212d1d6afd1c3bf37b2f90122a7e');
+});
+
+test('the frozen v4 diginaut.space mainnet message is pinned (317 bytes, pinned SHA-256)', async () => {
+  const bytes = new TextEncoder().encode(S2D_MESSAGE_MAIN2);
+  assert.equal(S2D_VERSION_MAIN2, 4);
+  assert.equal(bytes.length, 317);
+  assert.ok(S2D_MESSAGE_MAIN2.startsWith('Diginaut sign-to-derive v4\nNetwork: DigiByte mainnet\n'));
+  assert.ok(!S2D_MESSAGE_MAIN2.endsWith('\n'), 'no trailing newline — it would change the bytes');
+  const digest = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+  assert.equal(digest, '51b9fe9bce073a9d2910292fcdb694bb46bd9684492f3dfc9d88fbb4768ced61');
+});
+
+test('all four frozen messages are pairwise distinct — four wallets, never a collision', () => {
+  const all = [S2D_MESSAGE, S2D_MESSAGE_MAIN, S2D_MESSAGE_TESTNET2, S2D_MESSAGE_MAIN2];
+  assert.equal(new Set(all).size, 4);
+  assert.equal(new Set([S2D_VERSION, S2D_VERSION_MAIN, S2D_VERSION_TESTNET2, S2D_VERSION_MAIN2]).size, 4);
+  // the two risk sentences are byte-identical across all four ON PURPOSE — a
+  // reader who has seen one recognises the next, and nothing but the network
+  // and origin lines is allowed to differ
+  const RISK = 'This signature generates the private keys of your DigiByte wallet.\n'
+    + 'Anyone who obtains this signature can steal your DigiByte funds.';
+  for (const m of all) assert.ok(m.includes(RISK), 'the shared risk sentences must not drift');
+});
+
 test('the two networks derive from DIFFERENT bytes — no cross-network replay (ADR 0005)', () => {
   // The security property, asserted rather than assumed: a signature made on
   // one network cannot be replayed against the other's funds, because the
@@ -62,23 +100,81 @@ test('the two networks derive from DIFFERENT bytes — no cross-network replay (
   assert.ok(S2D_MESSAGE_MAIN.includes('Only sign this message on https://diginaut.ludere.space.'));
 });
 
-test('chain and stored-version selectors resolve to the right frozen bytes', () => {
-  // BOTH spellings: the node says 'main', the wallet's netName says 'mainnet'.
-  // A caller mixing them up would silently derive the testnet wallet on mainnet.
-  for (const c of ['main', 'mainnet']) {
-    assert.equal(s2dForChain(c).message, S2D_MESSAGE_MAIN, `${c} -> v2`);
-    assert.equal(s2dForChain(c).version, 2);
+test('the era-2 messages are network-disjoint too — the ADR 0005 property survives the move', () => {
+  assert.notEqual(S2D_MESSAGE_TESTNET2, S2D_MESSAGE_MAIN2);
+  assert.ok(S2D_MESSAGE_TESTNET2.includes('DigiByte testnet') && !S2D_MESSAGE_TESTNET2.includes('mainnet'));
+  assert.ok(S2D_MESSAGE_MAIN2.includes('DigiByte mainnet') && !S2D_MESSAGE_MAIN2.includes('testnet'));
+  // each message points at its OWN origin, including the refuse-elsewhere line
+  assert.ok(S2D_MESSAGE_TESTNET2.includes('Only sign this message on https://testnet.diginaut.space.'));
+  assert.ok(S2D_MESSAGE_MAIN2.includes('Only sign this message on https://diginaut.space.'));
+  // and neither era's bytes mention the other era's domain at all
+  for (const m of [S2D_MESSAGE, S2D_MESSAGE_MAIN]) assert.ok(!m.includes('diginaut.space'));
+  for (const m of [S2D_MESSAGE_TESTNET2, S2D_MESSAGE_MAIN2]) assert.ok(!m.includes('ludere.space'));
+});
+
+test('s2dForChain picks the era by SERVING HOSTNAME, network within it (ADR 0006)', () => {
+  // The legacy allow-list is permanent: these two hosts hold every wallet ever
+  // derived from the v1/v2 bytes, and removing one would silently start
+  // deriving DIFFERENT wallets at an address that still serves the old vaults.
+  assert.deepEqual([...LEGACY_S2D_HOSTS].sort(), ['dgb.ludere.space', 'diginaut.ludere.space']);
+  for (const host of LEGACY_S2D_HOSTS) {
+    for (const c of ['main', 'mainnet']) {
+      assert.equal(s2dForChain(c, host).message, S2D_MESSAGE_MAIN, `${host}/${c} -> v2`);
+      assert.equal(s2dForChain(c, host).version, 2);
+    }
+    for (const c of ['test', 'testnet', 'regtest', null, undefined, '', 'MAIN', 'bogus']) {
+      assert.equal(s2dForChain(c, host).message, S2D_MESSAGE, `${host}/${c} -> v1`);
+      assert.equal(s2dForChain(c, host).version, 1);
+    }
   }
-  // allow-list, never deny-list: anything unrecognised falls to v1, which
-  // cannot touch mainnet funds
-  for (const c of ['test', 'testnet', 'regtest', null, undefined, '', 'MAIN', 'bogus']) {
-    assert.equal(s2dForChain(c).message, S2D_MESSAGE, `${c} -> v1`);
-    assert.equal(s2dForChain(c).version, 1);
+  // Everything else is the CURRENT era — the new domains, a dev localhost, a
+  // self-host, and the no-`location` case (this test process). The unknown
+  // hostname must land here, not on v1: a self-host falling to v1 would ask for
+  // a signature under an origin line naming a site it is not.
+  for (const host of ['diginaut.space', 'testnet.diginaut.space', 'localhost', '127.0.0.1',
+    'wallet.example.org', undefined, null, '']) {
+    for (const c of ['main', 'mainnet']) {
+      assert.equal(s2dForChain(c, host).message, S2D_MESSAGE_MAIN2, `${host}/${c} -> v4`);
+      assert.equal(s2dForChain(c, host).version, 4);
+    }
+    // allow-list, never deny-list: an unrecognised chain falls to the TESTNET
+    // message of the SELECTED era, which cannot touch mainnet funds
+    for (const c of ['test', 'testnet', 'regtest', null, undefined, '', 'MAIN', 'bogus']) {
+      assert.equal(s2dForChain(c, host).message, S2D_MESSAGE_TESTNET2, `${host}/${c} -> v3`);
+      assert.equal(s2dForChain(c, host).version, 3);
+    }
   }
-  // re-derive picks by the version stored on the source record, not the chain
-  assert.equal(s2dForVersion(2).message, S2D_MESSAGE_MAIN);
-  assert.equal(s2dForVersion(1).message, S2D_MESSAGE);
+  // no `location` in node: the default argument must resolve, not throw
+  assert.equal(s2dForChain('main').message, S2D_MESSAGE_MAIN2);
+  assert.equal(s2dForChain('test').message, S2D_MESSAGE_TESTNET2);
+});
+
+test('s2dForVersion resolves every minted version, and only by the stored number', () => {
+  // re-derive picks by the version stored on the source record, never by the
+  // chain or the origin — the bytes that made a wallet are the bytes that
+  // reproduce it
+  assert.deepEqual(s2dForVersion(1), { version: 1, message: S2D_MESSAGE });
+  assert.deepEqual(s2dForVersion(2), { version: 2, message: S2D_MESSAGE_MAIN });
+  assert.deepEqual(s2dForVersion(3), { version: 3, message: S2D_MESSAGE_TESTNET2 });
+  assert.deepEqual(s2dForVersion(4), { version: 4, message: S2D_MESSAGE_MAIN2 });
+  assert.equal(s2dForVersion('4').message, S2D_MESSAGE_MAIN2, 'a stringy record number still resolves');
   assert.equal(s2dForVersion(undefined).message, S2D_MESSAGE, 'legacy record with no msgVersion is v1');
+  assert.equal(s2dForVersion(99).message, S2D_MESSAGE, 'an unknown version is v1, never a throw');
+});
+
+test('s2dOriginHost reads the host OUT of the frozen bytes (ceremony checkbox)', () => {
+  // The checkbox sentence is rendered from this, so a message and the host
+  // beside it can never disagree — which is exactly what shipped on mainnet
+  // ("only dgb.ludere.space may ever ask", over the v2 message).
+  assert.equal(s2dOriginHost(S2D_MESSAGE), 'dgb.ludere.space');
+  assert.equal(s2dOriginHost(S2D_MESSAGE_MAIN), 'diginaut.ludere.space');
+  assert.equal(s2dOriginHost(S2D_MESSAGE_TESTNET2), 'testnet.diginaut.space');
+  assert.equal(s2dOriginHost(S2D_MESSAGE_MAIN2), 'diginaut.space');
+  // every host it returns is the one the refuse-elsewhere line names
+  for (const m of [S2D_MESSAGE, S2D_MESSAGE_MAIN, S2D_MESSAGE_TESTNET2, S2D_MESSAGE_MAIN2]) {
+    assert.ok(m.includes(`Only sign this message on https://${s2dOriginHost(m)}.`));
+  }
+  assert.throws(() => s2dOriginHost('no origin line here'), /Origin line/);
 });
 
 test('pinned pipeline vector: fixed key → fixed signature → fixed mnemonic + fingerprint', async () => {
