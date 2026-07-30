@@ -638,7 +638,35 @@ async function handleRpc(req, res, { rpc, mockMode, guard, maxBodyBytes }) {
   }
 }
 
-async function serveFrom(baseDir, relPath, res) {
+// ---- Static caching: revalidate, never guess ----
+// Responses used to carry content-type and nothing else. With no cache-control
+// and no validator, a browser applies HEURISTIC freshness (RFC 9111 §4.2.2) and
+// picks its own expiry — which is why phones kept running days-old app.js after
+// a deploy while desktops looked fine. index.html has no cache-busting query on
+// its script tags and deploy/Caddyfile is a bare reverse_proxy, so this is the
+// only place that can fix it.
+//
+// `no-cache` does not mean "don't store": it means store, but revalidate before
+// each use — so an unchanged file still costs one 304 and no body.
+//
+// The validator is a hash of the BYTES, not mtime. Docker COPY preserves
+// build-context mtimes, so a rollback can hand a client an older file with a
+// plausible last-modified and win the comparison; a content ETag makes a
+// rollback revalidate correctly. Re-hashing per request adds no I/O — this
+// function already re-reads the file every time.
+const etagFor = (body) => `"${createHash('sha256').update(body).digest('base64url').slice(0, 27)}"`;
+
+// A client may send several validators, and `*` matches anything it holds.
+function ifNoneMatch(req, etag) {
+  const header = req.headers['if-none-match'];
+  if (!header) return false;
+  return String(header).split(',').some((t) => {
+    const tag = t.trim().replace(/^W\//, '');
+    return tag === '*' || tag === etag;
+  });
+}
+
+async function serveFrom(baseDir, relPath, req, res) {
   const filePath = normalize(join(baseDir, relPath));
   if (!filePath.startsWith(baseDir)) {
     res.writeHead(403).end('forbidden');
@@ -646,7 +674,15 @@ async function serveFrom(baseDir, relPath, res) {
   }
   try {
     const body = await readFile(filePath);
-    res.writeHead(200, { 'content-type': MIME[extname(filePath)] || 'application/octet-stream' });
+    // /vendor and /lib are NOT exempt: a vendor bump changes vendor.lock, and a
+    // phone must never run a new app.js against stale vendored crypto.
+    const revalidate = { 'cache-control': 'no-cache', etag: etagFor(body) };
+    if (ifNoneMatch(req, revalidate.etag)) {
+      res.writeHead(304, revalidate);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': MIME[extname(filePath)] || 'application/octet-stream', ...revalidate });
     res.end(body);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
@@ -656,14 +692,14 @@ async function serveFrom(baseDir, relPath, res) {
 async function serveStatic(req, res) {
   let urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   if (urlPath === '/') urlPath = '/index.html';
-  if (urlPath.startsWith('/lib/')) return serveFrom(LIB_DIR, urlPath.slice('/lib/'.length), res);
+  if (urlPath.startsWith('/lib/')) return serveFrom(LIB_DIR, urlPath.slice('/lib/'.length), req, res);
   if (urlPath.startsWith('/vendor/')) {
     const rel = urlPath.slice('/vendor/'.length);
     const pkg = VENDOR_PACKAGES.find((p) => rel.startsWith(p + '/'));
     if (!pkg) return void res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
-    return serveFrom(VENDOR_ROOTS[pkg], rel.slice(pkg.length + 1), res);
+    return serveFrom(VENDOR_ROOTS[pkg], rel.slice(pkg.length + 1), req, res);
   }
-  return serveFrom(PUBLIC_DIR, urlPath, res);
+  return serveFrom(PUBLIC_DIR, urlPath, req, res);
 }
 
 export function startServer(overrides = {}) {

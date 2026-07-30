@@ -59,6 +59,13 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   `classifyBroadcastError` string-matches the node's reject tokens, so genericizing it turns
   every definite reject into "may have been broadcast" (money-safety, #H3). The node's address
   is already public in `/api/config.rpcUrl`, so nothing new leaks. Pinned by a test.
+- **Static caching** (`serveFrom`): `cache-control: no-cache` + a content-hash ETag (sha256 of
+  the bytes, base64url, 27 chars) on EVERY static path incl. `/lib` and `/vendor`;
+  `if-none-match` → 304. Before this there was no validator at all, so browsers applied
+  heuristic freshness and phones ran days-old `app.js` after a deploy (index.html has no
+  cache-busting, `deploy/Caddyfile` is a bare `reverse_proxy` — this is the only lever).
+  Content hash, not mtime: Docker COPY preserves build-context mtimes, so a rollback could
+  serve stale-but-plausible.
 
 ## Client state (module-level in app.js)
 

@@ -141,6 +141,73 @@ test('serves crypto deps under /vendor/ for the browser import map', async () =>
   });
 });
 
+// ---- Static assets revalidate before use ----
+// With no cache-control and no validator, browsers pick their own expiry
+// (heuristic freshness) — which is how phones ended up running days-old app.js
+// after a deploy. /vendor and /lib are covered too: a vendor bump changes
+// vendor.lock, and new app.js against stale vendored crypto is the bad case.
+const STATIC_PATHS = ['/', '/app.js', '/lib/index.js', '/vendor/@noble/curves/secp256k1.js'];
+
+test('every static path carries cache-control: no-cache and a strong ETag', async () => {
+  await withServer(async (base) => {
+    for (const path of STATIC_PATHS) {
+      const res = await fetch(base + path);
+      assert.equal(res.status, 200, path);
+      assert.equal(res.headers.get('cache-control'), 'no-cache', path);
+      assert.match(res.headers.get('etag') ?? '', /^"[\w-]+"$/, `${path} has a strong ETag`);
+      await res.arrayBuffer();
+    }
+  });
+});
+
+test('if-none-match with the current ETag → 304 and no body; a stale one → 200', async () => {
+  await withServer(async (base) => {
+    for (const path of STATIC_PATHS) {
+      const first = await fetch(base + path);
+      const etag = first.headers.get('etag');
+      const bytes = (await first.arrayBuffer()).byteLength;
+      assert.ok(bytes > 0, `${path} served a body`);
+
+      const revalidated = await fetch(base + path, { headers: { 'if-none-match': etag } });
+      assert.equal(revalidated.status, 304, path);
+      assert.equal(revalidated.headers.get('etag'), etag, path);
+      assert.equal(revalidated.headers.get('cache-control'), 'no-cache', path);
+      assert.equal((await revalidated.arrayBuffer()).byteLength, 0, `${path} 304 carries no body`);
+      // a redeploy changes the bytes, so the client's held tag stops matching
+      const stale = await fetch(base + path, { headers: { 'if-none-match': '"not-the-current-one"' } });
+      assert.equal(stale.status, 200, path);
+      assert.equal((await stale.arrayBuffer()).byteLength, bytes, path);
+    }
+  });
+});
+
+test('the ETag is derived from the bytes, not the path or mtime', async () => {
+  await withServer(async (base) => {
+    const tags = [];
+    for (const path of ['/index.html', '/app.js', '/vault.js']) {
+      const res = await fetch(base + path);
+      tags.push(res.headers.get('etag'));
+      await res.arrayBuffer();
+    }
+    assert.equal(new Set(tags).size, tags.length, 'different files, different ETags');
+    // the same file twice is byte-identical, so the tag is stable
+    const a = await fetch(base + '/app.js'); await a.arrayBuffer();
+    const b = await fetch(base + '/app.js'); await b.arrayBuffer();
+    assert.equal(a.headers.get('etag'), b.headers.get('etag'));
+  });
+});
+
+test('a 304 keeps the hardening headers — writeHead must not drop them (#55)', async () => {
+  await withServer(async (base) => {
+    const first = await fetch(base + '/app.js');
+    await first.arrayBuffer();
+    const res = await fetch(base + '/app.js', { headers: { 'if-none-match': first.headers.get('etag') } });
+    assert.equal(res.status, 304);
+    assert.match(res.headers.get('content-security-policy') ?? '', /script-src 'self' 'sha256-/);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  });
+});
+
 test('wallet HTML hardcodes no network banner — chrome is set at runtime from the node chain (#61)', async () => {
   await withServer(async (base) => {
     const html = await (await fetch(base + '/')).text();
