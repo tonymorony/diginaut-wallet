@@ -1199,6 +1199,7 @@ let receiveScanGen = -1;      // walletGen whose scan COMPLETED (see walletGen: 
 let receiveScanBusy = -1;     // walletGen whose scan is in flight
 let receiveScanFailGen = -1;  // walletGen the failure count below belongs to
 let receiveScanFails = 0;
+let receiveScanRearmPending = -1; // walletGen whose re-arm arrived mid-scan and is owed a walk
 let receiveFrontier = -1;     // deepest index the money poll has seen used on chain
 let receiveFrontierGen = -1;  // walletGen that frontier belongs to
 // Backoff for a failing indexer. No ceiling on purpose: capping the retries
@@ -1268,16 +1269,33 @@ async function syncReceiveIndex() {
     return;
   }
   receiveScanGen = gen; // only now: the chain actually answered
+  // Clear the in-flight flag on the way out, or the FIRST completed scan of a
+  // generation locks out every later one: `receiveScanBusy === gen` fails the
+  // guard above for the rest of the session and the re-arm below is inert.
+  receiveScanBusy = -1;
+  // The chain answered, so the retry ladder starts from 2 s again. Left
+  // climbing, a session whose opening scan failed three times would run every
+  // later re-armed scan at the 60 s step for the rest of its life.
+  receiveScanFails = 0;
   // One PAST the last index the chain has seen. `highest` was by definition
   // already paid, so offering it again on the receive screen re-uses an
   // address for no benefit; the watch window counts from 0, so moving one
   // further along stops nothing being watched.
   const next = highest + 1;
-  if (next <= wallet.index) return;
-  wallet.index = next;
-  renderAddress();
-  refreshMoney();
-  rememberReceiveIndex(); // teach this device what the chain just taught us
+  if (next > wallet.index) {
+    wallet.index = next;
+    renderAddress();
+    refreshMoney();
+    rememberReceiveIndex(); // teach this device what the chain just taught us
+  }
+  // A frontier edge that arrived while this walk was in flight was deferred,
+  // not dropped — and the walk may have read that newly funded index as unused
+  // before the payment landed. Re-enter once, now that the flags are clear.
+  if (receiveScanRearmPending === gen) {
+    receiveScanRearmPending = -1;
+    receiveScanGen = -1;
+    syncReceiveIndex();
+  }
 }
 
 /** Re-arm the scan when the money poll finds on-chain activity AT or PAST the
@@ -1303,6 +1321,12 @@ function maybeRearmReceiveScan() {
   // activity at or past the counter means someone walked the chain further
   // than this device knows about.
   if (frontier < wallet.index) return;
+  // Defer, don't drop: the frontier edge is consumed above and can never fire
+  // again, so a request the busy guard rejects would be lost — and the walk in
+  // flight may have read this very index as unused a moment before the payment
+  // landed, leaving the deeper index outside the watch window with nothing left
+  // to re-trigger it. syncReceiveIndex re-enters once when it lands.
+  if (receiveScanBusy === walletGen) { receiveScanRearmPending = walletGen; return; }
   // ONLY receiveScanGen: re-arming receiveScanBusy would let a second walk
   // start under the one in flight and double the fan-out.
   receiveScanGen = -1;
@@ -1890,6 +1914,11 @@ $('w-forget').addEventListener('click', (e) => {
   const names = (vault.meta()?.wallets ?? []).map((w) => w.name);
   $('w-erase-names').innerHTML = (names.length ? names : ['Wallet 1 (created by an older version)'])
     .map((n) => `<li>${esc(n)}</li>`).join('');
+  // The ceremony enumerates what it destroys and names the seed phrase as the
+  // way back; since the journal goes too, name that as well — a seed phrase
+  // cannot rebuild a signed transaction that may already be in flight. Only
+  // when there is something to lose: the line is a warning, not a disclaimer.
+  $('w-erase-pending').style.display = broadcastLog.list().length ? '' : 'none';
   setConnectMode('erase');
   $('w-erase-input').focus();
 });
@@ -1915,6 +1944,13 @@ $('w-erase-go').addEventListener('click', () =>
     // rendering resolved rows for records that no longer exist.
     broadcastLog.clearAll();
     recoveryStatus.clear();
+    // The mainnet ack is a one-time BLOCKING real-funds gate (#54/#63), not a
+    // preference like the autolock timeout: "erase all wallets on this device"
+    // is the only "this device is changing hands" signal the app has, and the
+    // next person to create a mainnet wallet here must meet the gate. Re-showing
+    // it costs one click; keeping it skips a real-funds warning on a shared
+    // machine. (In-session `mainnetAckShown` still holds — this bites at reload.)
+    try { localStorage.removeItem(MAINNET_ACK_KEY); } catch { /* nothing to clear */ }
     // #C2: a deliberate erase is not an eviction. Clear BEFORE show(), or the
     // recovery hero flashes at the user who just chose to erase.
     clearHadVault(globalThis.localStorage);

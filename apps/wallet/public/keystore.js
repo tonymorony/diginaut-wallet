@@ -154,7 +154,7 @@ export function parseKeystoreFile(text) {
   }
   const iterations = obj.kdf.iterations;
   if (!Number.isInteger(iterations) || iterations < MIN_FILE_ITERATIONS || iterations > MAX_FILE_ITERATIONS) {
-    throw new Error('keystore file is damaged — its key-derivation setting is out of range');
+    throw new Error('keystore file is damaged — its key-derivation setting is missing or out of range');
   }
   return obj;
 }
