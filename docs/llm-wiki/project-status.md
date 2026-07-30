@@ -2,6 +2,7 @@
 
 Verified: 2026-07-27, branch `design/copy-truthful-labels`, main @ `67004d8`
 (#134 connect-wallet, #135 llm-wiki, #137 external audit, #138 icons + connect modal merged).
+Lock & Earn map section verified 2026-07-30, branch `discovery/dd-defi-yield`, main @ `4e2733b`.
 This page rots fastest — reconcile with `git log` + the tracker before acting on it.
 
 ## Shipped
@@ -17,7 +18,18 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
   `docs/runbooks/server-migration-2026-07.md` exists locally but is **untracked** (user
   decision pending) — don't treat it as reachable from a fresh clone.
 
-## Active: copy pass (branch `design/copy-truthful-labels`)
+## Active: DD Lock & Earn pilot — wayfinder map #144
+
+- **Map:** <https://github.com/tonymorony/diginaut-wallet/issues/144> — self-custodial DD lock
+  + trustless floor, M0 on **testnet only**. One ticket per session via `/wayfinder`; frontier
+  = the map's open, unblocked, unclaimed child issues (native sub-issues + blocked-by wired).
+- Basis docs (landed by ticket #145): spec `docs/specs/dd-lock-and-earn-pilot.md` (v0.1.0),
+  research `docs/discovery/dd-defi-yield.md`, state-model prototype preserved on throwaway
+  branch `prototype/lock-earn` (push-only, never merge).
+- Standing rules live in the map body's Notes (execution in scope, branch-off-main policy,
+  one-template-library invariant, label = mechanism, baselines).
+
+## Copy pass (shipped as #139; the deferrals below are still open)
 
 - Follows the #138 community report. Fixes where a label named a different security model than
   the handler implements: the guest/header CTA (three states — the **locked** case was the
