@@ -3,9 +3,10 @@
 // with the same noble the app serves) — no real extension involved.
 // Scenarios, one fresh tab each (the vault persists in IndexedDB between them):
 //   1. empty state: no provider injected → picker says so
-//   2. happy path: deterministic provider → checkbox gate → double-sign →
-//      save (creates the vault) → derived address matches the Node-side
-//      pipeline; badge red; switcher row carries "via TestWallet"
+//   2. happy path: deterministic provider → checkbox gate (its named origin is
+//      read out of the very bytes being signed) → double-sign → save (creates
+//      the vault) → derived address matches the Node-side pipeline; badge red;
+//      switcher row carries "via TestWallet"
 //   3. reconnect verified: same provider again → fingerprint match → switch,
 //      no new wallet
 //   4. drift hard stop: provider signs a DIFFERENT (still self-consistent)
@@ -25,7 +26,8 @@ import { base58 } from '@scure/base';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 import {
-  S2D_MESSAGE, eip191Digest, canonicalizeEvmSignature, entropyFromSignature, mnemonicFromEntropy,
+  S2D_MESSAGE_TESTNET2, s2dOriginHost, eip191Digest, canonicalizeEvmSignature,
+  entropyFromSignature, mnemonicFromEntropy,
 } from '../public/connect.js';
 import { startServer } from '../server.js';
 import { connectCdp } from './lib/cdp.mjs';
@@ -37,8 +39,13 @@ const walletHex = (rec) => '0x' + hex(rec.subarray(1)) + (27 + rec[0]).toString(
 // The fixed test key (32 × 0x07) — same as test/connect.test.js.
 const PRIV = new Uint8Array(32).fill(7);
 const ETH_ADDR = '0x' + hex(keccak_256(secp256k1.getPublicKey(PRIV, false).subarray(1)).subarray(12));
-const MSG_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE));
-const digest = eip191Digest();
+// The app is served from 127.0.0.1 here, which is NOT a legacy host, so the
+// live testnet bytes are v3 (ADR 0006). Everything below signs v3 explicitly —
+// eip191Digest()'s bare default is still the v1 message, and taking it would
+// make the fake wallet reject every signature with "unexpected message bytes".
+const MSG = S2D_MESSAGE_TESTNET2;
+const MSG_HEX = '0x' + hex(new TextEncoder().encode(MSG));
+const digest = eip191Digest(new TextEncoder().encode(MSG));
 const SIG1 = walletHex(secp256k1.sign(digest, PRIV, { format: 'recovered', prehash: false }));
 // extraEntropy = a *valid* signature from the same key that differs from SIG1 —
 // exactly what a drifted firmware (constant) or an MPC signer (fresh) returns
@@ -60,7 +67,7 @@ const ADDR1 = await derivedAddr(SIG1);
 // Phantom fake: Ed25519 key 32 × 0x09.
 const EDSK = new Uint8Array(32).fill(9);
 const PUB58 = base58.encode(ed25519.getPublicKey(EDSK));
-const EDSIG = ed25519.sign(new TextEncoder().encode(S2D_MESSAGE), EDSK);
+const EDSIG = ed25519.sign(new TextEncoder().encode(MSG), EDSK);
 const EDADDR = deriveTaprootAddress(
   mnemonicToSeed(mnemonicFromEntropy(new Uint8Array(await crypto.subtle.digest('SHA-256', EDSIG)))),
   { ...HD_NETWORKS.testnet, index: 0 },
@@ -140,6 +147,11 @@ async function agreeAndGo(b) {
   await b.click('hero-connect');
   await toCeremony(b);
   check(await b.evaluate(`document.getElementById('w-web3-go').disabled`), 'checkbox gates signature 1 of 2');
+  // The host in the checkbox must be the host the message itself pins — read
+  // both from the same frozen bytes. Hardcoding it is how the mainnet ceremony
+  // came to name the testnet domain (ADR 0006).
+  check((await b.evaluate(`document.getElementById('w-web3-origin').textContent`)) === s2dOriginHost(MSG),
+    `checkbox names the origin of the message being signed (${s2dOriginHost(MSG)})`);
   await agreeAndGo(b);
   await b.waitFor(visible('w-web3-save'), 'save step after double-sign + verify');
   await b.shot('80-web3-save.png');
