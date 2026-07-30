@@ -125,8 +125,12 @@ await shot('60-transfer-errors.png');
 // P2WPKH twin (#38). That twin is now the ONLY DGB wallet A holds, and it pays
 // the transfer fee directly — no top-up, no dead end. Before the flexible fee
 // leg this review failed with "no DGB for the fee" and the wallet was stuck.
+// /utxos is unfiltered (it maps listunspent straight through), so the mint's
+// own DD token — a value-0 output on this very address — is still listed here.
+// Assert no SPENDABLE coin, not no output; `length === 0` can never hold.
 const aCoins = await (await fetch(`http://127.0.0.1:8789/api/address/${addrA}/utxos`)).json();
-check(aCoins.utxos.length === 0, 'wallet A has no taproot DGB coin left — the mint spent it');
+check(aCoins.utxos.every((u) => BigInt(u.valueSats) === 0n),
+  'wallet A has no taproot DGB coin left — the mint spent it (the value-0 entry is the DD token)');
 await setVal('w-tr-amount', '7.5');
 
 // ---- Transfer $7.50 A → B with confirmation before signing.

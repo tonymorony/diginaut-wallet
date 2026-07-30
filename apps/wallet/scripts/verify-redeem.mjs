@@ -104,8 +104,12 @@ check(true, 'redeem button appears once the lock expires');
 // the P2WPKH twin (#38). That twin pays the redemption fee directly — no
 // top-up. Before the flexible fee leg this failed with "no DGB for the fee",
 // which stranded the collateral behind a coin the wallet already held.
+// /utxos is unfiltered (it maps listunspent straight through), so the mint's
+// own DD token — a value-0 output on this very address — is still listed here.
+// Assert no SPENDABLE coin, not no output; `length === 0` can never hold.
 const coins = await (await fetch(`http://127.0.0.1:8789/api/address/${addr0}/utxos`)).json();
-check(coins.utxos.length === 0, 'no taproot DGB coin left — the mint spent it');
+check(coins.utxos.every((u) => BigInt(u.valueSats) === 0n),
+  'no taproot DGB coin left — the mint spent it (the value-0 entry is the DD token)');
 
 // ---- Confirmation before signing.
 await evaluate(`document.querySelector('#w-positions [data-redeem]').click()`);

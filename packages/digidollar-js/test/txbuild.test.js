@@ -7,7 +7,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { buildTransferOutputs, buildRedeemOutputs, serializeTx, ddTokenOutputKey, buildSignedTransferTx, buildSignedRedeemTx, buildSignedMintTx, LOCK_TIERS, MIN_DD_TX_FEE_SATS, STANDARD_FEE_RATE_SATS_PER_KVB } from 'digidollar-js';
+import { schnorr } from '@noble/curves/secp256k1.js';
+import { buildTransferOutputs, buildRedeemOutputs, serializeTx, ddTokenOutputKey, collateralOutputKey, buildDDVersion, xOnlyPubKey, buildSignedTransferTx, buildSignedRedeemTx, buildSignedMintTx, LOCK_TIERS, MIN_DD_TX_FEE_SATS, STANDARD_FEE_RATE_SATS_PER_KVB } from 'digidollar-js';
+// Deep import on purpose: `keyPathSighashForTest` is a test seam and is NOT
+// part of the package's public API (see the comment on it in src/txbuild.js).
+import { keyPathSighashForTest } from '../src/txbuild.js';
 
 const fixture = JSON.parse(
   await readFile(new URL('./fixtures/transfer-tx.json', import.meta.url), 'utf8'),
@@ -457,6 +461,88 @@ test('a fee leg on another wallet key is signed by THAT key, and only that leg',
   assert.equal(Buffer.from(transferStacks[1][1]).toString('hex'), feePubkey, 'transfer fee leg carries the fee key');
   assert.deepEqual(transferStacks[0].map((i) => i.length), [64], 'DD token leg untouched');
   assert.ok(transfer.hex.includes(MARKED_CHANGE_SCRIPT));
+});
+
+// ---- the cross-key TAPROOT fee leg: verified by signature, not by shape ----
+// This is the commonest runtime form of the borrowed fee coin (the wallet's
+// picker prefers ANY key-path P2TR coin over a P2WPKH twin), and it is the one
+// shape that shape-checking cannot judge: the witness is a bare 64-byte
+// signature with no pubkey in it, the input scriptPubKey never reaches the wire,
+// and the transaction body is byte-identical whichever key signed. Swap
+// `feePrivKeyHex` for `privKeyHex` in dgbLegScriptHex/signDgbLeg and every
+// body/shape pin above stays green. So verify the signature itself, against a
+// message rebuilt HERE from the coins as the caller described them — a builder
+// that signs with the wrong key, or commits to the wrong input script, fails.
+
+const p2trScriptHex = (outputKeyHex) => '5120' + outputKeyHex;
+/** The key-path P2TR scriptPubKey a DD-shaped coin of this private key lives in. */
+const ddLegScriptHex = (privKeyHex) => p2trScriptHex(ddTokenOutputKey(xOnlyPubKey(privKeyHex)));
+/** The output key a key-path signature by this private key must verify against. */
+const outputKeyOf = (privKeyHex) => ddTokenOutputKey(xOnlyPubKey(privKeyHex));
+
+/** Does witness stack `inputIndex` of `hex` carry a valid key-path signature by `outputKeyHex`? */
+function keyPathLegVerifies({ hex, inputs, outputs, version, locktime, inputIndex, outputKeyHex }) {
+  const stack = witnessStacks(hex)[inputIndex];
+  assert.deepEqual(stack.map((i) => i.length), [64], `input ${inputIndex} is a bare key-path signature`);
+  const sighash = keyPathSighashForTest({ version, locktime, inputs, outputs, inputIndex });
+  return schnorr.verify(stack[0], sighash, Buffer.from(outputKeyHex, 'hex'));
+}
+
+test('transfer: a P2TR fee coin on another key is signed BY that key (schnorr-verified)', () => {
+  const { hex } = buildSignedTransferTx({ ...TRANSFER_ARGS, feeUtxo: FEE_COIN, feePrivKeyHex: FEE_KEY });
+  const version = buildDDVersion('transfer');
+  const inputs = [
+    { txidHex: TRANSFER_ARGS.ddUtxo.txidHex, vout: TRANSFER_ARGS.ddUtxo.vout, valueSats: 0n, scriptPubKeyHex: ddLegScriptHex(TEST_KEY), sequence: 0xffffffff },
+    { txidHex: FEE_COIN.txidHex, vout: FEE_COIN.vout, valueSats: FEE_COIN.valueSats, scriptPubKeyHex: ddLegScriptHex(FEE_KEY), sequence: 0xffffffff },
+  ];
+  const outputs = buildTransferOutputs({
+    recipients: TRANSFER_ARGS.recipients,
+    ddChangeCents: 0n, // the fixture sends the whole $100 coin
+    changeOwnerKeyHex: xOnlyPubKey(TEST_KEY),
+    dgbChangeSats: FEE_COIN.valueSats - TRANSFER_ARGS.feeSats,
+    dgbChangeScriptHex: MARKED_CHANGE_SCRIPT,
+  });
+  const leg = (inputIndex, privKeyHex) =>
+    keyPathLegVerifies({ hex, inputs, outputs, version, locktime: 0, inputIndex, outputKeyHex: outputKeyOf(privKeyHex) });
+
+  assert.ok(leg(1, FEE_KEY), 'fee leg verifies against the FEE key');
+  assert.ok(!leg(1, TEST_KEY), 'fee leg does NOT verify against the owner key');
+  assert.ok(leg(0, TEST_KEY), 'DD token leg verifies against the owner key');
+  assert.ok(!leg(0, FEE_KEY), 'DD token leg does NOT verify against the fee key');
+});
+
+test('redeem: a P2TR fee coin on another key is signed BY that key, at the bookkept index', () => {
+  const { hex } = buildSignedRedeemTx({ ...REDEEM_ARGS, feeUtxo: FEE_COIN, feePrivKeyHex: FEE_KEY });
+  const version = buildDDVersion('redeem');
+  const { collateralUtxo, ddUtxos, feeSats } = REDEEM_ARGS;
+  const leafParams = { ownerKeyHex: xOnlyPubKey(TEST_KEY), lockHeight: collateralUtxo.lockHeight, ddCents: collateralUtxo.ddCents };
+  const inputs = [
+    { txidHex: collateralUtxo.txidHex, vout: collateralUtxo.vout, valueSats: collateralUtxo.valueSats, scriptPubKeyHex: p2trScriptHex(collateralOutputKey(leafParams)), sequence: 0xfffffffe },
+    ...ddUtxos.map((u) => ({ txidHex: u.txidHex, vout: u.vout, valueSats: 0n, scriptPubKeyHex: ddLegScriptHex(TEST_KEY), sequence: 0xfffffffe })),
+    { txidHex: FEE_COIN.txidHex, vout: FEE_COIN.vout, valueSats: FEE_COIN.valueSats, scriptPubKeyHex: ddLegScriptHex(FEE_KEY), sequence: 0xffffffff },
+  ];
+  const outputs = buildRedeemOutputs({
+    collateralReturnSats: collateralUtxo.valueSats,
+    collateralReturnScriptHex: ddLegScriptHex(TEST_KEY),
+    ddChangeCents: 0n, // the two burn coins sum to exactly the minted $100
+    changeOwnerKeyHex: xOnlyPubKey(TEST_KEY),
+    dgbChangeSats: FEE_COIN.valueSats - feeSats,
+    dgbChangeScriptHex: MARKED_CHANGE_SCRIPT,
+  });
+  const locktime = collateralUtxo.lockHeight;
+  const leg = (inputIndex, privKeyHex) =>
+    keyPathLegVerifies({ hex, inputs, outputs, version, locktime, inputIndex, outputKeyHex: outputKeyOf(privKeyHex) });
+
+  const feeIndex = 1 + ddUtxos.length; // the index the builder bookkeeps
+  assert.ok(leg(feeIndex, FEE_KEY), 'fee leg verifies against the FEE key');
+  assert.ok(!leg(feeIndex, TEST_KEY), 'fee leg does NOT verify against the owner key');
+  // vin[0] is the collateral: a SCRIPT-path spend of the Normal leaf, so its
+  // signature commits to a leaf hash and is checked against the UNTWEAKED owner
+  // key — not comparable here. The burn legs are plain key-path.
+  for (const i of [1, 2]) {
+    assert.ok(leg(i, TEST_KEY), `burn leg ${i} verifies against the owner key`);
+    assert.ok(!leg(i, FEE_KEY), `burn leg ${i} does NOT verify against the fee key`);
+  }
 });
 
 test('a borrowed fee key never becomes the default DGB change destination', async () => {
