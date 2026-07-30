@@ -136,7 +136,9 @@ then the CTA/recovery/banner copy pass).
   `mandatory` — re-entry stays dismissible. `renderBackupSkipGate()` re-runs when the node
   names its chain, so a slow node does not permanently seal a testnet ceremony.
 - **`pickDgbCoin(utxos, minSats, preferKeyHex)` picks the DGB side of every DigiDollar
-  transaction** — the transfer/redeem fee and the mint's whole funding. Tiers: preferred-key
+  transaction** — lives in `public/coinpick.js` (pinned by `test/coinpick.test.js`; inline
+  in app.js an inverted tier order or a largest-first sort passed every suite in the repo)
+  — the transfer/redeem fee and the mint's whole funding. Tiers: preferred-key
   P2TR → any wallet P2TR → any P2WPKH twin, smallest sufficient coin first. The old gates
   demanded a same-key P2TR coin, which the mint's own P2WPKH change could never satisfy — a
   wallet that minted with its only coin dead-ended. `buildSignedTransferTx`/`buildSignedRedeemTx`
@@ -146,7 +148,11 @@ then the CTA/recovery/banner copy pass).
   the Consolidate offer, and a genuine shortfall is a plain error. Consequence: the offer can
   only appear with **two or more** coins, so the consolidate modal's single-coin guard
   (`spendable.length === 1`) is now defensive — a lone coin is never worth merging, whatever
-  its type or address.
+  its type or address. Both gates total **confirmed, positive-value** coins only (`height > 0
+  && valueSats > 0n`) — the same set `openConsolidateModal` plans over, so the offer they
+  point at can always act, and value-0 DD tokens (`/utxos` is unfiltered) are not counted as
+  DGB. The shortfall arm prints the holding through `satsToDgb`, not `fmtSats`: at 2 decimals
+  a 0.119 DGB balance rendered as "you hold 0.12 DGB" — the fee — over a refusal.
 - `onModalClosed` tears down **every** draft (send **and** transfer, mint, consolidate) —
   each holds per-UTXO private keys and an armed confirm screen; `act-send`/`act-mint`/
   `dd-mint-open` also reset before opening (#L3).

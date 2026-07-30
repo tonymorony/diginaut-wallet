@@ -65,7 +65,18 @@ separately (PR #124), not part of that run.
   change pays the fee, with no top-up. `verify-receive-compat`'s transfer variant needs a
   genuinely fragmented balance (two sub-fee coins) to reach the fee gate at all; a twin coin
   big enough is simply used. Those two regtest drivers are the **acceptance gate** for that
-  change and have not been run offline.
+  change and **still have not been run** (no regtest stand available on this machine) —
+  treat them as the pre-merge gate, not as passed.
+  Two gate assertions were fixed after review and are also unrun: `verify-transfer.mjs`
+  and `verify-redeem.mjs` now assert `utxos.every((u) => BigInt(u.valueSats) === 0n)` for
+  the post-mint address, not `utxos.length === 0`. **`/api/address/:addr/utxos` is
+  unfiltered** (it maps `listunspent` straight through, which is what lets `/dd-utxos`
+  find DD tokens), and a mint's vout[1] is byte-identical to the owner's own receive
+  address — so that address always still holds exactly one value-0 output, the DD token,
+  and `length === 0` could never hold. `verify-walkthrough` lost its addrA top-up and the
+  `send at least … DGB to (\w+)` recovery branch (that string no longer exists in app.js);
+  `verify-mint` now checks the fragmented-mint error for `Consolidate coins below`, the
+  wording all three DD fee/funding gates share.
 
 ## Running the full local regtest stack on this Mac (proven recipe)
 

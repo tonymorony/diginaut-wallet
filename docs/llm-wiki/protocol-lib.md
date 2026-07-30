@@ -1,6 +1,9 @@
 # packages/digidollar-js
 
-Verified: 2026-07-31 @ branch `feat/flexible-fee-leg` (flexible DGB leg). ADR-0004: deterministic, zero I/O. All money is BigInt
+Verified: 2026-07-26 @ `7247899`; the `txbuild.js` row and the flexible-DGB-leg section
+below re-verified 2026-07-31 @ `05c57b2` — that section only, not the whole page. (A commit
+hash, not a branch name: branches stop resolving once merged and deleted, which is exactly
+when a stamp has to be judged.) ADR-0004: deterministic, zero I/O. All money is BigInt
 (DGB in sats, DD in **cents**, oracle price in micro-USD/DGB). Deps pinned exactly:
 `@noble/curves`, `@scure/bip32`, `@scure/bip39`. Consumed by wallet, indexer, faucet.
 
@@ -23,9 +26,13 @@ classifies by shape, not index). `unlockHeight = nextHeight + 100 + tier.lockBlo
 
 **The flexible DGB leg** (transfer/redeem fee, mint funding). Consensus binds only the DD
 token legs and the collateral to the owner key; the plain DGB input can be any coin the
-wallet can sign, key-path P2TR **or** P2WPKH. Core proves both — `redeem-tx.json` vin[3]
-and `mint-tx.json` vin[0] are `[DER, pubkey]` v0 stacks. Params (all additive, defaults
-reproduce the previous single-key anatomy byte-for-byte):
+wallet can sign, key-path P2TR **or** P2WPKH. Source, not fixtures, for the general rule:
+`ValidateTransferTransaction` (`digidollar/validation.cpp:1644`) gates every input rule on
+`coin.out.nValue == 0`, so a **non-zero-value** input is unconstrained in script type and
+key. Captured evidence covers redeem and mint only — `redeem-tx.json` vin[3] and
+`mint-tx.json` vin[0] are `[DER, pubkey]` v0 stacks; this repo's `transfer-tx.json` vin[1]
+is a `[64]` key-path P2TR leg, so no fixture captures a v0 leg on a transfer.
+Params (all additive, defaults reproduce the previous single-key anatomy byte-for-byte):
 
 - `buildSignedTransferTx` / `buildSignedRedeemTx`: `feePrivKeyHex` (default `privKeyHex`)
   and `feeUtxo.type: 'p2wpkh'` → BIP-143 ECDSA instead of BIP-341 schnorr.
@@ -38,6 +45,12 @@ reproduce the previous single-key anatomy byte-for-byte):
   (`P2WPKH_INPUT_WU` 272 vs `P2TR_INPUT_WU` 230) and the flat 0.1 DGB
   `MIN_DD_TX_FEE_SATS` floor is >100× the whole transaction's relay minimum. Pinned in
   `txbuild.test.js`. Plain spends already price per input type in `planSpend`.
+- A **cross-key P2TR** fee leg is shape-invisible: bare 64-byte witness, no pubkey on the
+  wire, identical tx body whichever key signed. Verify it by signature —
+  `keyPathSighashForTest` (test seam in `txbuild.js`, **not** re-exported from `index.js`;
+  deep-import it like `hd.test.js` does) + `schnorr.verify` against
+  `ddTokenOutputKey(xOnlyPubKey(key))`, positive and negative. Proven: breaking only the
+  P2TR branch of `dgbLegScriptHex`/`signDgbLeg` fails those two tests and nothing else.
 
 ## Test layers (differential harness)
 
