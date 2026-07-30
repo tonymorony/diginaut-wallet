@@ -200,8 +200,21 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
   user's wallet), the proxy refusals `broadcastlog.js` string-matches, a node's raw reject text,
   and the driver-asserted picker strings. The ux-writer table still lists only v1 — read it as
   covering all four.
+- **A word that already means something here cannot be reused loosely.** The legacy-host move
+  notice opened *"Diginaut has a new address"* — in a UI where **address** is a DGB receiving
+  address ("Copy address", "Sender can't pay this address?"), rendered a row above the header's
+  address chip. It says *new home* / *new site* now. Same fix for *recovery phrase* → **seed
+  phrase**: every other string in the app says seed phrase, so the notice named an artifact the
+  user cannot find, and the restore paths are *seed phrase **or** encrypted backup file* (the
+  `hero-recovery` line is the phrasing to copy).
+- **A surface outside `show()` must read true in every vault state.** `#w-move-note` renders on
+  boot from the hostname alone — no wallet check — so it is seen by first-time visitors too. Copy
+  it in the *"a wallet created here stays here"* impersonal form; "your wallet" over an empty
+  browser is the same class of bug as a state-inaccurate modal title.
 - **Name the consequence, not the mechanism** — "New 24-word seed phrase, you'll write it down
-  next" over "Create new wallet".
+  next" over "Create new wallet". Exception: when the mechanism is the *reason* a limit is not
+  ours to lift, give it — the move notice says wallets stay put "because your browser stores
+  wallets per site", or the user reads origin scoping as a policy we could waive.
 - **Never soften a risk to reduce friction.** The backup ceremony, mainnet interstitial,
   $500 cap and eviction warning are allowed to be blunt.
 - **Say where the keys live before the click,** not only after it.
