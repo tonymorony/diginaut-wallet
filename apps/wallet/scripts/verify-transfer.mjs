@@ -1,8 +1,9 @@
 // Drive #15: DigiDollar transfer between two wallets through the full real
 // stack. Wallet A mints in the UI, transfers to wallet B's address; the driver
 // then restores wallet B in the same browser and sees the DigiDollar arrive.
-// Also proves the distinct error states: non-taproot recipient, insufficient
-// DigiDollar, and no fee coin on the DD-holding address.
+// Also proves the distinct error states (non-taproot recipient, insufficient
+// DigiDollar) and that the fee is paid from the mint's own P2WPKH change —
+// the coin the old same-key/P2TR-only fee gate refused.
 // Setup: same as verify-mint.mjs.
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -118,20 +119,15 @@ await waitFor(`${text('w-tr-err')}.includes('insufficient DigiDollar')`, 'insuff
 check((await evaluate(text('w-tr-err'))).includes('hold $20.00'),
   'insufficient-DigiDollar error is specific: sending $100, holding $20');
 
-// ---- Error 3: mint change went to P2WPKH, so addr A has NO DGB fee coin now.
-await setVal('w-tr-amount', '7.5');
-await click('w-tr-review');
-await waitFor(`${text('w-tr-err')}.includes('no DGB for the fee')`, 'no-fee-coin error');
-check((await evaluate(text('w-tr-err'))).includes(addrA),
-  'no-fee-coin error names the exact address to top up');
 await shot('60-transfer-errors.png');
 
-// top up the fee coin and mine it. The balance is not '1': the mint's change
-// went to the P2WPKH twin and counts toward it (#38) — wait for the +1 delta.
-const balBeforeTopUp = await evaluate(text('w-balance'));
-await nodeRpc('sendtoaddress', [addrA, 1], 'stand');
-await nodeRpc('generatetoaddress', [1, miner], 'stand');
-await waitFor(`${text('w-balance')} !== ${JSON.stringify(balBeforeTopUp)}`, 'fee coin confirmed');
+// ---- The mint spent wallet A's only taproot coin and left its change on the
+// P2WPKH twin (#38). That twin is now the ONLY DGB wallet A holds, and it pays
+// the transfer fee directly — no top-up, no dead end. Before the flexible fee
+// leg this review failed with "no DGB for the fee" and the wallet was stuck.
+const aCoins = await (await fetch(`http://127.0.0.1:8789/api/address/${addrA}/utxos`)).json();
+check(aCoins.utxos.length === 0, 'wallet A has no taproot DGB coin left — the mint spent it');
+await setVal('w-tr-amount', '7.5');
 
 // ---- Transfer $7.50 A → B with confirmation before signing.
 await click('w-tr-review');

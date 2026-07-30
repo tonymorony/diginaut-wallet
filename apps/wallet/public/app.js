@@ -2904,6 +2904,20 @@ async function spendableUtxos() {
   return perAddr.flat();
 }
 
+/** The single DGB coin that pays a DigiDollar transaction's DGB side — the fee
+ * on a transfer or a redemption, the whole funding on a mint. Tiered: a
+ * key-path P2TR coin on the preferred key first (Core's own anatomy, cheapest
+ * witness), then any P2TR coin in the wallet, then a P2WPKH twin — mint change
+ * (#38), which the builders sign per BIP-143. Smallest sufficient coin wins, so
+ * a large one stays whole. Undefined when no single coin covers `minSats`. */
+function pickDgbCoin(utxos, minSats, preferKeyHex) {
+  const enough = utxos.filter((u) => u.valueSats >= minSats).sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1));
+  const taproot = enough.filter((u) => u.type !== 'p2wpkh');
+  return taproot.find((u) => u.privKeyHex === preferKeyHex)
+    ?? taproot[0]
+    ?? enough.find((u) => u.type === 'p2wpkh');
+}
+
 let pendingSend = null; // { plan, recipientScriptHex, amountSats, address } while confirming
 
 function resetSend() {
@@ -3223,15 +3237,13 @@ async function openConsolidateModal() {
     // would strand any balance above the cap fragmented forever.
     const spendable = (await spendableUtxos()).filter((u) => u.height > 0 && u.valueSats > 0n);
     if (spendable.length === 0) throw new Error('no confirmed coins to consolidate');
-    // ONE coin is not always pointless: a sole P2WPKH twin (the common
-    // post-mint case — mint change lands as v0) still needs consolidating,
-    // because the self-spend converts it to key-path P2TR on the current
-    // address, which the mint/transfer/redeem builders require. Same for a
-    // sole P2TR coin on an OLD address: the fee gates want it on the current
-    // one. Only a single P2TR coin ALREADY on the current address gains
-    // nothing — a self-spend there would change nothing but pay a fee.
-    if (spendable.length === 1 && spendable[0].type !== 'p2wpkh' && spendable[0].privKeyHex === current.privKeyHex) {
-      throw new Error('your DGB is already a single coin on your current address — consolidating would only pay a fee');
+    // Since the DigiDollar flows take their DGB coin from anywhere in the
+    // wallet, in either shape, a single coin can never be worth merging: the
+    // count cannot drop below one and no flow refuses it for its type or its
+    // address any more. Defensive — the offer is only revealed by a
+    // fragmentation error, which needs two coins to fire.
+    if (spendable.length === 1) {
+      throw new Error('your DGB is already a single coin — consolidating would only pay a fee');
     }
     const plan = planMaxSpend({ utxos: spendable, recipientScriptHex: scriptPubKeyFromAddress(toAddress) });
     pendingConsolidate = { plan, toAddress };
@@ -3381,12 +3393,12 @@ $('w-mint-review').addEventListener('click', (e) =>
     const collateralSats = requiredCollateralSats({ ddCents, tierId, oraclePriceMicroUsd: priceMicroUsd, dcaMultiplierBps });
     const needSats = collateralSats + MINT_FEE_SATS;
     // 5. funding gate — the mint spends ONE UTXO, so it must cover everything.
-    // Only P2TR coins qualify: buildSignedMintTx signs key-path taproot (a
-    // p2wpkh coin — earlier mint change — is consolidated via Send first).
+    // Any coin the wallet can sign qualifies, including the P2WPKH twin an
+    // earlier mint left as change: buildSignedMintTx picks the signing path
+    // from the coin's type. The funding coin's key owns the position.
     const utxos = await spendableUtxos();
     const totalSats = utxos.reduce((s, u) => s + u.valueSats, 0n);
-    const utxo = utxos.filter((u) => u.type !== 'p2wpkh' && u.valueSats >= needSats)
-      .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    const utxo = pickDgbCoin(utxos, needSats);
     if (!utxo) {
       // fragmented (not insufficient) funds are fixable by the guided
       // consolidation — the flag reveals the "Consolidate coins" offer (#103)
@@ -3447,8 +3459,9 @@ $('w-mint-go').addEventListener('click', (e) =>
 
 // ---- Transfer DigiDollar (#15): plan → confirmation → sign → broadcast ----
 // Same stablecoin feature flag as Mint. A transfer spends ONE DD token UTXO
-// plus ONE DGB fee UTXO owned by the SAME key (Core's transfer anatomy), so
-// both coin picks are per-derivation-address.
+// plus ONE DGB coin for the fee. Only the DD token pick is per-derivation-
+// address — consensus binds that leg to its owner key; the fee coin comes from
+// anywhere in the wallet (pickDgbCoin).
 const TRANSFER_FEE_SATS = 12_000_000n; // 0.12 DGB, above Core's DD fee floor
 
 /** Every watched derivation's DD token UTXOs, with the owning key attached. */
@@ -3524,18 +3537,17 @@ $('w-tr-review').addEventListener('click', (e) =>
           ? `your DigiDollar covers it, but it is split across smaller coins (a transfer spends one DD coin, largest is $${fmtDD(ddUtxos.reduce((m, u) => (u.ddCents > m ? u.ddCents : m), 0n))}). Transfer that amount or less, or consolidate by transferring to your own address.`
           : `insufficient DigiDollar: you are sending $${fmtDD(cents)} but hold $${fmtDD(totalCents)}`);
     }
-    // the fee coin must sit on the SAME address as the DD coin being spent —
-    // and be P2TR: buildSignedTransferTx signs key-path taproot, not v0
-    const feeUtxo = (await spendableUtxos())
-      .filter((u) => u.type !== 'p2wpkh' && u.privKeyHex === ddUtxo.privKeyHex && u.valueSats >= TRANSFER_FEE_SATS)
-      .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    // the fee comes from any DGB coin in the wallet — the DD coin's own address
+    // first, then anywhere, P2TR or the P2WPKH twin mint change lands on
+    const dgbCoins = await spendableUtxos();
+    const feeUtxo = pickDgbCoin(dgbCoins, TRANSFER_FEE_SATS, ddUtxo.privKeyHex);
     if (!feeUtxo) {
-      const msg = `no DGB for the fee on the address holding this DigiDollar — send at least ${fmtSats(TRANSFER_FEE_SATS)} DGB to ${ddUtxo.address}, then retry`;
-      // consolidation lands every DGB coin on the CURRENT receive address as
-      // P2TR — offer it only when that is where the fee is missing (a fee-only
-      // p2wpkh twin balance there is the common post-mint case, #103)
-      const cur = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
-      throw ddUtxo.address === cur ? fragmentationError(msg) : new Error(msg);
+      const dgbTotal = dgbCoins.reduce((s, u) => s + u.valueSats, 0n);
+      // fragmented, not empty: consolidation merges every coin into one, which
+      // is exactly what a one-coin fee needs — the flag reveals the offer (#103)
+      throw dgbTotal >= TRANSFER_FEE_SATS
+        ? fragmentationError(`your DGB covers the ${fmtSats(TRANSFER_FEE_SATS)} DGB fee, but no single coin does (a transfer pays the fee from one coin). Consolidate your coins, then retry.`)
+        : new Error(`not enough DGB for the fee: a transfer costs ${fmtSats(TRANSFER_FEE_SATS)} DGB and you hold ${fmtSats(dgbTotal)} DGB. Send DGB to any of your addresses, then retry.`);
     }
     pendingTransfer = { ddUtxo, feeUtxo, cents, outputKeyHex: decoded.outputKeyHex, address };
     $('w-tr-c-to').textContent = address;
@@ -3555,8 +3567,9 @@ $('w-tr-go').addEventListener('click', (e) =>
     if (!wallet.seed) throw new Error('wallet is locked');
     const { hex } = buildSignedTransferTx({
       ddUtxo: { txidHex: ddUtxo.txidHex, vout: ddUtxo.vout, ddCents: ddUtxo.ddCents },
-      feeUtxo: { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats },
+      feeUtxo: { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, type: feeUtxo.type },
       privKeyHex: ddUtxo.privKeyHex,
+      feePrivKeyHex: feeUtxo.privKeyHex, // the fee coin may live on another key
       recipients: [{ outputKeyHex, cents }],
       feeSats: TRANSFER_FEE_SATS,
       // fee change back to the WATCHED address (default P2WPKH would vanish from view)
@@ -3615,16 +3628,15 @@ $('w-positions').addEventListener('click', (e) => {
         ? `redemption burns the full $${fmtDD(needCents)}, but only $${fmtDD(got)} sits on the position's address — transfer $${fmtDD(needCents - got)} to ${p.address} first`
         : `you no longer hold enough DigiDollar: redeeming burns $${fmtDD(needCents)}, you hold $${fmtDD(totalCents)} (some was transferred away)`);
     }
-    // P2TR only: buildSignedRedeemTx signs the fee input key-path, not v0
-    const feeUtxo = (await spendableUtxos())
-      .filter((u) => u.type !== 'p2wpkh' && u.privKeyHex === burn[0].privKeyHex && u.valueSats >= REDEEM_FEE_SATS)
-      .sort((a, b) => (a.valueSats < b.valueSats ? -1 : 1))[0];
+    // same wallet-wide fee pick as the transfer: the position's own address
+    // first, then any DGB coin the wallet can sign, P2TR or P2WPKH twin
+    const dgbCoins = await spendableUtxos();
+    const feeUtxo = pickDgbCoin(dgbCoins, REDEEM_FEE_SATS, burn[0].privKeyHex);
     if (!feeUtxo) {
-      const msg = `no DGB for the fee on the position's address — send at least ${fmtSats(REDEEM_FEE_SATS)} DGB to ${p.address}, then retry`;
-      // same rule as the transfer fee gate: consolidation only helps when the
-      // position sits on the CURRENT receive address (where the merged coin lands)
-      const cur = deriveTaprootAddress(wallet.seed, { ...wallet.network, index: wallet.index }).address;
-      throw p.address === cur ? fragmentationError(msg) : new Error(msg);
+      const dgbTotal = dgbCoins.reduce((s, u) => s + u.valueSats, 0n);
+      throw dgbTotal >= REDEEM_FEE_SATS
+        ? fragmentationError(`your DGB covers the ${fmtSats(REDEEM_FEE_SATS)} DGB fee, but no single coin does (a redemption pays the fee from one coin). Consolidate your coins, then retry.`)
+        : new Error(`not enough DGB for the fee: a redemption costs ${fmtSats(REDEEM_FEE_SATS)} DGB and you hold ${fmtSats(dgbTotal)} DGB. Send DGB to any of your addresses, then retry.`);
     }
     pendingRedeem = { position: p, ddUtxos: burn, feeUtxo };
     $('w-rd-c-txid').textContent = p.txid.slice(0, 12) + '…';
@@ -3650,8 +3662,9 @@ $('w-rd-go').addEventListener('click', (e) =>
         lockHeight: p.unlockHeight, ddCents: BigInt(p.ddCents),
       },
       ddUtxos: ddUtxos.map((u) => ({ txidHex: u.txidHex, vout: u.vout, ddCents: u.ddCents })),
-      feeUtxo: { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats },
+      feeUtxo: { txidHex: feeUtxo.txidHex, vout: feeUtxo.vout, valueSats: feeUtxo.valueSats, type: feeUtxo.type },
       privKeyHex: ddUtxos[0].privKeyHex,
+      feePrivKeyHex: feeUtxo.privKeyHex, // the fee coin may live on another key
       feeSats: REDEEM_FEE_SATS,
       dgbChangeScriptHex: scriptPubKeyFromAddress(p.address), // keep change visible
     });
