@@ -123,6 +123,12 @@ check((await evaluate(text('w-path'))).endsWith(`/${HANDOUT}`),
 await fund(handedOut, '123400000000', 'a'.repeat(64));
 await waitFor(`!['—', '0'].includes(document.getElementById('w-balance').textContent)`, 'payment lands', 30_000);
 check((await balance()).startsWith('1,234'), `a payment to the handed-out address is seen: ${await balance()} DGB`);
+// The address on screen was just paid, so the money poll must re-arm the scan
+// and move the handout counter past it — WITHOUT a reload. Nothing else pins
+// the re-arm: an inert one leaves the balance check above green.
+await waitFor(`document.getElementById('w-path').textContent.endsWith('/' + ${HANDOUT + 1})`,
+  'the money poll re-arms the scan when the shown address is paid', 30_000);
+check(true, `the shown address rotates mid-session: ${await evaluate(text('w-path'))}`);
 await b.shot('110-receive-index-remembered.png');
 
 // ---- B. erase the vault (counter and all), restore the same seed ----
