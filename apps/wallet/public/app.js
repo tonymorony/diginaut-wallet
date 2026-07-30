@@ -2753,11 +2753,24 @@ function historyRow(h) {
   const amtCls = amt > 0n ? 'in' : 'out';
   const sign = amt > 0n ? '+' : amt < 0n ? '−' : '';
   const amtStr = amt === 0n ? '' : `${sign}${fmtDgb8(amt < 0n ? -amt : amt)} DGB`; // no misleading "0 DGB"
-  const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
-  const conf = (c <= 0 || h.height === 0)
-    ? `<span class="tx-conf pending">${icon('clock')}pending</span>`
-    : c >= FINAL_CONF ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
-      : `<span class="tx-conf partial">${c} conf</span>`;
+  // coerce: a number never carries markup. null = the enrichment carried no
+  // count at all, which is NOT the same answer as the node saying zero.
+  const cRaw = Number(detail.confirmations);
+  const c = Number.isFinite(cRaw) ? Math.max(0, Math.trunc(cRaw)) : null;
+  // The node's own count outranks the address-index height. The two readings
+  // come from different subsystems — h.height is ElectrumX's address index,
+  // the count is the node via the verbose tx lookup — and the index can lag
+  // its node badly enough that we model the lag elsewhere (indexerLagBlocks,
+  // #H5). While it lags, a mined tx sits at height 0 in the index and the old
+  // `h.height === 0` veto pinned the row to "pending" against N confirmations.
+  // `final` still needs BOTH signals: the indexer is untrusted (#55), and a
+  // count alone would let a lying index stamp settlement on a mempool tx.
+  const pendingBadge = `<span class="tx-conf pending">${icon('clock')}pending</span>`;
+  const conf = c === null
+    ? (h.height === 0 ? pendingBadge : '<span class="tx-conf partial">confirmed</span>')
+    : c >= FINAL_CONF && h.height > 0 ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
+      : c > 0 ? `<span class="tx-conf partial">${c} conf</span>`
+        : pendingBadge;
   const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
   const time = Number(detail.time) || 0;
   const sub = [cp, relTime(time), feeStr].filter(Boolean).join(' · ');

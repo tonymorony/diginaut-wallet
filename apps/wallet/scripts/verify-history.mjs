@@ -58,6 +58,21 @@ function build() {
     feeSats: null,
     vin: [{ address: EXT_X, valueSats: '5000000000' }],
     vout: [{ n: 0, address: WALLET, valueSats: '5000000000', ddCents: null }] });                // received +50, final
+  // Index lag (#H5 shape): the node has counted 24 confirmations while the
+  // address index still lists the tx at height 0. The node's count must win —
+  // the row used to read "pending" — but without the index's corroboration it
+  // is a count, not finality.
+  addTx(tx32('a7'), 0, { confirmations: 24, time: now - 5400, type: 'dgb',
+    feeSats: null,
+    vin: [{ address: EXT_X, valueSats: '777000000' }],
+    vout: [{ n: 0, address: WALLET, valueSats: '777000000', ddCents: null }] });                 // received +7.77, lagging index
+  // The hostile inverse of the same shape: the indexer is untrusted (#55), so
+  // a count it invented for a tx no block has carried must not buy the final
+  // badge — that badge names a settlement state the chain has not reached.
+  addTx(tx32('b8'), 0, { confirmations: 9999, time: now - 60, type: 'dgb',
+    feeSats: null,
+    vin: [{ address: EXT_X, valueSats: '333000000' }],
+    vout: [{ n: 0, address: WALLET, valueSats: '333000000', ddCents: null }] });                 // received +3.33, lying count
   for (let i = 0; i < 6; i++) {
     addTx(tx32(String.fromCharCode(101) + i), 984 - i, { confirmations: 20, time: now - 200000 - i, type: 'dgb',
       feeSats: null,
@@ -90,6 +105,16 @@ const b = await connectCdp();
 const { evaluate, waitFor, shot, setVal, click, check } = b;
 const histText = () => evaluate(`document.getElementById('w-history').textContent`);
 const rowCount = () => evaluate(`document.querySelectorAll('#w-history .tx').length`);
+// "<badge classes>|<badge text>" for the row carrying `needle`. The badge's
+// class is asserted as well as its words: `final` is a class + an <svg>, and
+// an <svg> is not in textContent, so matching text alone cannot prove a row
+// did NOT claim finality.
+const confBadge = (needle) => evaluate(`(() => {
+  const row = [...document.querySelectorAll('#w-history .tx')].find((r) => r.textContent.includes(${JSON.stringify(needle)}));
+  if (!row) return 'no row';
+  const b = row.querySelector('.tx-conf');
+  return b ? b.className + '|' + b.textContent : 'no badge';
+})()`);
 
 const visible = (id) => `document.getElementById('${id}').offsetParent !== null`;
 // app.js is a module (async): re-issue the click until the target view appears.
@@ -125,17 +150,23 @@ try {
   check(/pending/.test(t), 'mempool tx shows pending');
   check(/5 conf/.test(t), 'partially-confirmed tx shows its confirmation count');
   check(/final/.test(t), 'a 6+ conf tx shows final (Android parity)');
+  // Precedence between the two subsystems: the node's count outranks the
+  // address index's height, but the final badge needs both to agree.
+  const lagging = await confBadge('+7.77 DGB');
+  check(lagging === 'tx-conf partial|24 conf', `a mined tx the index still lists at height 0 shows its count, not pending (got "${lagging}")`);
+  const lying = await confBadge('+3.33 DGB');
+  check(!/final/.test(lying), `an invented count on a tx with no block does not buy the final badge (got "${lying}")`);
   check(/ago|\d{4}-\d\d-\d\d/.test(t), 'entries carry a timestamp / relative date');
   await evaluate(`document.querySelector('#w-history').scrollIntoView({block:'center'})`);
   await shot('92-history-enriched.png');
 
-  // pagination: 11 txs → 8 shown + "Show more" → 11
+  // pagination: 13 txs → 8 shown + "Show more" → 13
   const before = await rowCount();
   check(before === 8, `history capped at 8 rows initially (got ${before})`);
   check(await evaluate(`!!document.getElementById('w-history-more')`), '"Show more" offered when >8 txs');
   await click('w-history-more');
-  await waitFor(`document.querySelectorAll('#w-history .tx').length === 11`, 'show more reveals the rest');
-  check((await rowCount()) === 11, 'all 11 txs reachable after "Show more"');
+  await waitFor(`document.querySelectorAll('#w-history .tx').length === ${history.length}`, 'show more reveals the rest');
+  check((await rowCount()) === history.length, `all ${history.length} txs reachable after "Show more"`);
 
   console.log('\nDone.');
 } finally {
