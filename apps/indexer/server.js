@@ -19,6 +19,11 @@ export function configFromEnv() {
   const ttl = Number(process.env.TX_CACHE_TTL_MS);
   return {
     port: Number(process.env.PORT) || 8789,
+    // Loopback by default. This façade is an unthrottled proxy in front of
+    // ElectrumX with no auth of its own, and `node server.js` on a box with an
+    // open port used to publish it to the whole network. Containers that must
+    // take cross-container traffic set BIND_HOST=0.0.0.0 (deploy/*.yml).
+    bindHost: process.env.BIND_HOST || '127.0.0.1',
     hrp: process.env.DGB_HRP || 'dgbt', // dgb | dgbt | dgbrt
     electrum: {
       host: process.env.ELECTRUM_HOST || '127.0.0.1',
@@ -474,8 +479,8 @@ export function startServer(overrides = {}) {
   });
 
   server.on('close', () => electrum.sock?.destroy()); // don't hold the event loop after close
-  server.listen(config.port, () => {
-    console.log(`  DigiDollar indexer façade → http://localhost:${server.address().port} (electrum ${config.electrum.host}:${config.electrum.port}, hrp ${config.hrp})`);
+  server.listen(config.port, config.bindHost, () => {
+    console.log(`  DigiDollar indexer façade → http://localhost:${server.address().port} (bind ${config.bindHost}, electrum ${config.electrum.host}:${config.electrum.port}, hrp ${config.hrp})`);
   });
   return server;
 }

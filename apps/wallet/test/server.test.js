@@ -892,6 +892,21 @@ test('HSTS is per-server, not process-global — one instance must not leak into
   }
 });
 
+// This proxy fronts the node's RPC surface, so a bare `node server.js` on a box
+// with an open port must not publish it. Public deployments put a TLS
+// terminator in front and the container opts back in with BIND_HOST.
+test('binds loopback by default; a container opts back in with BIND_HOST', async () => {
+  for (const [bindHost, expected] of [[undefined, '127.0.0.1'], ['0.0.0.0', '0.0.0.0']]) {
+    const server = startServer({ port: 0, ...(bindHost ? { bindHost } : {}) });
+    await once(server, 'listening');
+    try {
+      assert.equal(server.address().address, expected, `BIND_HOST=${bindHost ?? '(unset)'}`);
+    } finally {
+      server.close();
+    }
+  }
+});
+
 // ---- A proxy failure names no backend ----
 // Both proxies used to answer `<peer> unreachable: ${err.message}`, printing the
 // configured INDEXER_URL / FAUCET_URL host:port (and the OS error) to any

@@ -16,6 +16,12 @@ Only the wallet's port is published. Indexer, faucet and ElectrumX stay on the
 compose-internal network and are reached through the wallet's same-origin
 proxies — nothing else to firewall.
 
+All three Node services listen on **127.0.0.1 by default** (`BIND_HOST`), so
+running one directly with `node server.js` never puts it on a network by
+accident. The compose files set `BIND_HOST=0.0.0.0` for the containers, where
+it means the compose network — if you write your own compose or systemd units,
+you must set it too or the services will not answer each other.
+
 ## Prerequisites
 
 - Docker with the compose plugin.
@@ -143,6 +149,13 @@ node apps/wallet/scripts/verify-dual-public.mjs \
 
 Guard rails, on by default:
 
+- **`BIND_HOST`** — every service listens on `127.0.0.1` unless told otherwise.
+  The compose files set `0.0.0.0` on wallet, indexer and faucet because those
+  containers answer each other across the compose network; only the wallet's
+  port is published, and in the TLS/dual overlays even that is bound to the
+  host's loopback with Caddy in front. A hand-rolled deployment that skips this
+  variable gets services that cannot reach each other — that is the failure
+  mode to expect, not a silent exposure.
 - **`EXPECTED_CHAIN`** — each wallet pins the chain its node must report
   (`test` / `main`). Guarded deployments are **fail-closed**: RPC, indexer,
   and faucet proxying are all refused (503) until the node's chain is

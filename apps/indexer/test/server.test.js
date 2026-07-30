@@ -683,6 +683,20 @@ test('unknown txid → 404 not found, not a 502 carrying the DaemonError repr', 
   }, ERRORING_BACKEND);
 });
 
+// An unthrottled proxy in front of ElectrumX, with no auth of its own: the
+// default bind is what keeps a bare `node server.js` off the network.
+test('binds loopback by default; a container opts back in with BIND_HOST', async () => {
+  for (const [bindHost, expected] of [[undefined, '127.0.0.1'], ['0.0.0.0', '0.0.0.0']]) {
+    const server = startServer({ port: 0, hrp: 'dgbrt', ...(bindHost ? { bindHost } : {}) });
+    await once(server, 'listening');
+    try {
+      assert.equal(server.address().address, expected, `BIND_HOST=${bindHost ?? '(unset)'}`);
+    } finally {
+      server.close();
+    }
+  }
+});
+
 test('a 400 on a bad address describes the CALLER’s input and names no backend', async () => {
   await withIndexer(async (base) => {
     const res = await fetch(`${base}/api/address/nonsense/utxos`);

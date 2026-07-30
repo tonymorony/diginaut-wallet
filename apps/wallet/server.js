@@ -136,6 +136,11 @@ const numEnv = (name, dflt) => {
 export function configFromEnv() {
   return {
     port: Number(process.env.PORT) || 8787,
+    // Loopback by default: `node server.js` on a box with an open port used to
+    // publish this proxy — and with it the node's RPC surface — to the whole
+    // network. A public deployment puts a TLS terminator in front and the
+    // container opts back in with BIND_HOST=0.0.0.0 (deploy/*.yml).
+    bindHost: process.env.BIND_HOST || '127.0.0.1',
     rpc: {
       // Point at your node's RPC (from digibyte.conf: rpcport). Set user/pass to leave mock mode.
       url: process.env.DGB_RPC_URL || 'http://127.0.0.1:14022',
@@ -747,10 +752,10 @@ export function startServer(overrides = {}) {
     priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}), guard }, server);
   }
 
-  server.listen(config.port, () => {
+  server.listen(config.port, config.bindHost, () => {
     const { port } = server.address();
     console.log(`\n  Diginaut · DigiDollar wallet ${APP_VERSION}`);
-    console.log(`  → http://localhost:${port}`);
+    console.log(`  → http://localhost:${port} (bind ${config.bindHost})`);
     console.log(`  mode: ${mockMode ? 'MOCK (set DGB_RPC_USER/DGB_RPC_PASS for a real node)' : `REAL node @ ${config.rpc.url}`}`);
     console.log(`  vendor: ${vendorFileCount} files verified against vendor.lock\n`);
   });

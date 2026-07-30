@@ -1,6 +1,6 @@
 # Indexer, faucet, deploy/, scripts/
 
-Verified: 2026-07-26 @ `7247899`. Prod usage of these: ops-and-server.md.
+Verified: 2026-07-31 @ branch `fix/server-hardening`. Prod usage of these: ops-and-server.md.
 
 ## apps/indexer (`server.js`, ~440 L, port 8789)
 
@@ -43,8 +43,8 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
   (every get misses) and is the kill switch when triaging a staleness report.
   `listunspent`, `get_history` and `headers.subscribe` are never cached — pinned end to
   end by the `tx cache seam:` test, not just by comments.
-- Env: `PORT`, `DGB_HRP` (default dgbt), `ELECTRUM_HOST/PORT` (127.0.0.1:50001),
-  `TX_CACHE_TTL_MS` (default 5000, `0` = off).
+- Env: `PORT`, `BIND_HOST` (default `127.0.0.1`), `DGB_HRP` (default dgbt),
+  `ELECTRUM_HOST/PORT` (127.0.0.1:50001), `TX_CACHE_TTL_MS` (default 5000, `0` = off).
 
 ## apps/faucet (`server.js`, ~190 L, port 8788)
 
@@ -56,6 +56,16 @@ Testnet-only hot wallet **on the shared node**. No mock mode by design (down = s
 - Rate limiting, three layers: persisted per-address AND per-IP 24 h cooldown ledger
   (`FAUCET_DATA_FILE`, survives restarts), lowercase address canonicalization, in-flight
   Set (TOCTOU guard). Exceeded → 429 + `retryAfterMs`.
+
+## Bind host (all three Node services)
+
+`BIND_HOST` defaults to **`127.0.0.1`** in every `configFromEnv()` — a bare
+`node server.js` is never on a network. **Every compose service running our own image sets
+`BIND_HOST: 0.0.0.0`** (base: wallet/indexer/faucet; dual overlay: indexer-main/wallet-main —
+5 total, verify with `docker compose … config | grep -c BIND_HOST`). Omit it in a hand-rolled
+deploy and the services simply cannot reach each other. `.tls.yml` needs no entry: it only
+overlays the base `wallet`, and compose merges `environment` maps. One test per service pins
+the default and the opt-in.
 
 ## deploy/ (tracked files)
 
