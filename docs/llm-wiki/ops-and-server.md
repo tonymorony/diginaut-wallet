@@ -59,6 +59,18 @@ server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
   `digibyte-cli` calls over ssh are fine**; `pkill` over ssh: always `-x`, never `-f`.
 - Faucet test-reset: `docker exec deploy-faucet-1 rm /data/faucet-claims.json` + compose
   restart faucet (claims are one-per-IP-per-24h). Top-up: server-side mine script.
-- Indexer 502 on `/api/tx/<unknown txid>` is **by design** since #69 — read the body:
-  `daemon-error` = trio healthy; `ECONNREFUSED` = link actually down.
+- Triage the indexer with `/api/tx/<unknown txid>` and read the body's **`cause`** (never the
+  copy — upstream text is no longer relayed at all): **404 `tx-not-found`** = trio healthy AND
+  the node's index is usable (the probe reached ElectrumX, reached the node and came back with
+  a real answer); 502 `upstream-error` = the backend answered, but with an error — daemon
+  warming, txindex off or still building, ElectrumX busy; 502 `upstream-unreachable` = the link
+  is actually down; the wallet proxy's own `indexer-unreachable`/`faucet-unreachable` = that
+  hop failed. All three verdicts are reachable through this one probe, so a warming node can
+  no longer read as healthy.
+  Real errors: `docker logs deploy-indexer-1` / `deploy-wallet-1` (`indexer: …` / `wallet: …`).
+  Before this pass the probe answered 502 with a raw `daemon-error`/`ECONNREFUSED` repr and no
+  `cause` — a not-yet-redeployed container still does.
+- Services bind `127.0.0.1` unless `BIND_HOST=0.0.0.0` — the tracked compose files set it, but
+  the server-local `docker-compose.cache.yml` overlay must not drop it. A deploy that predates
+  this env and picks up the new image answers nothing across the compose network.
 - Config backups live server-side/user-side (0700) — never commit.

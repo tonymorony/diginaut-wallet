@@ -141,6 +141,110 @@ test('serves crypto deps under /vendor/ for the browser import map', async () =>
   });
 });
 
+// ---- Static assets revalidate before use ----
+// With no cache-control and no validator, browsers pick their own expiry
+// (heuristic freshness) — which is how phones ended up running days-old app.js
+// after a deploy. /vendor and /lib are covered too: a vendor bump changes
+// vendor.lock, and new app.js against stale vendored crypto is the bad case.
+const STATIC_PATHS = ['/', '/app.js', '/lib/index.js', '/vendor/@noble/curves/secp256k1.js'];
+
+test('every static path carries cache-control: no-cache and a strong ETag', async () => {
+  await withServer(async (base) => {
+    for (const path of STATIC_PATHS) {
+      const res = await fetch(base + path);
+      assert.equal(res.status, 200, path);
+      assert.equal(res.headers.get('cache-control'), 'no-cache', path);
+      assert.match(res.headers.get('etag') ?? '', /^"[\w-]+"$/, `${path} has a strong ETag`);
+      await res.arrayBuffer();
+    }
+  });
+});
+
+test('if-none-match with the current ETag → 304 and no body; a stale one → 200', async () => {
+  await withServer(async (base) => {
+    for (const path of STATIC_PATHS) {
+      const first = await fetch(base + path);
+      const etag = first.headers.get('etag');
+      const bytes = (await first.arrayBuffer()).byteLength;
+      assert.ok(bytes > 0, `${path} served a body`);
+
+      const revalidated = await fetch(base + path, { headers: { 'if-none-match': etag } });
+      assert.equal(revalidated.status, 304, path);
+      assert.equal(revalidated.headers.get('etag'), etag, path);
+      assert.equal(revalidated.headers.get('cache-control'), 'no-cache', path);
+      assert.equal((await revalidated.arrayBuffer()).byteLength, 0, `${path} 304 carries no body`);
+      // a redeploy changes the bytes, so the client's held tag stops matching
+      const stale = await fetch(base + path, { headers: { 'if-none-match': '"not-the-current-one"' } });
+      assert.equal(stale.status, 200, path);
+      assert.equal((await stale.arrayBuffer()).byteLength, bytes, path);
+    }
+  });
+});
+
+test('the ETag is derived from the bytes, not the path or mtime', async () => {
+  await withServer(async (base) => {
+    const tags = [];
+    for (const path of ['/index.html', '/app.js', '/vault.js']) {
+      const res = await fetch(base + path);
+      tags.push(res.headers.get('etag'));
+      await res.arrayBuffer();
+    }
+    assert.equal(new Set(tags).size, tags.length, 'different files, different ETags');
+    // the same file twice is byte-identical, so the tag is stable
+    const a = await fetch(base + '/app.js'); await a.arrayBuffer();
+    const b = await fetch(base + '/app.js'); await b.arrayBuffer();
+    assert.equal(a.headers.get('etag'), b.headers.get('etag'));
+  });
+});
+
+// The other half of the same finding: static content going stale is a bad
+// deploy, an API answer going stale is money. These carry no validator, so
+// there is nothing to revalidate against — they must not be stored at all.
+test('every API answer is no-store, success and failure alike', async () => {
+  const { createServer } = await import('node:http');
+  const indexer = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ address: 'x', utxos: [] }));
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  try {
+    await withConfiguredServer({ indexerUrl: `http://127.0.0.1:${indexer.address().port}` }, async (base) => {
+      const paths = [
+        '/api/config', // stale here can serve chainMismatch:false after a cross-wire (#64)
+        '/api/price-history',
+        '/api/indexer/address/dgbrt1qfoo/utxos', // stale here feeds coin selection spent coins
+        '/api/indexer/tx/nothex', // a refusal is as cacheable as an answer
+      ];
+      for (const path of paths) {
+        const res = await fetch(base + path);
+        assert.equal(res.headers.get('cache-control'), 'no-store', `${path} (status ${res.status})`);
+        await res.arrayBuffer();
+      }
+      // the POST routes answer through the same seam
+      const claim = await fetch(base + '/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: 'dgbrt1qfoo' }),
+      });
+      assert.equal(claim.headers.get('cache-control'), 'no-store', `/api/faucet/claim (status ${claim.status})`);
+      await claim.arrayBuffer();
+    });
+  } finally {
+    indexer.close();
+  }
+});
+
+test('a 304 keeps the hardening headers — writeHead must not drop them (#55)', async () => {
+  await withServer(async (base) => {
+    const first = await fetch(base + '/app.js');
+    await first.arrayBuffer();
+    const res = await fetch(base + '/app.js', { headers: { 'if-none-match': first.headers.get('etag') } });
+    assert.equal(res.status, 304);
+    assert.match(res.headers.get('content-security-policy') ?? '', /script-src 'self' 'sha256-/);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  });
+});
+
 test('wallet HTML hardcodes no network banner — chrome is set at runtime from the node chain (#61)', async () => {
   await withServer(async (base) => {
     const html = await (await fetch(base + '/')).text();
@@ -889,5 +993,118 @@ test('HSTS is per-server, not process-global — one instance must not leak into
   } finally {
     tls.close();
     plain.close();
+  }
+});
+
+// This proxy fronts the node's RPC surface, so a bare `node server.js` on a box
+// with an open port must not publish it. Public deployments put a TLS
+// terminator in front and the container opts back in with BIND_HOST.
+test('binds loopback by default; a container opts back in with BIND_HOST', async () => {
+  for (const [bindHost, expected] of [[undefined, '127.0.0.1'], ['0.0.0.0', '0.0.0.0']]) {
+    const server = startServer({ port: 0, ...(bindHost ? { bindHost } : {}) });
+    await once(server, 'listening');
+    try {
+      assert.equal(server.address().address, expected, `BIND_HOST=${bindHost ?? '(unset)'}`);
+    } finally {
+      server.close();
+    }
+  }
+});
+
+// ---- A proxy failure names no backend ----
+// Both proxies used to answer `<peer> unreachable: ${err.message}`, printing the
+// configured INDEXER_URL / FAUCET_URL host:port (and the OS error) to any
+// caller — a map of an otherwise-unpublished internal network.
+const NO_BACKEND_TRACE = /127\.0\.0\.1|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|:\d{4,5}/;
+
+test('an unreachable indexer answers a fixed body — never the upstream address', async () => {
+  await withConfiguredServer({ indexerUrl: 'http://127.0.0.1:1' }, async (base) => {
+    const res = await fetch(base + '/api/indexer/address/dgbrt1qfoo/utxos');
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { error: 'the balance index is unavailable', cause: 'indexer-unreachable' });
+    assert.doesNotMatch(text, NO_BACKEND_TRACE);
+  });
+});
+
+// ---- The indexer's verdict survives the proxy hop ----
+// The browser never talks to the indexer directly, so `cause` is only a contract
+// if this hop forwards it untouched. The recovery card turns `tx-not-found` into
+// "it never reached the network — Rebroadcast is safe" and everything else into
+// "keep the record": a proxy that dropped or rewrote the token would silently
+// swap one for the other, and the server-side tests could not see it.
+test('an indexer {error, cause} reaches the browser byte-identical, 502 and 404 alike', async () => {
+  const { createServer } = await import('node:http');
+  const ANSWERS = {
+    [`/api/tx/${'0'.repeat(64)}`]: [404, { error: 'not found', cause: 'tx-not-found' }],
+    [`/api/tx/${'1'.repeat(64)}`]: [502, { error: 'the balance index is unavailable', cause: 'upstream-error' }],
+    ['/api/address/dgbrt1qfoo/utxos']: [500, { error: 'the balance index hit an unexpected error', cause: 'internal' }],
+  };
+  const indexer = createServer((req, res) => {
+    const [status, body] = ANSWERS[req.url];
+    const data = JSON.stringify(body);
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
+    res.end(data);
+  });
+  await new Promise((r) => indexer.listen(0, r));
+  try {
+    await withConfiguredServer({ indexerUrl: `http://127.0.0.1:${indexer.address().port}` }, async (base) => {
+      for (const [path, [status, body]] of Object.entries(ANSWERS)) {
+        const res = await fetch(base + '/api/indexer' + path.slice('/api'.length));
+        assert.equal(res.status, status, path);
+        assert.equal(await res.text(), JSON.stringify(body), `${path} forwarded verbatim`);
+      }
+    });
+  } finally {
+    indexer.close();
+  }
+});
+
+test('an unreachable faucet answers a fixed body — never the upstream address', async () => {
+  await withConfiguredServer({ faucetUrl: 'http://127.0.0.1:1' }, async (base) => {
+    const res = await fetch(base + '/api/faucet/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ address: 'dgbrt1qfoo' }),
+    });
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { error: 'the Faucet is unavailable', cause: 'faucet-unreachable' });
+    assert.doesNotMatch(text, NO_BACKEND_TRACE);
+  });
+});
+
+// The counterweight to the two above: /api/rpc must keep relaying the node's
+// reject string WORD FOR WORD. Genericizing it would turn every definite reject
+// into "may have been broadcast" and hand the user back the rebuild-and-send
+// path onto the same coins — a money-safety regression, not a leak fix.
+test('/api/rpc still relays the node reject verbatim, so a reject stays a reject (#H3)', async () => {
+  const { createServer } = await import('node:http');
+  const REJECT = 'bad-txns-inputs-missingorspent';
+  const node = createServer(async (req, res) => {
+    let raw = '';
+    for await (const c of req) raw += c;
+    const { method, id } = JSON.parse(raw);
+    const body = method === 'getblockchaininfo'
+      ? { id, result: { chain: 'test', blocks: 100, headers: 100, initialblockdownload: false } }
+      : method === 'sendrawtransaction'
+        ? { id, error: { code: -26, message: REJECT } }
+        : { id, result: { price_micro_usd: 13_420, is_stale: false } };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise((r) => node.listen(0, r));
+  try {
+    await withConfiguredServer({
+      rpc: { url: `http://127.0.0.1:${node.address().port}`, user: 'u', pass: 'p' },
+    }, async (base) => {
+      const res = await postRpc(base, { method: 'sendrawtransaction', params: ['00'] });
+      assert.equal(res.status, 502);
+      const { error } = await res.json();
+      assert.equal(error, REJECT, 'the node reject string reaches the browser unchanged');
+      assert.equal(classifyBroadcastError(new Error(error)).kind, 'reject');
+    });
+  } finally {
+    node.close();
   }
 });

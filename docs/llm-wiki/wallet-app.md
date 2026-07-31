@@ -5,7 +5,7 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Layout
 
-- `server.js` (~530 L) — zero-dep Node HTTP server: static host for `public/`, `/lib/`
+- `server.js` (~800 L) — zero-dep Node HTTP server: static host for `public/`, `/lib/`
   (digidollar-js), `/vendor/` (crypto deps); `/api/rpc` allow-list proxy; `/api/indexer/*`
   (path regex-restricted); `/api/faucet/claim`; `/api/price-history`; `/api/config`.
   Owns CSP headers, vendor-integrity boot gate, cross-wire chain guard, price sampler,
@@ -26,7 +26,8 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   the header dot's failed-poll debounce), `dderrors.js`
   (consensus reject → friendly copy; spend/conflict families + `isAlreadyBroadcast`),
   `dca.js` (multiplier → BigInt bps), `autolock.js` (default 5 min; **absent ≠ 0/"Never"**),
-  `broadcastlog.js` (pre-broadcast journal + local txid + FAIL-AMBIGUOUS classifier),
+  `broadcastlog.js` (pre-broadcast journal + local txid + FAIL-AMBIGUOUS classifier +
+  `isTxUnknownToIndexer`, the "Check status" verdict),
   `nettimeout.js` (per-path fetch budgets > server's upstream budgets), `validate.js`
   (indexer JSON: strict for signer inputs, tolerant for display), `persistence.js`
   (storage.persist probe/request + `diginaut.hadVault` tombstone).
@@ -51,6 +52,33 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   `startServer(overrides)` incl. `now` for the rate-limit clock.
 - Body caps → 413; fixed-window per-IP limits → 429 + retry-after, limiter runs BEFORE
   guard/body/upstream. `rateBucket()` must mirror the routing conditions exactly.
+- **Error bodies**: the indexer/faucet proxy failures and the catch-all 500 answer
+  `{error, cause}` with the upstream detail logged (`console.error('wallet: …')`), never
+  relayed — `err.message` there named INDEXER_URL/FAUCET_URL host:port. Causes:
+  `indexer-unreachable`, `faucet-unreachable`, `internal`. The `error` copy names the ACTOR
+  ("the wallet server hit an unexpected error"), because it reaches the user verbatim through
+  `fetchIndexer` → `busy()` and can land in `#w-send-err` mid-review. `internal` never earns
+  the "still syncing" line in `refreshMoney` — only `upstream-error`, `upstream-unreachable`,
+  `indexer-unreachable` and `e.transport` do; a defect on our side gets its own copy, with no
+  promise that waiting clears it.
+  **`handleRpc`'s 502 is the deliberate exception and must stay verbatim** — `broadcastlog.js`
+  `classifyBroadcastError` string-matches the node's reject tokens, so genericizing it turns
+  every definite reject into "may have been broadcast" (money-safety, #H3). The node's address
+  is already public in `/api/config.rpcUrl`, so nothing new leaks. Pinned by a test.
+- **Caching, both halves**: **API responses are `no-store`** (`sendJson` + both proxy
+  passthroughs — /api/config, /api/price-history, /api/indexer/*, /api/faucet/claim, and every
+  error body), **static is `no-cache` + ETag**. Same finding: with neither header a browser
+  applies heuristic freshness (RFC 9111 §4.2.2). Stale static is a bad deploy; stale JSON is
+  money — a cached `…/utxos` feeds coin selection already-spent outputs, a cached
+  `/api/config` serves `chainMismatch:false` after a cross-wire. `no-store`, not `no-cache`:
+  these carry no validator to revalidate against. Pinned by a test.
+- **Static caching** (`serveFrom`): `cache-control: no-cache` + a content-hash ETag (sha256 of
+  the bytes, base64url, 27 chars) on EVERY static path incl. `/lib` and `/vendor`;
+  `if-none-match` → 304. Before this there was no validator at all, so browsers applied
+  heuristic freshness and phones ran days-old `app.js` after a deploy (index.html has no
+  cache-busting, `deploy/Caddyfile` is a bare `reverse_proxy` — this is the only lever).
+  Content hash, not mtime: Docker COPY preserves build-context mtimes, so a rollback could
+  serve stale-but-plausible.
 
 ## Client state (module-level in app.js)
 
@@ -104,6 +132,14 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   raw transaction are the only users of, for a tx that may be in flight), a **resolved** row —
   `rec === null`, record already gone — says *Dismiss*, which is then true. Don't collapse the
   two back into one word.
+- **"Check status" verdict**: the card's `recCheck` handler asks `/api/indexer/tx/:txid`, and
+  `isTxUnknownToIndexer(err)` (broadcastlog.js) decides whether the answer earns *"never
+  reached the network — Rebroadcast is safe"*. It reads the **`cause` token first**
+  (`tx-not-found`; any other token is an outage and keeps the record) and only falls back to
+  the old relayed text for a server that predates the token. A copy-only match is what broke
+  it once already: the indexer's unknown-txid answer moved from ElectrumX's
+  `No such mempool or blockchain transaction…` to `404 not found`, and the verdict went
+  unreachable with no test to notice.
 - **Cross-module copy contract**: `SERVER_REFUSALS` in `broadcastlog.js` string-matches the
   proxy's own 413/`request body too large` and 429/`too many requests — ` (the only refusals
   it cannot detect structurally). `server.test.js` feeds the live response through
@@ -278,13 +314,15 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-17 unit suites (**222 tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server
-(CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity,
-keystore, icon-sprite, netchrome (incl. `backupSkipAllowed` + `foldNetHealth`),
-dderrors (incl. spend/conflict families), dca, autolock, connect
-(protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate
-(strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
-export→wipe→restore), driver-paths (Windows-path idiom must never return).
+17 unit suites (2026-07-31: 235 tests on `fix/server-hardening`, 224 on
+`fix/wallet-scan-storage-hygiene` — re-measure once both merge) under `test/`, `npm test` —
+server (CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash/static-ETag), vault,
+vendor-integrity, keystore (incl. the imported file's KDF bounds), netchrome (incl.
+`backupSkipAllowed` + `foldNetHealth`), dderrors (incl. spend/conflict families), dca, autolock,
+connect (protocol pins), broadcastlog (txid vs Core fixtures, classifier, `clearAll`,
+`isTxUnknownToIndexer`), icon-sprite, nettimeout, validate (strict/tolerant + MAX_MONEY drift
+pin), persistence, backup-roundtrip (M2: real WebCrypto export→wipe→restore), driver-paths
+(Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
 
 ## See also

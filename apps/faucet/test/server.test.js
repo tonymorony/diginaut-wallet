@@ -155,3 +155,18 @@ test('status: operator sees hot-wallet balance and the current dispense amount',
     assert.equal(st.cooldownHours, 24);
   });
 });
+
+// This service spends from a hot wallet, so the default bind is the one knob a
+// self-hoster must not have to think about. Pinned here so it cannot drift back.
+test('binds loopback by default; a container opts back in with BIND_HOST', async () => {
+  const dataFile = join(mkdtempSync(join(tmpdir(), 'faucet-')), 'claims.json');
+  for (const [bindHost, expected] of [[undefined, '127.0.0.1'], ['0.0.0.0', '0.0.0.0']]) {
+    const server = startServer({ port: 0, rpc: fakeRpc(), dataFile, ...(bindHost ? { bindHost } : {}) });
+    await once(server, 'listening');
+    try {
+      assert.equal(server.address().address, expected, `BIND_HOST=${bindHost ?? '(unset)'}`);
+    } finally {
+      server.close();
+    }
+  }
+});

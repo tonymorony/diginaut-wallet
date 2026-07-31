@@ -17,7 +17,7 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError, backupSkipAllowed, foldNetHealth } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { MINT_FREEZE_EXPLANATION } from '/dderrors.js';
-import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/broadcastlog.js';
+import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError, isTxUnknownToIndexer } from '/broadcastlog.js';
 import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
 import { pickDgbCoin } from '/coinpick.js';
 import { ensurePersistence, readPersistence, persistenceCopy, markHadVault, clearHadVault, hadVault } from '/persistence.js';
@@ -1907,7 +1907,9 @@ $('w-faucet').addEventListener('click', (e) =>
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: $('w-address').textContent }),
         budget: NET_TIMEOUT_MS.faucet, // outlives the server's own 30s upstream budget
-        what: 'the faucet',
+        // "the Faucet" — the same glossary spelling the server's own faucet
+        // copy uses, and both can land in #w-open-err minutes apart
+        what: 'the Faucet',
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
@@ -2527,8 +2529,15 @@ async function indexerAttempt(path) {
   }
   const json = await res.json();
   if (res.ok) return { json };
+  const err = new Error(json.error || `HTTP ${res.status}`);
+  // The FLAG, not the copy — same contract as apiFetch's `transport` (#H1).
+  // Both servers on this path now answer a fixed `cause` token with the
+  // upstream detail stripped, so the copy is free to change without silently
+  // turning an outage into an unexplained raw string in the UI. The cause rides
+  // every retry attempt's error, so the ladder's final throw still carries it.
+  if (json.cause) err.indexerCause = json.cause;
   return {
-    err: new Error(json.error || `HTTP ${res.status}`),
+    err,
     transient: transientIndexerFailure({ status: res.status, body: json }),
   };
 }
@@ -2728,12 +2737,20 @@ async function refreshMoney() {
     // names the problem — don't prefix it again (#H2).
     if (e.indexerData) { $('w-open-err').textContent = e.message; return; }
     // transport-level failures mean the index isn't serving yet (e.g. initial
-    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED. The regex
-    // only ever matched errors the SERVER produced; e.transport covers the
-    // client-side timeout/dead-hop cases, whose copy matches none of these (#H1).
-    $('w-open-err').textContent = e.transport || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message)
+    // ElectrumX sync after a deployment) — say that, not ECONNREFUSED.
+    // e.indexerCause is the server-side verdict (the servers stopped relaying
+    // upstream text at all); e.transport covers the client-side timeout/dead-hop
+    // cases (#H1). The regex stays for a server that predates the token.
+    // Only these tokens mean "wait and it clears": `internal` is a defect on our
+    // side, and promising it will catch up is a promise nothing can keep.
+    const syncing = e.transport
+      || ['upstream-error', 'upstream-unreachable', 'indexer-unreachable'].includes(e.indexerCause)
+      || /ECONNREFUSED|ETIMEDOUT|unreachable|socket|502|503/i.test(e.message);
+    $('w-open-err').textContent = syncing
       ? 'indexer: the balance index is still syncing — balances and history will appear once it catches up (your on-chain funds are unaffected)'
-      : 'indexer: ' + e.message;
+      : e.indexerCause === 'internal'
+        ? 'indexer: the balance index failed on this deployment — this one will not clear by waiting (your on-chain funds are unaffected)'
+        : 'indexer: ' + e.message;
   }
 }
 
@@ -4004,7 +4021,10 @@ $('w-recovery-list').addEventListener('click', (e) => {
         // the verdict stays on screen until the user dismisses it.
         broadcastLog.drop(txid);
       } catch (err) {
-        if (/No such mempool or blockchain transaction|unknown path|HTTP 404/i.test(err.message)) {
+        // The `cause` token decides, the old text is only the fallback: an
+        // outage and "the chain never saw it" are opposite money verdicts, and
+        // the servers stopped relaying upstream text (broadcastlog.js).
+        if (isTxUnknownToIndexer(err)) {
           note('The indexer has never seen this transaction — it most likely never reached the network. Rebroadcast is safe.');
         } else {
           throw err; // a real indexer outage answers nothing — keep the record

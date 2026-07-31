@@ -1,15 +1,35 @@
 # Indexer, faucet, deploy/, scripts/
 
-Verified: 2026-07-26 @ `7247899`. Prod usage of these: ops-and-server.md.
+Verified: 2026-07-31 @ branch `fix/server-hardening`. Prod usage of these: ops-and-server.md.
 
-## apps/indexer (`server.js`, ~440 L, port 8789)
+## apps/indexer (`server.js`, ~490 L, port 8789)
 
 Address-level façade over a **stock** ElectrumX (ADR-0003; extend-don't-fork). Per-address
 queries only — xpubs never reach it; tx direction deliberately not computed server-side.
 
 - Endpoints: `/api/address/:addr/{utxos,history,positions,dd-utxos}`, `/api/tx/:txid`
   (enriched: confirmations/time/type/feeSats, prevout fan-out capped at 40 → `feeSats:null`),
-  `/api/health` (tip height). Upstream failure → 502.
+  `/api/health` (tip height).
+- **Error bodies never carry upstream text** (it names ElectrumX/host:port/DaemonError grammar
+  to unauthenticated callers). Errors are tagged where they arise (`err.upstream`,
+  `err.electrumRpc`, `err.electrumRpcCode`), logged via `console.error('indexer:', err)`, then
+  answered as `{error, cause}` — `error` is copy, **`cause` is the machine token**: 502
+  `upstream-unreachable` (transport) · 502 `upstream-error` (backend answered with an error)
+  · 500 `internal` (untagged = our own defect) · 404 `tx-not-found` on `/api/tx` only.
+  Readers of `cause`: `public/app.js` (`err.indexerCause` → "still syncing" copy, gated on the
+  upstream/unreachable tokens), `public/broadcastlog.js` `isTxUnknownToIndexer` (the recovery
+  card's "Rebroadcast is safe" verdict), `verify-dual-public.mjs`, `verify-mainnet-live.mjs`.
+- **`tx-not-found` is scoped to the REQUESTED txid** — the route does that first
+  `blockchain.transaction.get` itself and only its failure can 404; `enrichTx`'s prevout
+  lookups (and every other RPC error) fall through to `upstream-error`. It is also scoped to
+  the errors that mean it: Core answers **-5** for four different things
+  (`src/rpc/rawtransaction.cpp:373-381`) and two of them — `Use -txindex …` and
+  `… still in the process of being indexed` — mean the node cannot see CONFIRMED transactions
+  at all, so the tx may well be on chain. Those stay `upstream-error`. ElectrumX relays the
+  daemon error inside its OWN error (code 1, message = Python `DaemonError` repr), which is
+  why the text is matched as well as the code. The wallet turns this 404 into
+  "it never reached the network — Rebroadcast is safe", so widening it is a money-safety
+  regression, not a copy change.
 - ElectrumX transport: raw TCP JSON-RPC; `server.version` handshake happens on every
   (re)connect — ElectrumX ≥1.4 kills connections whose first message is anything else.
   16 MiB frame cap; malformed lines skipped.
@@ -34,10 +54,10 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
   (every get misses) and is the kill switch when triaging a staleness report.
   `listunspent`, `get_history` and `headers.subscribe` are never cached — pinned end to
   end by the `tx cache seam:` test, not just by comments.
-- Env: `PORT`, `DGB_HRP` (default dgbt), `ELECTRUM_HOST/PORT` (127.0.0.1:50001),
-  `TX_CACHE_TTL_MS` (default 5000, `0` = off).
+- Env: `PORT`, `BIND_HOST` (default `127.0.0.1`), `DGB_HRP` (default dgbt),
+  `ELECTRUM_HOST/PORT` (127.0.0.1:50001), `TX_CACHE_TTL_MS` (default 5000, `0` = off).
 
-## apps/faucet (`server.js`, ~190 L, port 8788)
+## apps/faucet (`server.js`, ~195 L, port 8788)
 
 Testnet-only hot wallet **on the shared node**. No mock mode by design (down = says so).
 
@@ -47,6 +67,16 @@ Testnet-only hot wallet **on the shared node**. No mock mode by design (down = s
 - Rate limiting, three layers: persisted per-address AND per-IP 24 h cooldown ledger
   (`FAUCET_DATA_FILE`, survives restarts), lowercase address canonicalization, in-flight
   Set (TOCTOU guard). Exceeded → 429 + `retryAfterMs`.
+
+## Bind host (all three Node services)
+
+`BIND_HOST` defaults to **`127.0.0.1`** in every `configFromEnv()` — a bare
+`node server.js` is never on a network. **Every compose service running our own image sets
+`BIND_HOST: 0.0.0.0`** (base: wallet/indexer/faucet; dual overlay: indexer-main/wallet-main —
+5 total, verify with `docker compose … config | grep -c BIND_HOST`). Omit it in a hand-rolled
+deploy and the services simply cannot reach each other. `.tls.yml` needs no entry: it only
+overlays the base `wallet`, and compose merges `environment` maps. One test per service pins
+the default and the opt-in.
 
 ## deploy/ (tracked files)
 
