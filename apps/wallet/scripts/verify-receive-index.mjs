@@ -81,6 +81,9 @@ await waitFor(visible('w-open'), 'wallet open');
 // ---- A. hand out index 3, pay it only AFTER a reload ----
 await click('act-receive');
 await waitFor(`document.getElementById('receive-modal').classList.contains('open')`, 'receive modal');
+// Index 0's address, captured before any handout — part B asserts the restored
+// wallet's scan PROBES it, which only a walk starting at 0 does.
+const indexZeroAddr = await evaluate(text('w-address'));
 for (let i = 0; i < HANDOUT; i++) {
   await click('w-next');
   await new Promise((r) => setTimeout(r, 200));
@@ -141,10 +144,9 @@ await click('w-show-restore');
 await setVal('w-restore-seed', MNEMONIC);
 await setVal('w-create-pass', 'a different password entirely');
 await setVal('w-create-pass2', 'a different password entirely');
+const reqMark = (await (await fetch(`http://127.0.0.1:${IDX_PORT}/__requests`)).json()).requests.length;
 await click('w-restore-go');
 await waitFor(visible('w-open'), 'restored wallet open');
-check(await evaluate(`document.getElementById('w-path').textContent.endsWith('/0')`),
-  'a restored wallet starts at index 0 — it has no counter to read');
 
 // Nothing on this device knows about index 3; only the chain does. Wait on the
 // PATH, not the balance: w-balance still holds the pre-erase figure (the money
@@ -154,6 +156,14 @@ check(await evaluate(`document.getElementById('w-path').textContent.endsWith('/0
 // already paid, so re-offering it would reuse an address for nothing.
 await waitFor(`document.getElementById('w-path').textContent.endsWith('/${HANDOUT + 1}')`, 'chain scan advances the index', 30_000);
 check(true, `the chain scan re-finds the funded index and offers the NEXT one → ${await evaluate(text('w-path'))}`);
+// "No counter to read" is asserted by PROVENANCE, not by racing the scan for a
+// momentary '/0' in the UI (that read is only true until the walk finishes — a
+// quiet machine loses it). If the erased counter had leaked, the warm-start walk
+// would begin at the counter and index 0 would never be probed; a fresh walk
+// must probe it. The fake's request log makes that deterministic.
+const sinceRestore = (await (await fetch(`http://127.0.0.1:${IDX_PORT}/__requests`)).json()).requests.slice(reqMark);
+check(sinceRestore.some((u) => u.includes(`/${indexZeroAddr}/`) && u.endsWith('/history')),
+  'a restored wallet walks from index 0 — no counter survived the erase (index-0 address probed)');
 // And this is what makes that free: watchedDerivations counts from 0, so the
 // already-paid index 6 is still inside the window and its coins still count.
 await waitFor(`document.getElementById('w-balance').textContent.startsWith('1,234')`, 'balance recounts the funds', 30_000);

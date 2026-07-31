@@ -310,13 +310,15 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-17 unit suites (**216 tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server (CSP/allow-list/proxy/price/
-guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity, keystore (incl. the imported
-file's KDF bounds), netchrome (incl. `backupSkipAllowed`), dderrors (incl. spend/conflict
-families), dca, autolock, connect (protocol pins), broadcastlog (txid vs Core fixtures,
-classifier, `clearAll`), nettimeout, validate (strict/tolerant + MAX_MONEY drift pin),
-persistence, backup-roundtrip (M2: real WebCrypto export→wipe→restore), icon-sprite,
-driver-paths (Windows-path idiom must never return).
+17 unit suites (2026-07-31: 235 tests on `fix/server-hardening`, 224 on
+`fix/wallet-scan-storage-hygiene` — re-measure once both merge) under `test/`, `npm test` —
+server (CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash/static-ETag), vault,
+vendor-integrity, keystore (incl. the imported file's KDF bounds), netchrome (incl.
+`backupSkipAllowed` + `foldNetHealth`), dderrors (incl. spend/conflict families), dca, autolock,
+connect (protocol pins), broadcastlog (txid vs Core fixtures, classifier, `clearAll`,
+`isTxUnknownToIndexer`), icon-sprite, nettimeout, validate (strict/tolerant + MAX_MONEY drift
+pin), persistence, backup-roundtrip (M2: real WebCrypto export→wipe→restore), driver-paths
+(Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
 
 ## See also

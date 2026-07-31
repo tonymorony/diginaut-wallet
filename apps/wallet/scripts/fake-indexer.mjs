@@ -21,6 +21,7 @@ const PORT = Number(process.env.PORT) || 8799;
 const TIP_DEFAULT = 1_284_512;
 let tip = Number(process.env.TIP) || TIP_DEFAULT;
 const funded = new Map(); // address -> { utxos, ddCents, ddUtxos }
+const requests = []; // every /api/address read served, for /__requests introspection
 let failing = false; // fault injection: make every address read answer 503
 
 const json = (res, code, body) => {
@@ -39,7 +40,11 @@ createServer(async (req, res) => {
   }
   // Deliberately does NOT clear `failing`: a driver that resets funding between
   // parts should not have its injected outage silently switched off underneath it.
-  if (req.method === 'POST' && req.url === '/__reset') { funded.clear(); return json(res, 200, { ok: true }); }
+  if (req.method === 'POST' && req.url === '/__reset') { funded.clear(); requests.length = 0; return json(res, 200, { ok: true }); }
+  // Introspection: every address read served, in order. Lets a driver assert WHICH
+  // indices a scan probed (e.g. that a restored wallet walked from index 0) instead
+  // of racing the scan for a UI read that is only true until the scan finishes.
+  if (req.method === 'GET' && req.url === '/__requests') return json(res, 200, { requests: [...requests] });
   // Control endpoint: make the address reads fail, so a driver can prove the
   // wallet recovers from an indexer outage rather than giving up on it.
   if (req.method === 'POST' && req.url === '/__fail') {
@@ -63,6 +68,7 @@ createServer(async (req, res) => {
 
   const m = req.url.match(/^\/api\/address\/([a-z0-9]+)\/(utxos|history|positions|dd-utxos)$/);
   if (!m) return json(res, 404, { error: 'unknown path' });
+  requests.push(req.url);
   // After the route matches, so an unknown path is still a 404 either way.
   if (failing) return json(res, 503, { error: 'indexer down (injected)' });
   const [, address, what] = m;
