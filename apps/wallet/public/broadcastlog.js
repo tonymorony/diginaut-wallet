@@ -183,6 +183,13 @@ export function createBroadcastLog(storage = defaultStorage()) {
       const key = String(txid ?? '').toLowerCase();
       write(read().filter((r) => r.txid !== key));
     },
+    /** Erase the whole journal — for "Erase all wallets on this device" only.
+     *  NOT for lock or wallet switch: the records are chain-scoped and outlive
+     *  both by design (rule 2 above). removeItem, not an empty write: the erase
+     *  promises the artifact is gone, and the signed hex is what is in it. */
+    clearAll() {
+      try { storage.removeItem(BROADCAST_LOG_KEY); } catch { /* advisory */ }
+    },
     markAmbiguous: (txid, message) => mutate(txid, (r) => {
       r.state = 'ambiguous';
       r.lastError = message == null ? null : String(message);

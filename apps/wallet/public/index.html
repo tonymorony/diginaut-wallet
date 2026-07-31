@@ -1054,6 +1054,11 @@
         <p class="hint warn-text" style="margin-top:0">This erases every wallet stored in this browser:</p>
         <ul class="hint" id="w-erase-names" style="margin:0;padding-left:18px"></ul>
         <p class="hint">Without a wallet's seed phrase (or a keystore file plus its password), its funds are gone forever.</p>
+        <!-- shown only when the broadcast journal is non-empty (w-forget): the
+             ceremony destroys the signed hex too, and that is the one thing the
+             line above does not cover. Count-free on purpose — clearAll() wipes
+             every chain's records while the card shows only this chain's. -->
+        <p class="hint warn-text" id="w-erase-pending" style="display:none">It also deletes every saved transaction under “Broadcast not acknowledged”. Those are the only copies of transactions that may still be in flight — a seed phrase does not bring them back.</p>
         <label for="w-erase-input">Type ERASE to confirm</label>
         <input id="w-erase-input" autocomplete="off" />
         <div class="grid">

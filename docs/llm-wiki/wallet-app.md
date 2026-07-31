@@ -71,6 +71,21 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   fetch goes through `apiFetch` with a `nettimeout.js` budget; failures carry
   `err.transport = 'timeout'|'network'` — downstream code keys off the FLAG, never the copy.
   Price staleness: `PRICE_MAX_AGE_MS = 180s` demotes USD entry (and disarms Max).
+- Receive rediscovery (`syncReceiveIndex`) walks from **`wallet.index`**, not 0. Safe only
+  because the watch window is contiguous (`watchedDerivations()` = 0…index+2, re-read every
+  8 s) — make it sparse and the walk goes back to 0. The money poll **re-arms** the scan when
+  the deepest index with history reaches the counter (the same seed on a second device hands
+  out addresses this one never counted): clear `receiveScanGen` only, never `receiveScanBusy`,
+  and edge-trigger on the frontier — level-triggering re-walks the chain every 8 s into the
+  proxy's rate limit. Consequence: `w-address` can now rotate MID-SESSION.
+  Three flags, and all three must be released on the SUCCESS path (`receiveScanBusy = -1`,
+  `receiveScanFails = 0` next to `receiveScanGen = gen`): leaving `receiveScanBusy` set makes
+  the guard reject every later scan of that generation and the re-arm is silently inert —
+  no driver can tell that apart from a working one, so `verify-receive-index` part A pins the
+  mid-session rotation explicitly (re-driven 2026-07-31, red-first against the unfixed tree —
+  newer than the page stamp). A frontier edge that arrives mid-scan is **deferred**
+  (`receiveScanRearmPending`), never dropped — the edge is consumed on read, and the walk in
+  flight may have already read that index as unused.
 - **Who retries, and on what.** `fetchIndexer` alone: `[500, 1000, 2000]` ms, and what counts
   as transient lives in ONE predicate, `transientIndexerFailure` (nettimeout.js) — `err.transport`
   (dead browser↔wallet-server hop) **or** the wallet server's own 502 relay of a dead indexer
@@ -94,7 +109,8 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   still decides on height. Copy rule: `design-system.md`. Fixtures: `verify-history`.
 - Broadcast path: `broadcastTx(hex, meta)` journals to `diginaut.broadcasts` BEFORE sending;
   ambiguous outcomes keep the record and surface the `#w-recovery` card (chain-scoped,
-  survives lock/switch, netKnown-gated). A definite reject's message passes through
+  survives lock/switch, netKnown-gated; `w-erase-go` is the only thing that wipes the whole
+  journal — § Backup & browser storage). A definite reject's message passes through
   UNMODIFIED (verify-honest-quotes pins this). Stale-tip warning rows (`w-*-c-stale`) are
   written at REVIEW time only — never re-read state in the `w-*-go` handlers (L6 property).
   Card row titles drop to `r.kind` while `vault.status !== 'unlocked'` (amount + counterparty
@@ -161,11 +177,27 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
   mapping onto `.dot.good/.bad/.warn`, and the tombstone helpers over
   `HAD_VAULT_KEY = 'diginaut.hadVault'`. Never `await` `probePersistence({request:true})` on a
   create/unlock path — a denied or slow browser prompt would freeze `busy()` (#C2).
-- **localStorage keys are now four**: `diginaut.autolock`, `diginaut-mainnet-ack`,
-  `diginaut.hadVault`, `diginaut.movedNotice` (the legacy-host "we've moved" strip, `#w-move-note`
-  — shown only on the two `LEGACY_S2D_HOSTS`, dismissal is a UI preference so it lives here and
-  **not** in the vault: it must apply before any vault exists and survive erase-all).
-  The tombstone is written wherever a vault exists (create, add-wallet,
+- **localStorage inventory — five keys, and what the erase ceremony reaches.**
+  `diginaut.hadVault` (tombstone), `diginaut.broadcasts` (the journal: signed raw tx hex +
+  counterparty/amount, 20 records / 30 days) and `diginaut-mainnet-ack` are all wiped by
+  `w-erase-go`, before `show('none')`. The ack is cleared because it is a one-time BLOCKING
+  real-funds gate (#54/#63), not a preference, and the erase is the app's only "this device is
+  changing hands" signal — re-showing it costs one click, keeping it skips a real-funds warning
+  for the next person on a shared machine. `diginaut.autolock` is a true preference naming no
+  wallet, amount or counterparty — it deliberately survives. So does `diginaut.movedNotice`
+  (the legacy-host "we've moved" strip, `#w-move-note` — shown only on the two
+  `LEGACY_S2D_HOSTS`): dismissal is a UI preference that must apply before any vault exists
+  and survive erase-all, so it lives here and **not** in the vault. `broadcastLog.clearAll()`
+  belongs to that ceremony ALONE: never lock, autolock, wallet switch, or last-wallet removal
+  (a per-wallet removal, not "leave nothing here"), where the chain-scoped journal is the only
+  way back from an ambiguous broadcast. `w-erase-go` also clears the in-memory `recoveryStatus`,
+  or the card keeps rendering verdicts for records that no longer exist. The ceremony copy has
+  to keep up with what the handler destroys: `w-forget` un-hides `#w-erase-pending` when
+  `broadcastLog.list()` is non-empty, because the seed-phrase line does not cover the journal
+  (a seed phrase cannot rebuild signed hex). Count-free on purpose — `clearAll()` spans every
+  chain, the card shows only the current one. (Inventory re-driven 2026-07-31 — newer than the
+  page stamp: erase leaves neither the journal nor the ack behind.)
+- The tombstone is written wherever a vault exists (create, add-wallet,
   unlock, boot-with-vault) and cleared by **exactly two** deliberate erase paths —
   `w-erase-go` and last-wallet removal — always **before** `show('none')`. It must NOT be
   cleared by `vault.js`'s v1→v2 `deleteKeystore()`: a vault still exists there. Tombstone +
@@ -278,13 +310,15 @@ the CTA/recovery/banner copy pass, then the diginaut.space domain switch).
 
 ## Tests
 
-17 unit suites (**222 tests**, measured 2026-07-31 post-rebase) under `test/`, `npm test` — server
-(CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash), vault, vendor-integrity,
-keystore, icon-sprite, netchrome (incl. `backupSkipAllowed` + `foldNetHealth`),
-dderrors (incl. spend/conflict families), dca, autolock, connect
-(protocol pins), broadcastlog (txid vs Core fixtures, classifier), nettimeout, validate
-(strict/tolerant + MAX_MONEY drift pin), persistence, backup-roundtrip (M2: real WebCrypto
-export→wipe→restore), driver-paths (Windows-path idiom must never return).
+17 unit suites (2026-07-31: 235 tests on `fix/server-hardening`, 224 on
+`fix/wallet-scan-storage-hygiene` — re-measure once both merge) under `test/`, `npm test` —
+server (CSP/allow-list/proxy/price/guard/rate-limits/HSTS/CRLF-hash/static-ETag), vault,
+vendor-integrity, keystore (incl. the imported file's KDF bounds), netchrome (incl.
+`backupSkipAllowed` + `foldNetHealth`), dderrors (incl. spend/conflict families), dca, autolock,
+connect (protocol pins), broadcastlog (txid vs Core fixtures, classifier, `clearAll`,
+`isTxUnknownToIndexer`), icon-sprite, nettimeout, validate (strict/tolerant + MAX_MONEY drift
+pin), persistence, backup-roundtrip (M2: real WebCrypto export→wipe→restore), driver-paths
+(Windows-path idiom must never return).
 Baselines drift — run and compare. Drivers: see testing-and-drivers.md.
 
 ## See also
