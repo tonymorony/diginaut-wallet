@@ -152,30 +152,14 @@ await waitFor(`${text('w-positions')}.includes('$10.00')`, 'position rendered');
 check((await evaluate(text('w-positions'))).includes('locked until'), 'mint position visible, correctly still locked');
 await shot('81-walkthrough-minted.png');
 
-// ---- 4. Transfer $2.50 A → B. Mint change went to P2WPKH by consensus, so
-// first give A's taproot address a fee coin (a user would faucet/receive DGB).
-await nodeRpc('sendtoaddress', [addrA, 2], 'stand');
-await mine();
-await waitFor(`Number(${text('w-balance')}.replace(/,/g,'')) >= ${balAfterFaucet - 7527 + 2}`, 'fee coin confirmed');
+// ---- 4. Transfer $2.50 A → B. No top-up: the mint's own change — P2WPKH by
+// consensus, on whichever derivation funded the mint — now pays the transfer
+// fee, so the wallet is not stranded behind a coin it already holds. (This
+// step used to fund addrA and then chase the fee address out of the error
+// message; both the fund and the error string are gone.)
 await setVal('w-tr-to', addrB);
 await setVal('w-tr-amount', '2.5');
 await click('w-tr-review');
-
-// The DD does NOT necessarily land on addrA: a mint pays its DigiDollar back to
-// the address of the coin it SPENT, which is whichever derivation held a big
-// enough P2TR coin — not the index-0 address captured at wallet creation. So
-// funding addrA can leave the DD-holding address with no fee coin. The wallet
-// names that address in its error precisely so this is recoverable; follow it,
-// which also proves the error is actionable rather than merely distinct.
-const trErr = await evaluate(text('w-tr-err'));
-const feeAddrMatch = trErr.match(/send at least [\d.]+ DGB to (\w+)/);
-if (feeAddrMatch) {
-  check(true, `fee-coin error names the DD-holding address: ${feeAddrMatch[1].slice(0, 16)}…`);
-  await nodeRpc('sendtoaddress', [feeAddrMatch[1], 2], 'stand');
-  await mine();
-  await waitFor(`${text('w-tr-err')} === '' || document.getElementById('w-tr-err').textContent !== ${JSON.stringify(trErr)}`, 'fee coin picked up');
-  await click('w-tr-review');
-}
 await waitFor(`document.getElementById('w-tr-confirm').style.display !== 'none'`, 'transfer confirmation');
 check((await evaluate(text('w-tr-c-to'))) === addrB && (await evaluate(text('w-tr-c-dd'))) === '2.50',
   'transfer confirmation: $2.50 to wallet B');

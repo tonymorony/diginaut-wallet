@@ -1,8 +1,8 @@
 // Drive #16: the Redemption flow through the full real stack. Mint → wait out
 // the CLTV lock → redeem from the position's button → collateral back in the
-// DGB balance. Proves the locked-until state, the no-fee-coin error, the
-// confirmation screen before signing, and the position closing. Setup: same
-// as verify-mint.mjs.
+// DGB balance. Proves the locked-until state, the fee paid from the mint's own
+// P2WPKH change, the confirmation screen before signing, and the position
+// closing. Setup: same as verify-mint.mjs.
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -100,17 +100,16 @@ await nodeRpc('generatetoaddress', [345, miner], 'stand');
 await waitFor(`document.querySelector('#w-positions [data-redeem]') !== null`, 'redeem button appears after expiry');
 check(true, 'redeem button appears once the lock expires');
 
-// ---- Error: mint change went to P2WPKH, so there is no DGB fee coin.
-await evaluate(`document.querySelector('#w-positions [data-redeem]').click()`);
-await waitFor(`${text('w-rd-err')}.includes('no DGB for the fee')`, 'no-fee-coin error');
-check((await evaluate(text('w-rd-err'))).includes(addr0), 'no-fee-coin error names the address to top up');
-
-// the mint's change went to the P2WPKH twin and counts toward the balance
-// (#38), so it is not '1' — wait for the +1 top-up delta instead
-const balBeforeTopUp = await evaluate(text('w-balance'));
-await nodeRpc('sendtoaddress', [addr0, 1], 'stand');
-await nodeRpc('generatetoaddress', [1, miner], 'stand');
-await waitFor(`${text('w-balance')} !== ${JSON.stringify(balBeforeTopUp)}`, 'fee coin confirmed');
+// ---- The mint spent the wallet's only taproot coin and left its change on
+// the P2WPKH twin (#38). That twin pays the redemption fee directly — no
+// top-up. Before the flexible fee leg this failed with "no DGB for the fee",
+// which stranded the collateral behind a coin the wallet already held.
+// /utxos is unfiltered (it maps listunspent straight through), so the mint's
+// own DD token — a value-0 output on this very address — is still listed here.
+// Assert no SPENDABLE coin, not no output; `length === 0` can never hold.
+const coins = await (await fetch(`http://127.0.0.1:8789/api/address/${addr0}/utxos`)).json();
+check(coins.utxos.every((u) => BigInt(u.valueSats) === 0n),
+  'no taproot DGB coin left — the mint spent it (the value-0 entry is the DD token)');
 
 // ---- Confirmation before signing.
 await evaluate(`document.querySelector('#w-positions [data-redeem]').click()`);

@@ -57,12 +57,34 @@ separately (PR #124), not part of that run.
 - **Manual mock/stub drivers — NOT in the runner or CI, run them by name when touching
   their area**: `verify-honest-quotes` (MOCK_SYSTEM_HEALTH), `verify-oracle-bounds`,
   `verify-history`, `verify-fiat-sendmax`, `verify-disclaimer`.
+  `verify-oracle-bounds` passes its 5 mint-gate checks and then **hangs on
+  `timeout: wallet unlocked after reload`** under Chrome 150 — reproduced identically on
+  `origin/main` (2026-07-31), so it is environmental, not a regression. Don't chase it from a
+  branch; the 5 checks before it are the useful signal.
   (`verify-beta-posture` and `verify-mainnet-bringup` used to be listed here; both are
   REGISTERED in `run-drivers.sh` now and run in CI.)
 - Regtest stack (manual, need the stand): `verify-balance`, `verify-send`, `verify-mint`,
   `verify-positions`, `verify-transfer`, `verify-redeem`, `verify-p2wpkh-change`,
   `verify-walkthrough` (release gate), `verify-fold-shapes` (#118 shapes via
   testmempoolaccept; fresh stand per run).
+- **The flexible DGB leg rewrote three drivers' expectations** (branch `feat/flexible-fee-leg`).
+  `verify-transfer` and `verify-redeem` used to assert "no DGB for the fee" after a mint and
+  then top up with 1 DGB — that error encoded the bug. They now assert the mint's own P2WPKH
+  change pays the fee, with no top-up. `verify-receive-compat`'s transfer variant needs a
+  genuinely fragmented balance (two sub-fee coins) to reach the fee gate at all; a twin coin
+  big enough is simply used. Those two regtest drivers are the **acceptance gate** for that
+  change and **still have not been run** (no regtest stand available on this machine) —
+  treat them as the pre-merge gate, not as passed.
+  Two gate assertions were fixed after review and are also unrun: `verify-transfer.mjs`
+  and `verify-redeem.mjs` now assert `utxos.every((u) => BigInt(u.valueSats) === 0n)` for
+  the post-mint address, not `utxos.length === 0`. **`/api/address/:addr/utxos` is
+  unfiltered** (it maps `listunspent` straight through, which is what lets `/dd-utxos`
+  find DD tokens), and a mint's vout[1] is byte-identical to the owner's own receive
+  address — so that address always still holds exactly one value-0 output, the DD token,
+  and `length === 0` could never hold. `verify-walkthrough` lost its addrA top-up and the
+  `send at least … DGB to (\w+)` recovery branch (that string no longer exists in app.js);
+  `verify-mint` now checks the fragmented-mint error for `Consolidate coins below`, the
+  wording all three DD fee/funding gates share.
 
 ## Running the full local regtest stack on this Mac (proven recipe)
 

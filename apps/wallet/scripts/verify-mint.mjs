@@ -101,7 +101,9 @@ await setVal('w-mint-amount', '1');
 await click('w-mint-review');
 await waitFor(`${text('w-mint-err')}.includes('no single coin')`, 'fragmented error');
 const errFragmented = await evaluate(text('w-mint-err'));
-check(errFragmented.includes('consolidate') && errFragmented.includes('own address'),
+// The remedy is the Consolidate coins offer revealed right under the error, not
+// a hand-rolled self-send — same instruction the transfer/redeem fee gates give.
+check(errFragmented.includes('Consolidate coins below'),
   `fragmented-funds error is actionable: "${errFragmented.slice(0, 110)}…"`);
 await shot('50-mint-errors.png');
 
