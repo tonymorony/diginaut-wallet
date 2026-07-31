@@ -44,3 +44,9 @@ classifies by shape, not index). `unlockHeight = nextHeight + 100 + tier.lockBlo
 - Any new tx shape goes through the differential harness before it can ship (ADR-0001/0002).
 - Fee/weight changes: update the hand-computed expectations in `spend.test.js`, don't derive
   them from the implementation.
+
+## See also
+
+- Fork-validation findings + upstreaming map (single-coin fee stranding — `txbuild.js:243`/
+  `:340` bind the fee coin to the owner's P2TR): `docs/discovery/dgbclick-fork-validation.md`
+  — several findings addressed by PRs #165–#169.
