@@ -1,11 +1,24 @@
 # Ops & server
 
-Verified: 2026-07-26. Server specifics (IPs, key paths, creds) live in agent memory and
+Verified: 2026-07-31. Server specifics (IPs, key paths, creds) live in agent memory and
 server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
 
 ## Live deployments (dual stack, one server, 8 containers)
 
-- <https://dgb.ludere.space> — testnet wallet. <https://diginaut.ludere.space> — mainnet.
+- **Four hostnames, two containers.** Canonical since 2026-07-31:
+  <https://diginaut.space> (mainnet → `wallet-main`), <https://testnet.diginaut.space>
+  (testnet → `wallet`). Legacy, still served, **never redirected**:
+  <https://diginaut.ludere.space> (mainnet), <https://dgb.ludere.space> (testnet).
+- The no-redirect rule is load-bearing, not politeness: the vault is IndexedDB, which is
+  origin-scoped, so a redirect drops a funded user onto an empty wallet. The hostname also
+  selects the frozen sign-to-derive bytes — legacy → v1/v2, everything else → v3/v4
+  (**ADR-0006**), so the legacy hosts must keep answering under their own names forever.
+- Caddy takes a comma-separated address list per site; both eras live in one `.env`
+  (`/opt/dgb-support/deploy/.env`, untracked, 0600):
+  `TESTNET_DOMAINS=dgb.ludere.space, testnet.diginaut.space` /
+  `MAINNET_DOMAINS=diginaut.ludere.space, diginaut.space`. Dropping a host takes that site
+  down; `deploy/Caddyfile.dual` + `docker-compose.dual.yml` are domain-agnostic and need no
+  edit to add one. Cutover procedure: `docs/runbooks/domain-cutover-2026-07.md`.
 - Compose = **THREE** -f files: `docker-compose.yml` + `docker-compose.dual.yml` +
   server-local `docker-compose.cache.yml` (ElectrumX CACHE_MB overlay; not in repo).
   The `.tls` overlay is **no longer used** (pre-dual-stack).
@@ -21,7 +34,12 @@ server-side files — **never** in this repo. Runbooks: `docs/runbooks/`.
   indexer/faucet images and recreates the whole closure **including electrumx-main**, whose
   restart closes port 50001 for ~10 min (mainnet balances down).
 - Full-stack `up --build -d` only for compose/infra changes, expecting that window.
-- After deploy: verify served `app.js` sha256 vs repo + run `verify-dual-public.mjs`.
+- Adding/removing a hostname = edit `.env`, then `… up -d caddy` (recreates one container to
+  pick up the env and issue certs; brief TLS blip on the existing domains, wallets untouched).
+  DNS must already resolve or ACME fails.
+- After deploy: verify served `app.js` sha256 vs repo + run `verify-dual-public.mjs` **twice**,
+  once per pair (canonical, then legacy — separate Caddy sites, separate certs, so a break on
+  one is invisible from the other).
 
 ## Server facts & gotchas
 

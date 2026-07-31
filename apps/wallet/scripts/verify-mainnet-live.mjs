@@ -27,7 +27,9 @@
 import { fileURLToPath } from 'node:url';
 import { connectCdp } from './lib/cdp.mjs';
 
-const APP = (process.argv[2] || 'https://diginaut.ludere.space').replace(/\/$/, '');
+// Canonical mainnet host. The legacy https://diginaut.ludere.space is still
+// served (ADR 0006, never redirected) and is a valid argv[2] target.
+const APP = (process.argv[2] || 'https://diginaut.space').replace(/\/$/, '');
 const OUT = fileURLToPath(new URL('.', import.meta.url));
 const RPC_WARMUP_MS = 3 * 60_000; // node may still be verifying blocks (-28)
 const PASS = 'mainnet live smoke';

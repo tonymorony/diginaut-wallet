@@ -1,6 +1,6 @@
 # Testing & drivers
 
-Verified: 2026-07-27 @ branch `audit/2026-07-26-external-audit`. Baselines drift — run and
+Verified: 2026-07-31 @ branch `feat/diginaut-space-domain`. Baselines drift — run and
 compare, don't quote stale counts.
 Last known green: all **14** registered CDP drivers (`scripts/run-drivers.sh`, no args) + all
 unit suites, 2026-07-27. (Was 11 until `verify-beta-posture` and `verify-mainnet-bringup` were
@@ -36,14 +36,22 @@ separately (PR #124), not part of that run.
   `verify-crosswire`, `verify-wallet-mgmt`, `verify-receive-index`, `verify-receive-ui`,
   `verify-send-amount`, `verify-wallet-switch` (was the CI flake — **fixed 2026-07-27**, see
   gotchas), `verify-oracle-refresh`; branch #130 adds
-  `verify-connect-derive` (sign-to-derive, 6 scenarios, fake EIP-6963 provider);
+  `verify-connect-derive` (sign-to-derive, **7** scenarios, fake EIP-6963 provider — §7 is the
+  era-crossing reconnect: it mints a `msgVersion: 1` source through the app's own
+  `connect.js` + `vault.js` over the real IndexedDB, because the pre-ADR-0006 build that would
+  have left one cannot be run, then asserts the reconnect signs the **v1** bytes and matches.
+  It waits on "settled either way" and then `check()`s which way, so a regression prints the
+  diagnosis instead of dying on a 20 s `waitFor` timeout);
   `verify-web3-mainnet` (the same fake provider against a **mainnet-shaped** node — the
   combination neither of the other two covered). It guards the two properties that make the
   mainnet door safe, and guards them *positively*: the fake wallet **throws on any message but
-  the v2 hex**, so a regression that sends v1 fails the ceremony instead of silently deriving
-  the wrong wallet on real funds; and it asserts the save path opens the **sealed** ceremony
-  (`w-backup-sealed` shown, `w-backup-done` and `w-modal-close` both hidden) and that the seed
-  it reveals is the v2-derived one, not v1.
+  the v4 hex**, so a regression that sends the testnet (or a legacy-era) message fails the
+  ceremony instead of silently deriving the wrong wallet on real funds; and it asserts the save
+  path opens the **sealed** ceremony (`w-backup-sealed` shown, `w-backup-done` and
+  `w-modal-close` both hidden) and that the seed it reveals is the v4-derived one, not v3.
+  **Both web3 drivers run against 127.0.0.1, which is the NEW origin era** (ADR-0006) — the
+  live bytes there are v3/v4, and `eip191Digest()`'s bare default is still the **v1** message,
+  so a fake provider that takes the default gets rejected with "unexpected message bytes".
   NEEDS_STACK (runner starts fake-indexer 8799 + wallet 8791): `verify-ui`
   (create/lock/unlock/restore), `verify-receive-compat`.
 - **Manual mock/stub drivers — NOT in the runner or CI, run them by name when touching
@@ -94,6 +102,10 @@ separately (PR #124), not part of that run.
 - Never pipe a driver into grep (backgrounded Chrome holds the pipe; shell hangs) —
   redirect to a file, grep the file.
 - A driver without explicit `process.exit(process.exitCode || 0)` hangs after "all green".
+  The **mirror failure is worse and silent**: a bare `process.exit(0)` discards every red
+  `check()`, and `run-drivers.sh` keys off the exit code — so the driver is registered in the
+  gate while being structurally incapable of failing it. `verify-web3-mainnet` shipped that way
+  (fixed 2026-07-31). Grep the drivers for `process.exit(0)` before trusting a green run.
 - Local default Node may be too old for CDP drivers (needs global WebSocket, Node ≥22) —
   use the nvm Node 24 binary.
 - Start headless Chrome with `run_in_background` and **poll the CDP endpoint** before

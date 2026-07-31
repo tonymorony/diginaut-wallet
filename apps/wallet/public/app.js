@@ -12,7 +12,7 @@ import {
 } from '/lib/index.js';
 import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
-import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain } from '/connect.js';
+import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain, s2dOriginHost, LEGACY_HOST_MOVED_TO } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
@@ -311,6 +311,35 @@ function renderNetDot() {
   const ok = netHealth.dd === true && netHealth.oracle === true;
   $('net-dot').className = 'dot ' + (bad ? 'bad' : ok ? 'good' : 'warn');
 }
+
+// ---- "We've moved" notice (ADR 0006) ----
+// Diginaut's canonical addresses are diginaut.space / testnet.diginaut.space.
+// The two ludere.space hosts keep serving indefinitely and are NEVER redirected:
+// the vault is IndexedDB, which is origin-scoped, so a redirect would drop a
+// funded user onto an empty wallet at a domain their keys are not in. So the
+// only migration signal is this line, and it has to say what "per site" costs.
+// Dismiss is localStorage, not the vault — it is a UI preference, and it must
+// survive an erase-all-wallets as well as apply before any vault exists.
+// The host→destination map is LEGACY_HOST_MOVED_TO in connect.js, beside the
+// era allow-list it must agree with — a second copy here would be the same
+// shape of defect the ceremony checkbox just stopped being.
+const MOVE_NOTICE_KEY = 'diginaut.movedNotice';
+function renderMoveNotice() {
+  const target = LEGACY_HOST_MOVED_TO.get(globalThis.location?.hostname ?? '');
+  if (!target) return; // canonical domain, localhost, or a self-host: nothing moved
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(MOVE_NOTICE_KEY) === '1'; } catch { /* show it */ }
+  if (dismissed) return;
+  const link = $('w-move-link');
+  link.href = target;
+  link.textContent = target.replace(/^https:\/\//, '');
+  $('w-move-note').style.display = 'block';
+}
+$('w-move-dismiss').addEventListener('click', () => {
+  $('w-move-note').style.display = 'none';
+  try { localStorage.setItem(MOVE_NOTICE_KEY, '1'); } catch { /* re-shows next load */ }
+});
+renderMoveNotice();
 
 // ---- Mainnet beta interstitial (#54/#63) ----
 // One-time BLOCKING ack on first mainnet use, persisted in localStorage.
@@ -1488,11 +1517,25 @@ function renderWeb3VerifySteps(stage) {
     + `<div class="w3-step${done ? ' ok' : ''}"><span class="n">${done ? tick : '2'}</span><span>Compare with the stored fingerprint</span></div>`;
 }
 
+/** Arm the disclosure step. The ONLY way to display it: the checkbox names the
+ *  host that may ask for this signature, and that host is read out of the frozen
+ *  message this ceremony is about to send — same call, same argument, one source
+ *  of truth. Filled before display (the step ships hidden, so nothing renders an
+ *  empty <b>). A hardcoded host here is how the mainnet ceremony ended up naming
+ *  the testnet domain; ADR 0006 makes the origin move again, so it must be
+ *  derived, not written twice. */
+function armWeb3Disclosure() {
+  $('w-web3-origin').textContent = s2dOriginHost(s2dForChain(gateChain()).message);
+  renderWeb3Steps('disclose');
+  $('w-web3-disclose').style.display = 'block';
+}
+
 async function openWeb3Picker() {
   // Belt for the boot race, re-aimed for the mainnet rollout. It used to refuse
   // mainnet outright; now that mainnet is supported the danger has moved, and
   // it is worse: WHICH network we are on selects the frozen derivation bytes
-  // (ADR 0005), and s2dForChain falls back to v1 for an unknown chain. A click
+  // (ADR 0005), and s2dForChain falls back to this origin's TESTNET message for
+  // an unknown chain (v1 on a legacy host, v3 elsewhere — ADR 0006). A click
   // landing before the chain poll resolves would therefore derive the TESTNET
   // wallet against a mainnet node — a wallet the user could fund and then never
   // re-derive from this door. So the guard is netKnown, not the chain's name.
@@ -1551,9 +1594,10 @@ $('w-web3-list').addEventListener('click', async (e) => {
     if (run !== web3Run) return; // ceremony abandoned while the popup was open
     web3Address = address;
     const known = vault.status === 'unlocked' ? vault.findSource(entry.kind, address) : null;
-    if (known) { await verifyReconnect(entry, address, run); return; }
-    renderWeb3Steps('disclose');
-    $('w-web3-disclose').style.display = 'block';
+    // The stored record travels with it: re-deriving has to re-sign the bytes
+    // that MADE this wallet, and only the record knows which those were.
+    if (known) { await verifyReconnect(entry, address, run, known.source.msgVersion); return; }
+    armWeb3Disclosure();
   } catch (err) {
     if (run !== web3Run) return;
     $('w-web3-err').textContent = surfaceError(err);
@@ -1563,12 +1607,29 @@ $('w-web3-list').addEventListener('click', async (e) => {
 // One signature, re-derive, compare the stored fingerprint (spec §8). Match →
 // verified switch. Mismatch → hard stop; the explicit new-wallet path must
 // then run the FULL ceremony — one signature has not proven determinism.
-async function verifyReconnect(entry, address, run) {
+async function verifyReconnect(entry, address, run, msgVersion) {
   renderWeb3VerifySteps('sign');
-  // Reconnect is chain-scoped: on mainnet you are re-deriving your MAINNET
-  // wallet, so sign that network's bytes. A testnet wallet legitimately fails
-  // to match here — per ADR 0005 it is a different wallet, not a mismatch.
-  const derived = await deriveOnce(entry, address, s2dForChain(gateChain()).version);
+  // Reconnect is PROVENANCE-scoped, not chain- or origin-scoped: it signs the
+  // bytes that made this wallet, read from the source record — which is what
+  // ADR 0005 always said (`s2dForVersion()` on reconnect) and what deriveOnce
+  // has always expected. Until #164 this passed s2dForChain(...).version, and
+  // the question it answers is the wrong one: "which bytes would a NEW wallet
+  // use here" instead of "which bytes made THIS one".
+  //
+  // Harmless while a host's era was fixed forever; not harmless the moment an
+  // era assignment moves. ADR 0006 moves it for every non-legacy host that
+  // already has era-1 sources — localhost, 127.0.0.1, every self-host — so a
+  // v1 source would have been re-derived against v3, missed its fingerprint,
+  // and shown showWeb3Mismatch, which accuses the EXTENSION of changing how it
+  // signs for a change the app made. deriveOnce runs this through
+  // s2dForVersion, so an absent or corrupt msgVersion still falls to v1.
+  //
+  // The network axis is deliberately NOT re-read here. "A testnet wallet
+  // correctly finds nothing on mainnet" (ADR 0005) is enforced by findSource
+  // over an origin-scoped vault, one step up — not by re-picking the message.
+  // Re-picking it would resurrect exactly the same false accusation on any
+  // origin whose node changes chain under one vault (a dev box, a self-host).
+  const derived = await deriveOnce(entry, address, msgVersion);
   if (run !== web3Run) return;
   renderWeb3VerifySteps('done');
   const exact = vault.findSource(derived.source.kind, derived.source.address, derived.source.fp);
@@ -1608,8 +1669,7 @@ $('w-web3-go').addEventListener('click', (e) =>
     } catch (err) {
       if (run !== web3Run) return; // ceremony abandoned — a late popup must not resurface it
       // refusal or user-rejected popup: back to the armed disclosure, error below
-      renderWeb3Steps('disclose');
-      $('w-web3-disclose').style.display = 'block';
+      armWeb3Disclosure();
       throw err;
     }
     if (run !== web3Run) return;
@@ -1652,8 +1712,7 @@ $('w-web3-newwallet').addEventListener('click', () => {
   if (web3Pending) { showWeb3Save(); return; } // already double-sign-proven
   // the mismatch came from the one-signature reconnect check: a NEW wallet
   // needs the full ceremony — one signature has not proven determinism
-  renderWeb3Steps('disclose');
-  $('w-web3-disclose').style.display = 'block';
+  armWeb3Disclosure();
 });
 
 $('w-web3-save-go').addEventListener('click', (e) =>

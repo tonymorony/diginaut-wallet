@@ -3,6 +3,8 @@
 // block cadence (no mock oracle, no on-demand mining, generous timeouts).
 // Journey: create wallet → faucet claim → confirm → mint → position →
 // transfer to a second wallet → restore it → see the DigiDollar arrive.
+//   APP_URL=https://testnet.diginaut.space node apps/wallet/scripts/verify-public.mjs
+// The legacy host is still served and still a valid target:
 //   APP_URL=https://dgb.ludere.space node apps/wallet/scripts/verify-public.mjs
 // Chrome setup: same as every other driver (CDP 9224, fresh profile).
 import { writeFileSync } from 'node:fs';
@@ -10,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 
 const CDP_PORT = 9224;
-const APP = process.env.APP_URL || 'https://dgb.ludere.space';
+const APP = process.env.APP_URL || 'https://testnet.diginaut.space';
 const OUT = fileURLToPath(new URL('.', import.meta.url));
 // BIP39 vector #3 — a dedicated public-testnet counterparty wallet
 const MNEMONIC_B = 'letter advice cage absurd amount doctor acoustic avoid letter advice cage above';

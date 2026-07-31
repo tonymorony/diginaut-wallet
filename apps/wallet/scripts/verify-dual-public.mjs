@@ -1,6 +1,12 @@
 // Dual-stack public smoke (#64): both domains up, each on its OWN network,
 // mainnet faucet-free, nothing cross-wired. Zero-dep; run post-deploy:
 //   node apps/wallet/scripts/verify-dual-public.mjs \
+//     https://testnet.diginaut.space https://diginaut.space
+// Then run it a SECOND time against the legacy pair — those hosts are served by
+// the same containers but are separate Caddy sites with their own certificates,
+// and they are never redirected (ADR 0006), so a cert or vhost that broke on
+// cutover is invisible from the canonical pair alone:
+//   node apps/wallet/scripts/verify-dual-public.mjs \
 //     https://dgb.ludere.space https://diginaut.ludere.space
 // Exit 0 = all green. Pre-DD-activation the mainnet price series may be
 // legitimately empty (getoracleprice inactive) — that is not a failure.

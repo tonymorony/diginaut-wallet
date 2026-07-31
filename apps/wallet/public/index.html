@@ -178,11 +178,26 @@
       background: var(--bad-bg); color: var(--bad); border-radius: 999px; }
     #w-backup-badge:hover { background: var(--primary-300); }
     /* balance-gated warning strip (spec §3): funds but no backup, under the header */
-    .backup-strip { max-width: 520px; margin: 0 auto; padding: 12px 20px 0; }
+    .backup-strip, .move-strip { max-width: 520px; margin: 0 auto; padding: 12px 20px 0; }
     .backup-strip-inner { display: flex; align-items: center; gap: 10px; background: var(--warn-bg);
       color: var(--warn); border-radius: var(--radius-s); padding: 10px 14px; font-size: 12.5px; font-weight: 600; }
     .backup-strip-inner span { flex: 1 1 auto; }
     .backup-strip-inner button { width: auto; margin: 0; padding: 6px 12px; font-size: 12px; flex: none; }
+    /* "we've moved" notice (ADR 0006), legacy hosts only. Same strip geometry as
+       the backup strip — one dismissible row in normal flow under the header, so
+       it can never overlap the sticky .net-banner or crowd the topbar — but the
+       INFORMATIONAL tone. Deliberately not amber or red: both warning levels are
+       already spoken for (amber = testnet/backup, red = mainnet beta), and a
+       domain change is news, not risk. It also sits BELOW the backup strip: a
+       wallet with funds and no backup outranks an address change. */
+    /* flex-start, not center: this is a three-line paragraph on a phone, and a
+       vertically centred mark/dismiss pair floats away from the sentence it
+       belongs to. Both align to the first line instead. */
+    .move-note-inner { display: flex; align-items: flex-start; gap: 10px; background: var(--accent-5);
+      color: var(--gray-700); border-radius: var(--radius-s); padding: 10px 14px; font-size: 12.5px; line-height: 1.5; }
+    .move-note-inner > span { flex: 1 1 auto; }
+    .move-note-inner .ic { color: var(--accent); flex: none; margin-top: 1px; }
+    .move-note-inner button { width: auto; margin: 0; padding: 4px 6px; flex: none; }
     /* header Network button: quiet chip with an aggregate status dot */
     #net-btn { display: inline-flex; align-items: center; gap: 7px; margin: 0; width: auto;
       background: #fff; color: var(--gray-700); border-radius: 999px; padding: 9px 14px; font-size: 13px;
@@ -261,7 +276,7 @@
       input, select, textarea, input.mono, textarea.mono { font-size: 16px; }
       header { padding: 16px 16px 4px; }
       main { padding: 10px 16px 48px; }
-      .backup-strip { padding: 10px 16px 0; }
+      .backup-strip, .move-strip { padding: 10px 16px 0; }
       .card { padding: 18px 16px; }
       .hero { padding: 26px 16px 20px; }
       .hero .balance { font-size: 34px; }
@@ -314,7 +329,7 @@
     }
     /* adaptive: single phone-like column by default, two columns on desktop */
     @media (min-width: 960px) {
-      header, main, .backup-strip { max-width: 1000px; }
+      header, main, .backup-strip, .move-strip { max-width: 1000px; }
       .money-grid { grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); align-items: start; }
     }
     /* tier slider (mint modal): 7 discrete stops over the lock tiers */
@@ -647,6 +662,21 @@
     </div>
   </div>
 
+  <!-- "We've moved" (ADR 0006): shown ONLY on the two legacy ludere.space hosts,
+       which keep serving forever. There is NO redirect and none may be added —
+       the vault lives in origin-scoped browser storage, so bouncing these users
+       to diginaut.space would land them on an empty wallet and cut them off from
+       their own funds. app.js fills the link and decides visibility; the dismiss
+       is persisted in localStorage, never in the vault. Below the backup strip
+       on purpose: a funds warning outranks an address change. -->
+  <div class="move-strip" id="w-move-note" style="display:none">
+    <div class="move-note-inner">
+      <svg class="ic ic-s" aria-hidden="true"><use href="#ic-info"/></svg>
+      <span>Diginaut has a new home: <a id="w-move-link" href="https://diginaut.space" target="_blank" rel="noopener">diginaut.space</a>. This site keeps working — a wallet created here stays here, because your browser stores wallets per site. To use it at the new site, restore it there from its seed phrase or an encrypted backup file.</span>
+      <button id="w-move-dismiss" type="button" class="secondary" title="Dismiss this notice" aria-label="Dismiss this notice"><svg class="ic ic-s" aria-hidden="true"><use href="#ic-x"/></svg></button>
+    </div>
+  </div>
+
   <main>
     <!-- #C1: a signed transaction whose broadcast outcome is unknown. Persisted
          in localStorage (signed hex + locally computed txid — public data,
@@ -926,8 +956,15 @@
         <div id="w-web3-disclose" style="display:none">
           <p class="hint">You’ll sign the same message twice — the second signature proves your wallet signs deterministically.</p>
           <p class="hint">Even if your wallet uses a hardware device, the derived DigiByte wallet is a hot key in this browser.</p>
+          <!-- The host is written by app.js from the frozen message this
+               ceremony is about to ask for (s2dOriginHost), before the step is
+               ever displayed. It was hardcoded to dgb.ludere.space until the
+               2026-07-31 domain switch — so the MAINNET ceremony told users the
+               TESTNET domain was the only site allowed to ask, next to a message
+               saying the opposite. Never put a literal host back here: a second
+               copy of the origin drifts from the bytes and nothing can catch it. -->
           <label class="checkline"><input type="checkbox" id="w-web3-agree" />
-            <span>I understand: only <b>dgb.ludere.space</b> may ever ask for this signature. Any other site asking for it is stealing my funds.</span></label>
+            <span>I understand: only <b id="w-web3-origin"></b> may ever ask for this signature. Any other site asking for it is stealing my funds.</span></label>
           <button id="w-web3-go" disabled>Request signature 1 of 2</button>
         </div>
         <div id="w-web3-save" style="display:none">

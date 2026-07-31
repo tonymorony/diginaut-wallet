@@ -1,13 +1,16 @@
 # Project status
 
-Verified: 2026-07-27, branch `design/copy-truthful-labels`, main @ `67004d8`
-(#134 connect-wallet, #135 llm-wiki, #137 external audit, #138 icons + connect modal merged).
-This page rots fastest — reconcile with `git log` + the tracker before acting on it.
+Verified: 2026-07-31, branch `feat/diginaut-space-domain`, main @ `7bfe600`
+(#141 mobile badge, #142 mainnet web3 door, #143 web3-mainnet driver, #110 Caddy access logs
+merged since the last stamp). This page rots fastest — reconcile with `git log` + the tracker
+before acting on it.
 
 ## Shipped
 
-- **Testnet wallet SHIPPED 2026-07-05** (all 31 PRD stories) → <https://dgb.ludere.space>.
-- **Mainnet launch (map #50) LIVE 2026-07-17** → <https://diginaut.ludere.space>.
+- **Testnet wallet SHIPPED 2026-07-05** (all 31 PRD stories) → canonical
+  <https://testnet.diginaut.space>, legacy <https://dgb.ludere.space> (still served).
+- **Mainnet launch (map #50) LIVE 2026-07-17** → canonical <https://diginaut.space>, legacy
+  <https://diginaut.ludere.space> (still served).
   DigiDollar **activated on mainnet 2026-07-17 at block 23,869,441**.
 - Android-parity map #67 — closed 2026-07-17 (legacy sends, rich history, fiat entry, BIP21,
   DD address interop, receive strategy).
@@ -16,6 +19,20 @@ This page rots fastest — reconcile with `git log` + the tracker before acting 
 - Server migration (old box OOM-killed electrumx-main) — closed 2026-07-23. Runbook
   `docs/runbooks/server-migration-2026-07.md` exists locally but is **untracked** (user
   decision pending) — don't treat it as reachable from a fresh clone.
+
+## In flight: domain switch to diginaut.space (branch `feat/diginaut-space-domain`)
+
+- **Code merged ≠ cutover done.** The PR mints frozen s2d **v3** (testnet, 333 B, SHA-256
+  `be8ffbacb1…`) and **v4** (mainnet, 317 B, `51b9fe9bce…`) for the new origins, selected by
+  serving hostname; v1/v2 stay byte-frozen for the two `ludere.space` hosts, which keep serving
+  and are **never redirected**. ADR-0006. DNS + `.env` + deploy steps:
+  `docs/runbooks/domain-cutover-2026-07.md` — until that runs, the new names don't resolve.
+- Also fixes a live mainnet defect: the ceremony checkbox hardcoded `dgb.ludere.space`, so the
+  mainnet ceremony named the testnet domain. It now renders from the selected message's own
+  `Origin:` line (`s2dOriginHost`).
+- New localStorage key `diginaut.movedNotice` (the legacy-host "we've moved" strip). Baseline
+  after this branch: **206 wallet tests**; driver set still 14 (12 `SELF_CONTAINED` + 2
+  `NEEDS_STACK` in `run-drivers.sh`).
 
 ## Active: copy pass (branch `design/copy-truthful-labels`)
 

@@ -245,6 +245,13 @@ The RPC message param is hex-encoded bytes; the wallet displays the UTF-8 decodi
 
 ## 6. Message format
 
+> **Addendum 2026-07-31 — four messages now, mechanics unchanged.** This section documents the
+> v1 era. The mainnet rollout added v2 (ADR-0005) and the `diginaut.space` move minted v3/v4
+> (ADR-0006), selected by serving hostname; v1's bytes and pin below are still exact. Everything
+> in this doc — format rules, digest, canonicalization, entropy — applies to all four unchanged.
+> Current bytes and selection: `apps/wallet/public/connect.js`, pinned in
+> `apps/wallet/test/connect.test.js`.
+
 Collision survey — every literal in the wild (§4): zkSync's `Access zkSync account.…`,
 Loopring's `Sign this message to access Loopring Exchange:…`, dYdX's EIP-712/JSON, IMX's
 `Only sign this request if you’ve initiated…`, Polymarket's EIP-712 `This message attests…`,

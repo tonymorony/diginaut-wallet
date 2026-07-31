@@ -3,15 +3,19 @@
 // with the same noble the app serves) — no real extension involved.
 // Scenarios, one fresh tab each (the vault persists in IndexedDB between them):
 //   1. empty state: no provider injected → picker says so
-//   2. happy path: deterministic provider → checkbox gate → double-sign →
-//      save (creates the vault) → derived address matches the Node-side
-//      pipeline; badge red; switcher row carries "via TestWallet"
+//   2. happy path: deterministic provider → checkbox gate (its named origin is
+//      read out of the very bytes being signed) → double-sign → save (creates
+//      the vault) → derived address matches the Node-side pipeline; badge red;
+//      switcher row carries "via TestWallet"
 //   3. reconnect verified: same provider again → fingerprint match → switch,
 //      no new wallet
 //   4. drift hard stop: provider signs a DIFFERENT (still self-consistent)
 //      signature → mismatch view, no silent wallet; "NEW wallet anyway" saves
 //   5. MPC refusal: two different signatures in one ceremony → brand refused
 //   6. Phantom path: window.phantom.solana only → Ed25519 derive
+//   7. era-crossing reconnect: a source minted under msgVersion 1 (what this
+//      origin produced before ADR 0006 moved it to era 2) re-derives from the
+//      V1 bytes and MATCHES — reconnect follows the record, not the hostname
 //
 // Self-contained except Chrome:
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
@@ -25,7 +29,8 @@ import { base58 } from '@scure/base';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 import {
-  S2D_MESSAGE, eip191Digest, canonicalizeEvmSignature, entropyFromSignature, mnemonicFromEntropy,
+  S2D_MESSAGE, S2D_MESSAGE_TESTNET2, s2dOriginHost, eip191Digest, canonicalizeEvmSignature,
+  entropyFromSignature, mnemonicFromEntropy,
 } from '../public/connect.js';
 import { startServer } from '../server.js';
 import { connectCdp } from './lib/cdp.mjs';
@@ -37,8 +42,13 @@ const walletHex = (rec) => '0x' + hex(rec.subarray(1)) + (27 + rec[0]).toString(
 // The fixed test key (32 × 0x07) — same as test/connect.test.js.
 const PRIV = new Uint8Array(32).fill(7);
 const ETH_ADDR = '0x' + hex(keccak_256(secp256k1.getPublicKey(PRIV, false).subarray(1)).subarray(12));
-const MSG_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE));
-const digest = eip191Digest();
+// The app is served from 127.0.0.1 here, which is NOT a legacy host, so the
+// live testnet bytes are v3 (ADR 0006). Everything below signs v3 explicitly —
+// eip191Digest()'s bare default is still the v1 message, and taking it would
+// make the fake wallet reject every signature with "unexpected message bytes".
+const MSG = S2D_MESSAGE_TESTNET2;
+const MSG_HEX = '0x' + hex(new TextEncoder().encode(MSG));
+const digest = eip191Digest(new TextEncoder().encode(MSG));
 const SIG1 = walletHex(secp256k1.sign(digest, PRIV, { format: 'recovered', prehash: false }));
 // extraEntropy = a *valid* signature from the same key that differs from SIG1 —
 // exactly what a drifted firmware (constant) or an MPC signer (fresh) returns
@@ -49,6 +59,17 @@ const PRIV2 = new Uint8Array(32).fill(8);
 const ETH_ADDR2 = '0x' + hex(keccak_256(secp256k1.getPublicKey(PRIV2, false).subarray(1)).subarray(12));
 const MPC_A = walletHex(secp256k1.sign(digest, PRIV2, { format: 'recovered', prehash: false }));
 const MPC_B = walletHex(secp256k1.sign(digest, PRIV2, { format: 'recovered', prehash: false, extraEntropy: new Uint8Array(32).fill(3) }));
+// A third key (32 × 0x0b) plays scenario 7's account: an ERA-1 wallet sitting in
+// this origin's vault. Its provider can sign either era, so a regression that
+// picks bytes by hostname does not throw — it lands on the mismatch screen,
+// which is exactly the user-visible failure the check has to see.
+const PRIV3 = new Uint8Array(32).fill(11);
+const ETH_ADDR3 = '0x' + hex(keccak_256(secp256k1.getPublicKey(PRIV3, false).subarray(1)).subarray(12));
+const V1_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE));
+const ERA1_SIGS = {
+  [V1_HEX]: walletHex(secp256k1.sign(eip191Digest(new TextEncoder().encode(S2D_MESSAGE)), PRIV3, { format: 'recovered', prehash: false })),
+  [MSG_HEX]: walletHex(secp256k1.sign(digest, PRIV3, { format: 'recovered', prehash: false })),
+};
 
 const derivedAddr = async (sigHex) => {
   const { rs } = canonicalizeEvmSignature(sigHex);
@@ -60,7 +81,7 @@ const ADDR1 = await derivedAddr(SIG1);
 // Phantom fake: Ed25519 key 32 × 0x09.
 const EDSK = new Uint8Array(32).fill(9);
 const PUB58 = base58.encode(ed25519.getPublicKey(EDSK));
-const EDSIG = ed25519.sign(new TextEncoder().encode(S2D_MESSAGE), EDSK);
+const EDSIG = ed25519.sign(new TextEncoder().encode(MSG), EDSK);
 const EDADDR = deriveTaprootAddress(
   mnemonicToSeed(mnemonicFromEntropy(new Uint8Array(await crypto.subtle.digest('SHA-256', EDSIG)))),
   { ...HD_NETWORKS.testnet, index: 0 },
@@ -86,6 +107,31 @@ const evmProviderScript = (sigs, addr = ETH_ADDR) => `
     window.addEventListener('eip6963:requestProvider', () => {
       window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
         detail: { info: { uuid: 'test-uuid', name: 'TestWallet', icon: 'data:image/svg+xml,x', rdns: 'io.testwallet' }, provider },
+      }));
+    });
+  })();`;
+// Scenario 7's provider: answers for EITHER era, records every message hex it
+// was asked to sign, and exposes itself so the driver can mint an era-1 source
+// through the app's own connect.js before reconnecting through the UI.
+const eraProviderScript = `
+  (() => {
+    window.__signed = [];
+    const sigs = ${JSON.stringify(ERA1_SIGS)};
+    const provider = {
+      request: async ({ method, params }) => {
+        if (method === 'eth_requestAccounts') return [${JSON.stringify(ETH_ADDR3)}];
+        if (method === 'personal_sign') {
+          window.__signed.push(params[0]);
+          if (!sigs[params[0]]) throw new Error('fake wallet: unexpected message bytes');
+          return sigs[params[0]];
+        }
+        throw new Error('fake wallet: ' + method);
+      },
+    };
+    window.__provider = provider;
+    window.addEventListener('eip6963:requestProvider', () => {
+      window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
+        detail: { info: { uuid: 'era-uuid', name: 'TestWallet', icon: 'data:image/svg+xml,x', rdns: 'io.testwallet' }, provider },
       }));
     });
   })();`;
@@ -140,6 +186,11 @@ async function agreeAndGo(b) {
   await b.click('hero-connect');
   await toCeremony(b);
   check(await b.evaluate(`document.getElementById('w-web3-go').disabled`), 'checkbox gates signature 1 of 2');
+  // The host in the checkbox must be the host the message itself pins — read
+  // both from the same frozen bytes. Hardcoding it is how the mainnet ceremony
+  // came to name the testnet domain (ADR 0006).
+  check((await b.evaluate(`document.getElementById('w-web3-origin').textContent`)) === s2dOriginHost(MSG),
+    `checkbox names the origin of the message being signed (${s2dOriginHost(MSG)})`);
   await agreeAndGo(b);
   await b.waitFor(visible('w-web3-save'), 'save step after double-sign + verify');
   await b.shot('80-web3-save.png');
@@ -254,6 +305,63 @@ async function agreeAndGo(b) {
     + `return Boolean(p && s) && ${JSON.stringify(EDADDR)}.startsWith(p) && ${JSON.stringify(EDADDR)}.endsWith(s); })()`,
     'Phantom-derived address matches the Node-side Ed25519 pipeline');
   check(true, 'Phantom → Ed25519 → derived wallet');
+}
+
+// ============ 7. era-crossing reconnect: an ERA-1 source on an origin that is
+// now era 2 must still re-derive from the V1 bytes ============
+// ADR 0006 changed which era 127.0.0.1 (and localhost, and every self-host)
+// mints under. Vaults created before that hold sources with msgVersion 1. If
+// reconnect picked bytes by hostname it would sign v3 here, miss the stored
+// fingerprint, and accuse the EXTENSION of changing how it signs — for a change
+// the app made. The old build cannot be run, so the era-1 source is minted
+// directly through the app's own connect.js + vault.js over the real IndexedDB,
+// which is exactly the record that build would have left behind.
+{
+  const b = await freshTab(eraProviderScript);
+  await b.waitFor(visible('w-locked'), 'locked');
+  const seeded = await b.evaluate(`(async () => {
+    const [ks, vm, c] = await Promise.all([import('/keystore.js'), import('/vault.js'), import('/connect.js')]);
+    const vault = vm.createVaultManager(ks);
+    await vault.load();
+    await vault.unlock(${JSON.stringify(PASS)});
+    const entry = { kind: 'evm', rdns: 'io.testwallet', brand: 'TestWallet', provider: window.__provider };
+    const d = await c.deriveOnce(entry, ${JSON.stringify(ETH_ADDR3)}, 1);
+    await vault.addWallet({ name: 'Era-1 wallet', mnemonic: d.mnemonic, source: d.source });
+    return JSON.stringify({ v: d.source.msgVersion, signed: window.__signed, wallets: vault.meta().wallets.length });
+  })()`);
+  const seedState = JSON.parse(seeded);
+  check(seedState.v === 1 && seedState.signed.length === 1 && seedState.signed[0] === V1_HEX,
+    `seeded a source stamped msgVersion 1 from the v1 bytes (${seedState.signed.length} signature)`);
+
+  // fresh tab = fresh window.__signed, so what follows is only the reconnect
+  const r = await freshTab(eraProviderScript);
+  await r.waitFor(visible('w-locked'), 'locked (era-1 source persisted)');
+  await r.setVal('w-unlock-pass', PASS);
+  await r.click('w-unlock');
+  await r.waitFor(visible('w-open'), 'unlocked');
+  await r.evaluate(`document.getElementById('w-connect').click()`);
+  await r.click('w-web3-choice');
+  await r.waitFor(`document.querySelector('#w-web3-list [data-web3-pick]')`, 'picker row announced');
+  await r.evaluate(`document.querySelector('#w-web3-list [data-web3-pick]').click()`);
+  // Wait for the reconnect to settle EITHER way, then assert which way. Waiting
+  // only on the success note would make a regression fail by timing out 20 s
+  // later with none of the diagnostics below printed.
+  await r.waitFor(
+    `document.getElementById('w-wallet-note').textContent.includes('Re-derived and verified')`
+    + ` || document.getElementById('w-web3-mismatch').style.display !== 'none'`,
+    'the one-signature reconnect settled (verified switch or hard stop)');
+  check(await r.evaluate(`document.getElementById('w-wallet-note').textContent.includes('Re-derived and verified')`),
+    'era-1 source re-derives and MATCHES on an era-2 origin');
+  const sent = JSON.parse(await r.evaluate('JSON.stringify(window.__signed)'));
+  check(sent.length === 1, `reconnect asked for exactly one signature (got ${sent.length})`);
+  // the mechanism, not just the outcome: the bytes on the wire were v1's
+  check(sent[0] === V1_HEX, 'and it signed the V1 bytes — the ones the record says made this wallet');
+  check(!sent.includes(MSG_HEX), 'the era-2 v3 bytes were never sent for an era-1 record');
+  check(await r.evaluate(hidden('w-web3-mismatch')), 'no mismatch screen — the extension is not accused');
+  // openWalletModal() has rendered the switcher by now (that is what the note
+  // above lives in), so the row count is the post-reconnect vault
+  const after = await r.evaluate(`document.querySelectorAll('#w-wallet-list .wal-row').length`);
+  check(after === seedState.wallets, `verified switch, no duplicate wallet (${seedState.wallets} → ${after})`);
 }
 
 console.log(process.exitCode ? 'RED' : 'ALL GREEN');

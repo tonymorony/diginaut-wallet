@@ -24,9 +24,13 @@ import { base58 } from '@scure/base';
 // mainnet would also ask a user standing on diginaut.ludere.space to sign a
 // message whose own last line tells them to refuse exactly that.
 //
-// The cost, accepted in ADR 0005: one source wallet derives two unrelated
-// Diginaut wallets, one per network. That asymmetry with restored mnemonics is
-// deliberate.
+// ADR 0006 — the bytes also name their ORIGIN, so moving to a new domain mints
+// NEW versions instead of rewriting these. v1/v2 stay byte-frozen forever; the
+// serving hostname picks which pair is live (s2dForChain below).
+//
+// The cost, accepted in ADR 0005 and widened by ADR 0006: one source wallet
+// derives one Diginaut wallet per (network, origin era). That asymmetry with
+// restored mnemonics is deliberate.
 export const S2D_VERSION = 1;
 export const S2D_MESSAGE = [
   'Diginaut sign-to-derive v1',
@@ -52,27 +56,106 @@ export const S2D_MESSAGE_MAIN = [
   'Only sign this message on https://diginaut.ludere.space. If any other site asks for this signature, refuse.',
 ].join('\n');
 
-/** The frozen message a CHAIN derives from — first derive only.
- *  BOTH spellings, for the same reason betaCapError takes both: the node says
- *  'main', the wallet's netName says 'mainnet', and a mixed-up caller here would
- *  silently derive the testnet wallet on mainnet. Allow-list, never a deny-list —
- *  an unknown chain falls to v1, which cannot touch mainnet funds. */
-export function s2dForChain(chain) {
-  return chain === 'main' || chain === 'mainnet'
-    ? { version: S2D_VERSION_MAIN, message: S2D_MESSAGE_MAIN }
-    : { version: S2D_VERSION, message: S2D_MESSAGE };
+// v3/v4 = the diginaut.space era (ADR 0006, 2026-07-31). Same shape and the
+// same two byte-identical risk sentences as v1/v2; only the network- and
+// origin-naming lines move. They exist because the messages pin their origin:
+// serving v1 on testnet.diginaut.space would hand a user a message whose own
+// last line tells them to refuse it there, and re-pointing v1's Origin line
+// instead would re-derive every existing wallet.
+export const S2D_VERSION_TESTNET2 = 3;
+export const S2D_MESSAGE_TESTNET2 = [
+  'Diginaut sign-to-derive v3',
+  'Network: DigiByte testnet',
+  'Origin: https://testnet.diginaut.space',
+  '',
+  'This signature generates the private keys of your DigiByte wallet.',
+  'Anyone who obtains this signature can steal your DigiByte funds.',
+  'Only sign this message on https://testnet.diginaut.space. If any other site asks for this signature, refuse.',
+].join('\n');
+
+export const S2D_VERSION_MAIN2 = 4;
+export const S2D_MESSAGE_MAIN2 = [
+  'Diginaut sign-to-derive v4',
+  'Network: DigiByte mainnet',
+  'Origin: https://diginaut.space',
+  '',
+  'This signature generates the private keys of your DigiByte wallet.',
+  'Anyone who obtains this signature can steal your DigiByte funds.',
+  'Only sign this message on https://diginaut.space. If any other site asks for this signature, refuse.',
+].join('\n');
+
+/** The hosts that still derive from the v1/v2 bytes. PERMANENT — never remove a
+ *  host from this set. Every wallet ever derived on dgb.ludere.space or
+ *  diginaut.ludere.space came from those bytes; dropping a host here would
+ *  silently start deriving DIFFERENT wallets at an address that still serves the
+ *  old vaults, with no error anywhere. Adding the new domains is not the move
+ *  either: they mint their own era, which is the whole point of ADR 0006. */
+export const LEGACY_S2D_HOSTS = new Set(['dgb.ludere.space', 'diginaut.ludere.space']);
+
+/** The frozen message a CHAIN derives from on THIS origin — first derive only.
+ *
+ *  Two axes, both allow-lists, never deny-lists:
+ *  - era, by hostname: the two legacy hosts keep v1/v2 forever; everything else
+ *    (the new domains, localhost, any self-host) is the current era, v3/v4. The
+ *    unknown case has to be the NEW era — a self-host that fell to v1 would be
+ *    handing out wallets under an origin line naming a site it is not.
+ *  - network, BOTH spellings, for the same reason betaCapError takes both: the
+ *    node says 'main', the wallet's netName says 'mainnet', and a mixed-up
+ *    caller here would silently derive the testnet wallet on mainnet. An
+ *    unrecognised chain falls to the TESTNET message of the selected era, which
+ *    cannot touch mainnet funds. */
+export function s2dForChain(chain, hostname = globalThis.location?.hostname) {
+  const main = chain === 'main' || chain === 'mainnet';
+  if (LEGACY_S2D_HOSTS.has(String(hostname ?? ''))) {
+    return main
+      ? { version: S2D_VERSION_MAIN, message: S2D_MESSAGE_MAIN }
+      : { version: S2D_VERSION, message: S2D_MESSAGE };
+  }
+  return main
+    ? { version: S2D_VERSION_MAIN2, message: S2D_MESSAGE_MAIN2 }
+    : { version: S2D_VERSION_TESTNET2, message: S2D_MESSAGE_TESTNET2 };
 }
 
 /** The frozen message a STORED wallet was derived from. Re-derivation must use
- *  the version on the source record, not the current chain: verifying "does
- *  this extension still reproduce THIS wallet" has to re-sign the same bytes
- *  that made it, or a v1 wallet inspected on mainnet would report a mismatch
- *  that is really just the other network's message. */
+ *  the version on the source record, not the current chain or origin: verifying
+ *  "does this extension still reproduce THIS wallet" has to re-sign the same
+ *  bytes that made it, or a v1 wallet inspected on mainnet would report a
+ *  mismatch that is really just the other network's message. */
 export function s2dForVersion(version) {
-  return Number(version) === S2D_VERSION_MAIN
-    ? { version: S2D_VERSION_MAIN, message: S2D_MESSAGE_MAIN }
-    : { version: S2D_VERSION, message: S2D_MESSAGE };
+  switch (Number(version)) {
+    case S2D_VERSION_MAIN: return { version: S2D_VERSION_MAIN, message: S2D_MESSAGE_MAIN };
+    case S2D_VERSION_TESTNET2: return { version: S2D_VERSION_TESTNET2, message: S2D_MESSAGE_TESTNET2 };
+    case S2D_VERSION_MAIN2: return { version: S2D_VERSION_MAIN2, message: S2D_MESSAGE_MAIN2 };
+    // legacy records carry no msgVersion at all — they are v1 by construction
+    default: return { version: S2D_VERSION, message: S2D_MESSAGE };
+  }
 }
+
+const ORIGIN_PREFIX = 'Origin: ';
+
+/** The host a frozen message pins, read OUT of the message. The ceremony's
+ *  "only <host> may ever ask for this signature" checkbox is rendered from this
+ *  — never from a second constant. A hardcoded host is exactly what made the
+ *  mainnet ceremony name the TESTNET domain from the day the mainnet door
+ *  shipped: the message moved, the sentence beside it did not, and nothing in
+ *  the tests or the drivers could notice. */
+export function s2dOriginHost(message) {
+  const line = String(message ?? '').split('\n').find((l) => l.startsWith(ORIGIN_PREFIX));
+  if (!line) throw new Error('internal: derivation message has no Origin line');
+  return new URL(line.slice(ORIGIN_PREFIX.length)).host;
+}
+
+/** Legacy host → the canonical origin that replaced it, for the "we've moved"
+ *  notice. The keys are exactly LEGACY_S2D_HOSTS (a unit test pins that both
+ *  ways, so a host added to the allow-list without a move target fails the suite
+ *  instead of silently losing its notice), and the values are read out of the
+ *  era-2 messages' own Origin lines — the notice can therefore never point at a
+ *  domain the frozen bytes do not name. The pairing itself is per network:
+ *  the testnet host moves to the v3 origin, the mainnet host to the v4 one. */
+export const LEGACY_HOST_MOVED_TO = new Map([
+  ['dgb.ludere.space', `https://${s2dOriginHost(S2D_MESSAGE_TESTNET2)}`],
+  ['diginaut.ludere.space', `https://${s2dOriginHost(S2D_MESSAGE_MAIN2)}`],
+]);
 
 const te = new TextEncoder();
 const SECP_N = secp256k1.Point.Fn.ORDER;

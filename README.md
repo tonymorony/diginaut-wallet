@@ -13,12 +13,16 @@ DigiDollar is DigiByte's decentralized, USD-pegged stablecoin: you mint it by lo
 collateral for a chosen lock period, and redeem it to release that collateral. Diginaut builds and
 signs every consensus transaction in your browser.
 
-**Try it: <https://diginaut.ludere.space>** — create a wallet in seconds and explore the full
-dashboard, mint calculator, and send/receive flows. A permanent **testnet instance at
-<https://dgb.ludere.space>** lets you exercise the complete mint / transfer / redeem cycle with
-valueless coins: create a wallet, claim testnet DGB from the built-in faucet, and mint DigiDollar
-end-to-end. Both run the full stack in this repo against a DigiByte Core **v9.26.4** node with a
-real oracle price feed. Want to host your own? See [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
+**Try it: <https://diginaut.space>** — mainnet, in beta: real funds, with a $500 cap per
+transaction. Create a wallet in seconds and explore the full dashboard, mint calculator, and
+send/receive flows. A permanent **testnet instance at <https://testnet.diginaut.space>** lets you
+exercise the complete mint / transfer / redeem cycle with valueless coins: create a wallet, claim
+testnet DGB from the built-in faucet, and mint DigiDollar end-to-end. Both run the full stack in
+this repo against a DigiByte Core **v9.26.4** node with a real oracle price feed. The original
+domains — <https://diginaut.ludere.space> and <https://dgb.ludere.space> — keep serving the same
+instances and are never redirected, because a browser wallet lives per site and a redirect would
+cut existing users off from theirs; moving a wallet across means restoring it from its seed
+phrase. Want to host your own? See [docs/SELF-HOSTING.md](docs/SELF-HOSTING.md).
 
 > DigiDollar minting is a DigiByte softfork. On testnet it is already active; on mainnet it
 > activates network-wide at the softfork block. Diginaut enables the mint flow automatically once

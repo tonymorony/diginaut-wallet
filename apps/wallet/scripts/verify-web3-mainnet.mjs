@@ -4,10 +4,14 @@
 // pairs them, because the two things that make the mainnet door safe are only
 // observable together:
 //
-//   1. ADR 0005 — mainnet derives from the v2 bytes, never v1. Proven the hard
-//      way: the fake wallet ACCEPTS ONLY the v2 message hex and throws on
-//      anything else, so a regression that sends v1 fails the ceremony here
-//      rather than silently deriving the wrong wallet on real funds.
+//   1. ADR 0005 — mainnet derives from the MAINNET bytes, never the testnet
+//      ones. Proven the hard way: the fake wallet ACCEPTS ONLY the mainnet
+//      message hex and throws on anything else, so a regression that sends the
+//      testnet message fails the ceremony here rather than silently deriving
+//      the wrong wallet on real funds.
+//   1b. ADR 0006 — the app is served from 127.0.0.1, which is not a legacy
+//      host, so the live pair here is the diginaut.space era: v4 mainnet,
+//      v3 testnet. The ludere.space v1/v2 bytes must never appear.
 //   2. The save path runs the SEALED backup ceremony (#C3) — no skip, no close.
 //      A mainnet wallet cannot come into existence without its 24 words shown.
 //
@@ -21,7 +25,8 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { mnemonicToSeed, deriveTaprootAddress, HD_NETWORKS } from 'digidollar-js';
 import {
-  S2D_MESSAGE, S2D_MESSAGE_MAIN, eip191Digest,
+  S2D_MESSAGE, S2D_MESSAGE_MAIN, S2D_MESSAGE_TESTNET2, S2D_MESSAGE_MAIN2,
+  s2dOriginHost, eip191Digest,
   canonicalizeEvmSignature, entropyFromSignature, mnemonicFromEntropy,
 } from '../public/connect.js';
 import { startServer } from '../server.js';
@@ -35,27 +40,30 @@ const walletHex = (rec) => '0x' + hex(rec.subarray(1)) + (27 + rec[0]).toString(
 const PRIV = new Uint8Array(32).fill(7);
 const ETH_ADDR = '0x' + hex(keccak_256(secp256k1.getPublicKey(PRIV, false).subarray(1)).subarray(12));
 
-// The two message hexes. V1_HEX exists only so the driver can prove the app
-// never sends it here — the whole replay argument rests on that.
+// The message hexes. Only V4 may cross the wire; the other three exist so the
+// driver can state positively that they did not — the whole replay argument
+// (network AND origin era) rests on that.
+const V4_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE_MAIN2));
+const V3_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE_TESTNET2));
 const V2_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE_MAIN));
 const V1_HEX = '0x' + hex(new TextEncoder().encode(S2D_MESSAGE));
 
-// Deterministic signature over the v2 digest (a real extension signing v2).
-const SIG_V2 = walletHex(secp256k1.sign(eip191Digest(new TextEncoder().encode(S2D_MESSAGE_MAIN)), PRIV, { format: 'recovered', prehash: false }));
-const SIG_V1 = walletHex(secp256k1.sign(eip191Digest(new TextEncoder().encode(S2D_MESSAGE)), PRIV, { format: 'recovered', prehash: false }));
+// Deterministic signature over the v4 digest (a real extension signing v4).
+const SIG_V4 = walletHex(secp256k1.sign(eip191Digest(new TextEncoder().encode(S2D_MESSAGE_MAIN2)), PRIV, { format: 'recovered', prehash: false }));
+const SIG_V3 = walletHex(secp256k1.sign(eip191Digest(new TextEncoder().encode(S2D_MESSAGE_TESTNET2)), PRIV, { format: 'recovered', prehash: false }));
 
-// mainnet coin type 20 — the address the v2 seed must produce.
+// mainnet coin type 20 — the address the v4 seed must produce.
 const addrFor = async (sigHex) => {
   const { rs } = canonicalizeEvmSignature(sigHex);
   const mnemonic = mnemonicFromEntropy(await entropyFromSignature(rs));
   return deriveTaprootAddress(mnemonicToSeed(mnemonic), { ...HD_NETWORKS.mainnet, index: 0 }).address;
 };
-const ADDR_V2 = await addrFor(SIG_V2);
-const ADDR_V1 = await addrFor(SIG_V1);
+const ADDR_V4 = await addrFor(SIG_V4);
+const ADDR_V3 = await addrFor(SIG_V3);
 
-// The fake extension. It refuses anything but the v2 bytes: that refusal IS
-// the assertion. `seen` records every message it was asked to sign so the
-// driver can state positively which bytes crossed the wire.
+// The fake extension. It refuses anything but the v4 bytes: that refusal IS
+// the assertion. `window.__signed` records every message it was asked to sign
+// so the driver can state positively which bytes crossed the wire.
 const providerScript = `
   (() => {
     window.__signed = [];
@@ -64,8 +72,8 @@ const providerScript = `
         if (method === 'eth_requestAccounts') return [${JSON.stringify(ETH_ADDR)}];
         if (method === 'personal_sign') {
           window.__signed.push(params[0]);
-          if (params[0] !== ${JSON.stringify(V2_HEX)}) throw new Error('fake wallet: refused non-v2 message bytes');
-          return ${JSON.stringify(SIG_V2)};
+          if (params[0] !== ${JSON.stringify(V4_HEX)}) throw new Error('fake wallet: refused non-v4 message bytes');
+          return ${JSON.stringify(SIG_V4)};
         }
         throw new Error('fake wallet: ' + method);
       },
@@ -159,12 +167,18 @@ check(await evaluate(`document.getElementById('w-web3-group').style.display !== 
   'w-web3-group is not chain-gated shut');
 await shot('a0-web3-mainnet-door.png');
 
-// 2. The ceremony: two signatures, both of which MUST be the v2 bytes or the
+// 2. The ceremony: two signatures, both of which MUST be the v4 bytes or the
 //    fake wallet throws.
 await click('w-web3-choice');
 await waitFor(`document.querySelector('#w-web3-list [data-web3-pick]')`, 'the fake extension is discovered');
 await evaluate(`document.querySelector('#w-web3-list [data-web3-pick]').click()`);
 await waitFor(visible('w-web3-disclose'), 'disclosure step armed');
+// The defect this line now guards: the checkbox used to hardcode the TESTNET
+// domain, so the mainnet ceremony told the user the wrong site was the only one
+// allowed to ask — beside a message saying the opposite. It is rendered from
+// the frozen bytes now, so it moves with them.
+check((await evaluate(`document.getElementById('w-web3-origin').textContent`)) === s2dOriginHost(S2D_MESSAGE_MAIN2),
+  `the checkbox names the MAINNET origin (${s2dOriginHost(S2D_MESSAGE_MAIN2)}), not the testnet one`);
 await evaluate(`{ const c = document.getElementById('w-web3-agree'); c.checked = true; c.dispatchEvent(new Event('change',{bubbles:true})); }`);
 await click('w-web3-go');
 
@@ -172,8 +186,10 @@ await waitFor(visible('w-web3-save'), 'both signatures accepted — save step re
 const signed = await evaluate('JSON.stringify(window.__signed)');
 const sent = JSON.parse(signed);
 check(sent.length === 2, `the ceremony asked for exactly 2 signatures (got ${sent.length})`);
-check(sent.every((m) => m === V2_HEX), 'BOTH signatures were over the v2 MAINNET bytes');
-check(!sent.includes(V1_HEX), 'the testnet v1 bytes were never sent on mainnet (ADR 0005 replay guard)');
+check(sent.every((m) => m === V4_HEX), 'BOTH signatures were over the v4 MAINNET bytes');
+check(!sent.includes(V3_HEX), 'the testnet v3 bytes were never sent on mainnet (ADR 0005 replay guard)');
+check(!sent.includes(V1_HEX) && !sent.includes(V2_HEX),
+  'the legacy ludere.space v1/v2 bytes were never sent from a non-legacy host (ADR 0006 era guard)');
 
 // 3. Save → the SEALED ceremony, not the light "back up when you're ready".
 await setVal('w-web3-name', 'Mainnet derived');
@@ -193,15 +209,18 @@ check(await evaluate(`document.getElementById('w-modal-close').style.display ===
   'sealed: no close button — the ceremony cannot be dismissed');
 await shot('a1-web3-mainnet-sealed-backup.png');
 
-// 4. The wallet really is the v2 wallet, not the v1 one.
+// 4. The wallet really is the v4 wallet, not the v3 one.
 const words = await evaluate(`(() => { document.getElementById('w-backup-show').click();
   return [...document.querySelectorAll('.seed-grid li')].map((li) => li.textContent.trim()).join(' '); })()`);
 const shownAddr = deriveTaprootAddress(mnemonicToSeed(words), { ...HD_NETWORKS.mainnet, index: 0 }).address;
-check(shownAddr === ADDR_V2, `the ceremony shows the v2-derived seed (${shownAddr.slice(0, 16)}…)`);
-check(shownAddr !== ADDR_V1, 'and NOT the v1/testnet-derived seed — the two networks are different wallets');
+check(shownAddr === ADDR_V4, `the ceremony shows the v4-derived seed (${shownAddr.slice(0, 16)}…)`);
+check(shownAddr !== ADDR_V3, 'and NOT the v3/testnet-derived seed — the two networks are different wallets');
 
-console.log('\nDone.');
+console.log(process.exitCode ? '\nRED' : '\nDone.');
 await b.close();
 server.close();
 node.close();
-process.exit(0);
+// NOT `process.exit(0)`: that is what this file shipped with, and it threw away
+// every red check() — run-drivers.sh keys off the exit code, so the driver was
+// registered in the gate while being structurally incapable of failing it.
+process.exit(process.exitCode || 0);
