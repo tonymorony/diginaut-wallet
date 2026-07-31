@@ -14,14 +14,17 @@ import * as keystore from '/keystore.js';
 import { createVaultManager } from '/vault.js';
 import { discoverProviders, connectAccount, deriveFromSource, deriveOnce, shortAddress, s2dForChain, s2dOriginHost, LEGACY_HOST_MOVED_TO } from '/connect.js';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { networkChrome, betaCapError, backupSkipAllowed } from '/netchrome.js';
+import { networkChrome, betaCapError, backupSkipAllowed, foldNetHealth } from '/netchrome.js';
 import { dcaBpsFromMultiplier, describeDca } from '/dca.js';
 import { MINT_FREEZE_EXPLANATION } from '/dderrors.js';
 import { createBroadcastLog, txidFromSignedHex, classifyBroadcastError } from '/broadcastlog.js';
 import { AUTOLOCK_KEY, AUTOLOCK_DEFAULT_MIN, autolockMinutes } from '/autolock.js';
 import { pickDgbCoin } from '/coinpick.js';
 import { ensurePersistence, readPersistence, persistenceCopy, markHadVault, clearHadVault, hadVault } from '/persistence.js';
-import { NET_TIMEOUT_MS, isTimeoutError, timeoutMessage } from '/nettimeout.js';
+import {
+  NET_TIMEOUT_MS, isTimeoutError, timeoutMessage,
+  INDEXER_RETRY_MS, INDEXER_RETRY_BUDGET_MS, transientIndexerFailure,
+} from '/nettimeout.js';
 import {
   validateUtxosResponse, validateHistoryResponse, validatePositionsResponse,
   validateDdUtxosResponse, validateTxDetail,
@@ -307,6 +310,15 @@ function statusLine(active, textActive, textInactive) {
 
 // header dot = aggregate of softfork state + oracle freshness
 const netHealth = { dd: null, oracle: null };
+const netMisses = { dd: 0, oracle: 0 }; // consecutive failed polls, per source
+/** Record one poll outcome: the ANSWER (true/false), or null if it failed.
+ *  Debouncing applies to failures ONLY — see foldNetHealth for why an answered
+ *  inactive/stale must still land on the first poll. */
+function recordHealth(key, answer) {
+  const next = foldNetHealth({ flag: netHealth[key], misses: netMisses[key] }, answer);
+  netHealth[key] = next.flag;
+  netMisses[key] = next.misses;
+}
 function renderNetDot() {
   const bad = netHealth.dd === false || netHealth.oracle === false;
   const ok = netHealth.dd === true && netHealth.oracle === true;
@@ -495,11 +507,11 @@ async function loadStatus() {
     const tr = dep?.deployments?.taproot;
     const ddActive = dd?.active === true || dd?.bip9?.status === 'active';
     chainState.ddActive = ddActive; // the mint flow refuses to start when inactive
-    netHealth.dd = ddActive;
+    recordHealth('dd', ddActive); // an answered "not active" is truth, not a miss
     $('s-dd').innerHTML = statusLine(ddActive, 'active', dd?.bip9?.status || 'not active');
     $('s-tr').innerHTML = statusLine(tr?.active === true, 'active', tr?.bip9?.status || 'not active');
   } catch (e) {
-    netHealth.dd = false;
+    recordHealth('dd', null); // the poll failed to answer — debounced
     $('s-err').textContent += (e ? ' · deployment: ' + e.message : '');
   }
   renderNetDot();
@@ -526,7 +538,7 @@ async function loadOracle() {
       $('o-price').textContent = '$' + price.price_usd.toLocaleString('en-US', { maximumFractionDigits: 5 }) + (price.is_stale ? ' (stale)' : '');
       lastPriceUsd = price.price_usd;
       if (price.price_micro_usd) lastPriceMicroUsd = BigInt(price.price_micro_usd);
-      netHealth.oracle = !price.is_stale;
+      recordHealth('oracle', !price.is_stale); // an answered "stale" is truth, not a miss
       renderFiat();
       updateMintEstimate();
       // seed the calculator price with the live oracle price
@@ -538,7 +550,7 @@ async function loadOracle() {
       }
     }
   } catch (e) {
-    netHealth.oracle = false;
+    recordHealth('oracle', null); // the poll failed to answer — debounced
     $('o-hint').innerHTML = `<span class="err">oracle: ${esc(e.message)}</span>`;
   }
   renderNetDot();
@@ -2481,10 +2493,60 @@ const INDEXER_SHAPES = [
   [/^\/tx\/([0-9a-f]{64})$/, (json) => validateTxDetail(json)],
 ];
 
-async function fetchIndexer(path) {
-  const res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
+// Transient-failure ladder. One attempt meant a login racing a service restart
+// (~2-3s) collapsed the whole panel to "the balance index is unreachable" over
+// a hop that was about to come back. What counts as transient is decided in one
+// place, `transientIndexerFailure` (nettimeout.js): the dead browser↔server hop
+// AND the wallet server's own 502 relay of a dead indexer hop — which is the
+// shape a deploy restart usually takes, and it arrives as a normal response.
+// An honest answer (4xx, "no indexer configured", an INDEXER_SHAPES refusal)
+// rethrows on the first attempt; retrying it only makes it slower.
+//
+// Deliberately NOT in rpc(): broadcastTx() flows through that, and
+// auto-retrying sendrawtransaction is the double-send hazard the #C1 broadcast
+// journal exists to prevent.
+//
+// Fan-out: the full ladder is for the first load only. refreshMoney fans out to
+// (index+3)x6 reads and re-runs every MONEY_POLL_MS, so once the panel is
+// painted the budget is ONE short retry — the poll chain awaits itself and a
+// long ladder on every read would stretch a tick past its own interval. Set
+// once per page session; a later wallet switch is not a first load.
+let indexerFirstLoad = true;
+
+/** One read, classified: `{json}` on success, `{err, transient}` on failure.
+ *  Split out so the ladder sees BOTH failure shapes the same way — a rejected
+ *  fetch (a dead hop) and a non-ok RESPONSE (which may still be a dead hop,
+ *  relayed by our own proxy). A body that is not JSON at all rejects here and
+ *  is not retried: that is a misrouted response, not a transport blip. */
+async function indexerAttempt(path) {
+  let res;
+  try {
+    res = await apiFetch('/api/indexer' + path, { budget: NET_TIMEOUT_MS.indexer, what: 'the balance index' });
+  } catch (err) {
+    return { err, transient: transientIndexerFailure({ transport: err?.transport }) };
+  }
   const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  if (res.ok) return { json };
+  return {
+    err: new Error(json.error || `HTTP ${res.status}`),
+    transient: transientIndexerFailure({ status: res.status, body: json }),
+  };
+}
+
+async function fetchIndexer(path) {
+  const ladder = indexerFirstLoad ? INDEXER_RETRY_MS : INDEXER_RETRY_MS.slice(0, 1);
+  // Time bound, not just an attempt count: see INDEXER_RETRY_BUDGET_MS. The
+  // deadline gates the SLEEPS — the attempt already in flight keeps its own
+  // NET_TIMEOUT_MS.indexer budget, so the worst case is the rungs that fit plus
+  // one hop (~23s), against ~83s for an attempt-counted ladder.
+  const deadline = Date.now() + INDEXER_RETRY_BUDGET_MS;
+  let json;
+  for (let attempt = 0; ; attempt++) {
+    const out = await indexerAttempt(path);
+    if (!out.err) { json = out.json; break; }
+    if (!out.transient || attempt >= ladder.length || Date.now() + ladder[attempt] > deadline) throw out.err;
+    await new Promise((r) => setTimeout(r, ladder[attempt]));
+  }
   for (const [re, validate] of INDEXER_SHAPES) {
     const m = re.exec(path);
     if (m) return validate(json, m[1]);
@@ -2653,6 +2715,7 @@ async function refreshMoney() {
     $('loading-veil').style.display = 'none';
     $('w-money').style.display = 'grid';
     if (firstShow) renderSparkline(lastPriceSeries); // real width only now
+    indexerFirstLoad = false; // the index has answered — steady-state retry budget from here
   } catch (e) {
     // Same reasoning as the success path: the outgoing wallet's indexer error
     // is not the incoming wallet's, and tearing down the veil here would
@@ -2753,11 +2816,27 @@ function historyRow(h) {
   const amtCls = amt > 0n ? 'in' : 'out';
   const sign = amt > 0n ? '+' : amt < 0n ? '−' : '';
   const amtStr = amt === 0n ? '' : `${sign}${fmtDgb8(amt < 0n ? -amt : amt)} DGB`; // no misleading "0 DGB"
-  const c = Number(detail.confirmations) || 0; // coerce: a number never carries markup
-  const conf = (c <= 0 || h.height === 0)
-    ? `<span class="tx-conf pending">${icon('clock')}pending</span>`
-    : c >= FINAL_CONF ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
-      : `<span class="tx-conf partial">${c} conf</span>`;
+  // coerce: a number never carries markup. null = the enrichment carried no
+  // count at all, which is NOT the same answer as the node saying zero.
+  const cRaw = Number(detail.confirmations);
+  const c = Number.isFinite(cRaw) ? Math.max(0, Math.trunc(cRaw)) : null;
+  // The node's own count outranks the address-index height. The two readings
+  // come from different subsystems — h.height is ElectrumX's address index,
+  // the count is the node via the verbose tx lookup — and the index can lag
+  // its node badly enough that we model the lag elsewhere (indexerLagBlocks,
+  // #H5). While it lags, a mined tx sits at height 0 in the index and the old
+  // `h.height === 0` veto pinned the row to "pending" against N confirmations.
+  // `final` still needs BOTH signals to AGREE — the node's count is at
+  // FINAL_CONF and the index carries a height for that tx — so index lag can
+  // never produce a false settlement claim in either direction. That is a lag
+  // guarantee, not a trust one: both fields are relayed by the same indexer, so
+  // a compromised one could invent them together (it also serves the balance).
+  const pendingBadge = `<span class="tx-conf pending">${icon('clock')}pending</span>`;
+  const conf = c === null
+    ? (h.height === 0 ? pendingBadge : '<span class="tx-conf partial">confirmed</span>')
+    : c >= FINAL_CONF && h.height > 0 ? `<span class="tx-conf final">${icon('check', 'ic-s')}final</span>`
+      : c > 0 ? `<span class="tx-conf partial">${c} conf</span>`
+        : pendingBadge;
   const feeStr = sent && detail.feeSats != null ? `fee ${fmtDgb8(sat(detail.feeSats))} DGB` : '';
   const time = Number(detail.time) || 0;
   const sub = [cp, relTime(time), feeStr].filter(Boolean).join(' · ');
