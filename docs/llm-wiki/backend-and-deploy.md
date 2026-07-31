@@ -2,7 +2,7 @@
 
 Verified: 2026-07-26 @ `7247899`. Prod usage of these: ops-and-server.md.
 
-## apps/indexer (`server.js`, ~330 L, port 8789)
+## apps/indexer (`server.js`, ~440 L, port 8789)
 
 Address-level façade over a **stock** ElectrumX (ADR-0003; extend-don't-fork). Per-address
 queries only — xpubs never reach it; tx direction deliberately not computed server-side.
@@ -13,10 +13,29 @@ queries only — xpubs never reach it; tx direction deliberately not computed se
 - ElectrumX transport: raw TCP JSON-RPC; `server.version` handshake happens on every
   (re)connect — ElectrumX ≥1.4 kills connections whose first message is anything else.
   16 MiB frame cap; malformed lines skipped.
+- Framing is linear (`ElectrumClient#onData`): raw chunks + a 0x0a scan resumed at the
+  first unscanned CHUNK (chunk granularity, not byte), one concat per completed frame —
+  never flatten-and-rescan per chunk (multi-MB verbose-tx bodies made that quadratic).
+  Byte-level, so a split multi-byte char can't corrupt a frame. The 16 MiB cap counts
+  BYTES; overflow destroys the socket **and nulls `this.sock`**, so the next `connect()`
+  builds a fresh session instead of returning a resolved `ready` for a dead one.
+- Test gotcha (cost an hour): a fake ElectrumX writing N-byte slices back-to-back does
+  NOT deliver N-byte chunks — the kernel coalesces to ~64 KB reads however small the
+  writes. Chunk COUNT is what the old parser was quadratic in, so a test that wants small
+  chunks must pace writes one event-loop turn apart (`setImmediate`). Paced 4 KB × 12 MB:
+  old parser ~6 s, current ~0.22 s; unpaced it was ~550 ms vs ~114 ms and proved nothing.
 - Positions = mint whose collateral vout[0] is unspent and whose OP_RETURN owner key hashes
   to this address's DD-token program. DD amounts pair OP_RETURN cents **positionally** with
   zero-value `5120…` outputs.
-- Env: `PORT`, `DGB_HRP` (default dgbt), `ELECTRUM_HOST/PORT` (127.0.0.1:50001).
+- Verbose tx bodies are memoized per server instance and shared by
+  positions/dd-utxos/tx (`createTxCache`, max 500, promise-keyed so overlapping callers
+  share one upstream call, failures self-evict). TTL `TX_CACHE_TTL_MS` default 5000 —
+  keep it under the 15 s block time or pending→mined lags; **`0` disables the cache**
+  (every get misses) and is the kill switch when triaging a staleness report.
+  `listunspent`, `get_history` and `headers.subscribe` are never cached — pinned end to
+  end by the `tx cache seam:` test, not just by comments.
+- Env: `PORT`, `DGB_HRP` (default dgbt), `ELECTRUM_HOST/PORT` (127.0.0.1:50001),
+  `TX_CACHE_TTL_MS` (default 5000, `0` = off).
 
 ## apps/faucet (`server.js`, ~190 L, port 8788)
 

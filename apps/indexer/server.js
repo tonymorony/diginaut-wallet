@@ -12,6 +12,11 @@ import { pathToFileURL } from 'node:url';
 import { decodeWitnessAddress, parseDDVersion, parseMintMetadata, parseTransferMetadata, parseRedeemMetadata, ddTokenOutputKey, LOCK_TIERS } from 'digidollar-js';
 
 export function configFromEnv() {
+  // Validated rather than `|| default` like the knobs below, because 0 is
+  // meaningful here: it is the cache's kill switch (every get misses), which an
+  // operator triaging a staleness report needs without a code change. PORT=0
+  // and TTL=0 do not mean the same kind of thing.
+  const ttl = Number(process.env.TX_CACHE_TTL_MS);
   return {
     port: Number(process.env.PORT) || 8789,
     hrp: process.env.DGB_HRP || 'dgbt', // dgb | dgbt | dgbrt
@@ -19,22 +24,34 @@ export function configFromEnv() {
       host: process.env.ELECTRUM_HOST || '127.0.0.1',
       port: Number(process.env.ELECTRUM_PORT) || 50001,
     },
+    // How long the scan paths may reuse a verbose tx body (see createTxCache).
+    // Well under DigiByte's 15s block time on purpose: at a block-length TTL
+    // the wallet's 8s poll could show a pending tx as pending for a whole
+    // extra block after it was mined.
+    txCacheTtlMs: Number.isFinite(ttl) && ttl >= 0 ? ttl : 5_000,
   };
 }
 
 // ---- Minimal Electrum client: newline-delimited JSON-RPC over TCP ----
+// (exported so apps/indexer/test can drive the frame assembler directly)
 // Cap the unframed read buffer: a compromised/broken ElectrumX must not be able
 // to exhaust indexer memory with an endless line that never sends a newline (#55).
+// Counted in BYTES — the assembler holds raw chunks, not a decoded string.
 const MAX_ELECTRUM_FRAME = 16 * 1024 * 1024;
 
-class ElectrumClient {
+export class ElectrumClient {
   constructor({ host, port }) {
     this.host = host;
     this.port = port;
     this.sock = null;
     this.nextId = 1;
     this.pending = new Map();
-    this.buf = '';
+    // Frame assembly keeps the RAW chunks and resumes the '\n' search at the
+    // first chunk the last pass had not reached (see #onData) — chunk
+    // granularity, but no chunk is ever scanned twice.
+    this.chunks = [];
+    this.chunksLength = 0;
+    this.scanChunk = 0; // first chunk not yet scanned for '\n'
   }
 
   connect() {
@@ -46,9 +63,16 @@ class ElectrumClient {
       const sock = createConnection(this.port, this.host);
       sock.setNoDelay(true);
       sock.on('connect', () => resolve());
-      sock.on('data', (d) => this.#onData(d));
+      // Guard every socket event by IDENTITY: a socket we tear down (frame
+      // overflow) fires 'close' asynchronously, and by then the next request
+      // may already have opened a fresh session. The dead socket must not null
+      // its successor, reject the requests the successor carries, or feed its
+      // late bytes into the successor's frame assembler.
+      sock.on('data', (d) => { if (this.sock === sock) this.#onData(d); });
       const fail = (err) => {
+        if (this.sock !== sock) return; // a newer session owns this client now
         this.sock = null;
+        this.#resetFrames(); // a half-assembled frame belongs to the dead socket
         reject(err ?? new Error('electrum connection closed'));
         for (const { reject: rj } of this.pending.values()) rj(err ?? new Error('electrum connection closed'));
         this.pending.clear();
@@ -71,19 +95,65 @@ class ElectrumClient {
     });
   }
 
+  #resetFrames() {
+    this.chunks = [];
+    this.chunksLength = 0;
+    this.scanChunk = 0;
+  }
+
   #onData(d) {
-    this.buf += d;
-    if (this.buf.length > MAX_ELECTRUM_FRAME) {
-      this.buf = '';
+    // Electrum frames are single-line JSON, and a verbose-tx body is megabytes
+    // arriving in ~64KB chunks with no newline until the very end. `buf += d`
+    // plus `buf.indexOf('\n')` re-flattened and re-scanned the WHOLE buffer on
+    // every chunk — quadratic, and the shared session means that CPU is stolen
+    // from every other request. Buffering raw chunks and scanning only the NEW
+    // bytes pays one concat per COMPLETED frame instead.
+    //
+    // Scanning for the byte 0x0a is also what makes this UTF-8-safe: `string +=
+    // Buffer` decodes each chunk on its own, so a multi-byte character split
+    // across a chunk boundary silently became replacement characters. A UTF-8
+    // continuation byte is >= 0x80 and can never be mistaken for a newline.
+    this.chunks.push(d);
+    this.chunksLength += d.length;
+    if (this.chunksLength > MAX_ELECTRUM_FRAME) {
+      // Drop the session too: we just failed every request in flight on it, and
+      // the only way to resync a stream mid-frame is to skip to the next
+      // newline. A fresh connection is cheaper and unambiguous.
+      this.#resetFrames();
       const err = new Error('electrum response exceeded frame limit');
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
+      const dead = this.sock;
+      // Forget the socket BEFORE destroying it. 'close' is async, and until it
+      // fires `connect()` would hand the next caller `this.ready` — already
+      // resolved, for a corpse — and #send would write to it (ERR_STREAM_
+      // DESTROYED, a confusing transport error and one more failed money read).
+      // Nulling here also makes fail()'s identity guard no-op the late 'close'.
+      this.sock = null;
+      dead?.destroy();
       return;
     }
-    let nl;
-    while ((nl = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, nl);
-      this.buf = this.buf.slice(nl + 1);
+    for (;;) {
+      // Find the next '\n', resuming at the first chunk the previous pass had
+      // not reached. A chunk with no newline is frame-interior, so advancing
+      // past it is exactly-once: nothing before scanChunk can hold a newline.
+      let nlChunk = -1;
+      let nlPos = -1;
+      for (let i = this.scanChunk; i < this.chunks.length; i++) {
+        const p = this.chunks[i].indexOf(0x0a);
+        if (p >= 0) { nlChunk = i; nlPos = p; break; }
+        this.scanChunk = i + 1;
+      }
+      if (nlChunk < 0) return;
+      // Assemble the completed frame ONCE and drop the bytes it consumed. What
+      // follows the newline has never been scanned, so the next pass restarts
+      // at 0 without re-reading anything.
+      const frame = Buffer.concat([...this.chunks.slice(0, nlChunk), this.chunks[nlChunk].subarray(0, nlPos)]);
+      const rest = this.chunks[nlChunk].subarray(nlPos + 1);
+      this.chunks = rest.length ? [rest, ...this.chunks.slice(nlChunk + 1)] : this.chunks.slice(nlChunk + 1);
+      this.chunksLength -= frame.length + 1; // the frame plus its newline
+      this.scanChunk = 0;
+      const line = frame.toString('utf8');
       if (!line.trim()) continue;
       let msg;
       try {
@@ -106,6 +176,43 @@ class ElectrumClient {
   }
 }
 
+// ---- Shared verbose-tx cache ----
+// scanPositions, scanDDUtxos and enrichTx all resolve the same verbose
+// blockchain.transaction.get bodies, and the wallet re-polls every 8s — three
+// overlapping paths that memoized nothing, or memoized only within one call.
+// A tx body is immutable, so the only field that can go stale inside the TTL
+// is `confirmations`.
+//
+// Money safety: nothing that decides spendability is cached. The
+// collateral-unspent check in scanPositions and every UTXO set the wallet
+// spends from come from blockchain.scripthash.listunspent, which is never
+// memoized — same for get_history and headers.subscribe.
+const TX_CACHE_MAX = 500;
+
+/**
+ * Build a verbose-tx memo. Scoped to ONE server instance, never module-global:
+ * the test suite boots many servers in a single process, and shared state
+ * there makes tests order-dependent.
+ */
+export function createTxCache(withElectrum, ttlMs) {
+  const entries = new Map(); // txid → { at, promise }; iterates in insertion order
+  const get = (txid) => {
+    const hit = entries.get(txid);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.promise;
+    // Memoize the PROMISE, not the result: callers that overlap on the same
+    // txid then share one upstream call instead of racing to make their own.
+    const promise = withElectrum('blockchain.transaction.get', [txid, true]);
+    entries.delete(txid); // re-insert at the tail so eviction stays insertion-ordered
+    entries.set(txid, { at: Date.now(), promise });
+    if (entries.size > TX_CACHE_MAX) entries.delete(entries.keys().next().value);
+    // A failed call must not be cached for the whole TTL — one ElectrumX blip
+    // would otherwise be replayed to every caller until it expired.
+    promise.catch(() => { if (entries.get(txid)?.promise === promise) entries.delete(txid); });
+    return promise;
+  };
+  return { get, entries };
+}
+
 /** Electrum scripthash: reversed sha256 of the scriptPubKey (segwit v0/v1). */
 export function addressToScripthash(address, expectedHrp) {
   const { hrp, version, programHex } = decodeWitnessAddress(address);
@@ -122,10 +229,10 @@ export function addressToScripthash(address, expectedHrp) {
 // this owner appears in the address's Electrum history; the OP_RETURN metadata
 // (vout[2]) carries amount/tier/unlock, and the collateral scripthash tells us
 // whether the position was since redeemed.
-async function scanPositions(withElectrum, programHex, history) {
+async function scanPositions(withElectrum, getTx, programHex, history) {
   const positions = [];
   for (const h of history) {
-    const tx = await withElectrum('blockchain.transaction.get', [h.tx_hash, true]);
+    const tx = await getTx(h.tx_hash);
     if (parseDDVersion(tx.version).type !== 'mint') continue;
     const opReturn = tx.vout.find((o) => o.scriptPubKey.hex.startsWith('6a'));
     if (!opReturn) continue;
@@ -178,14 +285,12 @@ function ddAmountsByVout(tx) {
 }
 
 /** Resolve the address's zero-value UTXOs to DD cents via their creating txs. */
-async function scanDDUtxos(withElectrum, unspent) {
+async function scanDDUtxos(getTx, unspent) {
   const out = [];
-  const txCache = new Map();
+  const ddMaps = new Map(); // per-call memo of the PARSED amounts; getTx dedupes the fetch
   for (const u of unspent.filter((x) => x.value === 0)) {
-    if (!txCache.has(u.tx_hash)) {
-      txCache.set(u.tx_hash, ddAmountsByVout(await withElectrum('blockchain.transaction.get', [u.tx_hash, true])));
-    }
-    const cents = txCache.get(u.tx_hash)?.get(u.tx_pos);
+    if (!ddMaps.has(u.tx_hash)) ddMaps.set(u.tx_hash, ddAmountsByVout(await getTx(u.tx_hash)));
+    const cents = ddMaps.get(u.tx_hash)?.get(u.tx_pos);
     if (cents === undefined) continue; // zero-value but not a DD token output
     out.push({ txid: u.tx_hash, vout: u.tx_pos, cents: String(cents), height: u.height });
   }
@@ -209,8 +314,8 @@ function spkAddress(spk) {
 // Core reports values as float DGB; sats is the integer we settle in.
 const valueToSats = (v) => BigInt(Math.round(v * 1e8));
 
-async function enrichTx(withElectrum, txid) {
-  const tx = await withElectrum('blockchain.transaction.get', [txid, true]);
+async function enrichTx(getTx, txid) {
+  const tx = await getTx(txid);
   const type = parseDDVersion(tx.version).type || 'dgb';
   const ddMap = ddAmountsByVout(tx); // vout.n → DD cents (null for a plain DGB tx)
   const vout = tx.vout.map((o) => ({
@@ -232,7 +337,7 @@ async function enrichTx(withElectrum, txid) {
   for (let idx = 0; idx < tx.vin.length; idx++) {
     const i = tx.vin[idx];
     if (i.coinbase !== undefined || idx >= MAX_VIN_RESOLVE) { vin.push({ address: null, valueSats: null }); inputsResolved = false; continue; }
-    if (!prevCache.has(i.txid)) prevCache.set(i.txid, await withElectrum('blockchain.transaction.get', [i.txid, true]));
+    if (!prevCache.has(i.txid)) prevCache.set(i.txid, await getTx(i.txid));
     const po = prevCache.get(i.txid)?.vout?.[i.vout];
     if (!po) { vin.push({ address: null, valueSats: null }); inputsResolved = false; continue; }
     vin.push({ address: spkAddress(po.scriptPubKey), valueSats: String(valueToSats(po.value)) });
@@ -266,6 +371,8 @@ export function startServer(overrides = {}) {
   // server.version happens inside connect() — once per CONNECTION, so a
   // dropped TCP session re-handshakes transparently on the next request (#32)
   const withElectrum = (method, params) => electrum.request(method, params);
+  // One verbose-tx memo per server instance, shared by every scan path below.
+  const txCache = createTxCache(withElectrum, config.txCacheTtlMs);
 
   const server = createServer(async (req, res) => {
     try {
@@ -281,14 +388,14 @@ export function startServer(overrides = {}) {
         }
         if (what === 'dd-utxos') {
           const unspent = await withElectrum('blockchain.scripthash.listunspent', [scripthash]);
-          const utxos = await scanDDUtxos(withElectrum, unspent);
+          const utxos = await scanDDUtxos(txCache.get, unspent);
           const totalCents = utxos.reduce((s, u) => s + BigInt(u.cents), 0n);
           return sendJson(res, 200, { address, totalCents: String(totalCents), utxos });
         }
         if (what === 'positions') {
           const history = await withElectrum('blockchain.scripthash.get_history', [scripthash]);
           const [positions, tip] = await Promise.all([
-            scanPositions(withElectrum, programHex, history),
+            scanPositions(withElectrum, txCache.get, programHex, history),
             withElectrum('blockchain.headers.subscribe', []),
           ]);
           return sendJson(res, 200, { address, tipHeight: tip.height, positions });
@@ -308,7 +415,7 @@ export function startServer(overrides = {}) {
       }
       const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
       if (req.method === 'GET' && txMatch) {
-        return sendJson(res, 200, await enrichTx(withElectrum, txMatch[1]));
+        return sendJson(res, 200, await enrichTx(txCache.get, txMatch[1]));
       }
       if (req.method === 'GET' && req.url === '/api/health') {
         const tip = await withElectrum('blockchain.headers.subscribe', []);
