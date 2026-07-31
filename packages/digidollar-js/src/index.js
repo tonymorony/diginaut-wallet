@@ -75,13 +75,32 @@ export { buildDDVersion, parseDDVersion, parseMintMetadata, buildMintMetadata, p
 export { ddTokenOutputKey, collateralOutputKey, normalRedemptionLeafHex, normalRedemptionLeafHash, collateralControlBlockHex, COLLATERAL_NUMS_KEY } from './taproot.js';
 export { encodeWitnessAddress, decodeWitnessAddress, scriptPubKeyFromAddress, encodeDDAddress, decodeDDAddress, toDDAddress, decodeAddress, decodeLegacyAddress } from './address.js';
 export { encodeBip21, parseBip21, satsToDgbString } from './bip21.js';
-export { buildSignedMintTx, buildSignedTransferTx, buildTransferOutputs, buildSignedRedeemTx, buildRedeemOutputs, planSpend, planMaxSpend, buildSignedSpendTx, serializeTx, xOnlyPubKey, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS, MIN_DD_TX_FEE_SATS, STANDARD_FEE_RATE_SATS_PER_KVB } from './txbuild.js';
+export { buildSignedMintTx, buildSignedTransferTx, buildTransferOutputs, buildSignedRedeemTx, buildRedeemOutputs, planSpend, planMaxSpend, buildSignedSpendTx, serializeTx, parseTx, xOnlyPubKey, MINT_LOCK_CONFIRMATION_BUFFER_BLOCKS, MIN_DD_TX_FEE_SATS, MIN_DD_OUTPUT_CENTS, MAX_DD_OUTPUT_CENTS, STANDARD_FEE_RATE_SATS_PER_KVB } from './txbuild.js';
 export { generateMnemonic, validateMnemonic, mnemonicToSeed, deriveTaprootAddress, p2wpkhAddress, HD_NETWORKS } from './hd.js';
+// Lock & Earn (bond.js) + the generic tapscript constant it builds on. The
+// hash-type-capable sighash and the raw signing helper stay module-internal on
+// purpose: a DigiDollar-marked signature is meant to come out of an audited
+// builder that ran its post-build gate, not out of a raw signer.
+export { NUMS_KEY } from './tapscript.js';
+export {
+  bondLeafHex, bondOutputKey, bondControlBlockHex, computeFloorShares, planDistributionChunks,
+  buildSignedBondLockTx, buildSignedBondUnlockTx, buildSignedEscrowSplitTx,
+  buildSignedDistributionTx, attachDistributionFee, verifyDistributionChunk,
+  MAX_PAYOUTS_PER_CHUNK, MAX_CHUNKS_PER_SPLIT, MAX_ATTACHED_FEE_SATS,
+} from './bond.js';
 
 // Consensus DigiDollar transaction limits (v9.26.4: consensus/digidollar.h
 // defaults; kernel/chainparams.cpp regtest overrides). The node enforces these
 // at mempool/consensus level (bad-dd-mint-amount) — the wallet checks them
 // BEFORE signing so users get an actionable error, not a raw reject.
+//
+// regtest's `minMintCents: 1n` has a DEAD RANGE below 100c. A 1c mint passes
+// mint-AMOUNT validation and is then rejected by OUTPUT validation
+// (validation.cpp:1092/1135 against digidollar.h:73 `minOutputAmount = 100`,
+// which regtest does not override), so nothing between 1c and 99c is mintable
+// on any network. The mint builder's post-build gate refuses it as `dd-minimum`
+// before a signature exists. UNVERIFIED against a live regtest node — read from
+// Core's source, to be proven with the Layer-2 fixtures in #153.
 export const DD_TX_LIMITS = Object.freeze({
   mainnet: Object.freeze({ minMintCents: 10_000n, maxMintCents: 10_000_000n, minOutputCents: 100n }),
   testnet: Object.freeze({ minMintCents: 10_000n, maxMintCents: 10_000_000n, minOutputCents: 100n }),
