@@ -16,7 +16,7 @@
   "license": "MIT",
   "dependencies": {
     "@noble/curves": "2.2.0",
-    "@scure/bip32": "2.2.0",
+    "@scure/bip32": "2.3.0",
     "@scure/bip39": "2.2.0"
   }
 }
