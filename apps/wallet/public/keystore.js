@@ -113,6 +113,13 @@ export async function decryptJsonWithKey(blob, key) {
 
 export const KEYSTORE_FILE_FORMAT = 'diginaut-keystore';
 export const KEYSTORE_FILE_VERSION = 1;
+// An imported file is the one blob whose KDF parameters this app did not write,
+// and the count goes straight to deriveAesKey — an unbounded one pins the tab
+// inside PBKDF2 with no way out but killing it. The floor is backward-compatible
+// by construction: every file this app has ever exported carries exactly
+// PBKDF2_ITERATIONS (600k), and the ceiling still leaves room to raise it.
+const MIN_FILE_ITERATIONS = 100_000;
+const MAX_FILE_ITERATIONS = 2_000_000;
 
 /** Build the export envelope for one wallet. network is 'mainnet'/'testnet'
  * or null when the node hasn't named its chain. */
@@ -144,6 +151,10 @@ export function parseKeystoreFile(text) {
   }
   if (typeof obj.kdf?.salt !== 'string' || typeof obj.cipher?.iv !== 'string' || typeof obj.cipher?.data !== 'string') {
     throw new Error('keystore file is damaged — its crypto fields are missing');
+  }
+  const iterations = obj.kdf.iterations;
+  if (!Number.isInteger(iterations) || iterations < MIN_FILE_ITERATIONS || iterations > MAX_FILE_ITERATIONS) {
+    throw new Error('keystore file is damaged — its key-derivation setting is missing or out of range');
   }
   return obj;
 }

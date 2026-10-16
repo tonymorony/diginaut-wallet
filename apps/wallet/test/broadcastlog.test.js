@@ -150,12 +150,26 @@ test('drop, markAmbiguous and bumpAttempt mutate the stored record', () => {
   assert.equal(log.list().length, 0);
 });
 
+test('clearAll removes the key itself, not just the records inside it', () => {
+  // "Erase all wallets on this device" promises the artifact is gone, and the
+  // artifact is signed raw transaction hex plus counterparties and amounts.
+  const storage = fakeStorage();
+  const log = createBroadcastLog(storage);
+  log.record(rec(6));
+  log.record(rec(7));
+  log.clearAll();
+  assert.deepEqual(log.list(), []);
+  assert.equal(storage.mem.has(BROADCAST_LOG_KEY), false, 'the key must not survive as an empty array');
+});
+
 test('a storage that refuses to write never aborts the broadcast', () => {
   const storage = fakeStorage();
   storage.setItem = () => { throw new Error('QuotaExceededError'); };
+  storage.removeItem = () => { throw new Error('SecurityError'); };
   const log = createBroadcastLog(storage);
   assert.doesNotThrow(() => log.record(rec(5)));
   assert.doesNotThrow(() => log.drop('05'.repeat(32)));
+  assert.doesNotThrow(() => log.clearAll());
   assert.deepEqual(log.list(), []);
 });
 

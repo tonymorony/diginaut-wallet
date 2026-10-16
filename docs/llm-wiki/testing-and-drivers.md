@@ -148,6 +148,17 @@ separately (PR #124), not part of that run.
   is racing that bump: it passes only when the poll samples before the scan lands (fast
   machine → red, slower CI → green). That was the whole `verify-wallet-switch` flake, not the
   sleeps; assert on a value that identifies the wallet (its balance) instead. Fixed 2026-07-27.
+- **…and it now rotates MID-SESSION too**: the money poll re-arms the scan when a payment lands
+  at or past `wallet.index`, so a driver that funds the address it is currently showing must
+  expect `w-address`/`w-path` to advance to one past the deepest funded index (up to
+  `wallet.index + 3` — the scan lands at `frontier + 1`, and the frontier can be `index + 2`,
+  the top of the watch window). Fund, then wait on the path you expect — never on the address
+  staying put. Pinned by `verify-receive-index` part A.
+- Corollary: asserting a PRE-scan state races the scan. `verify-receive-index` part B's
+  "a restored wallet starts at index 0" reads `w-path` right after `w-open` appears, while
+  `openWallet` has already fired `syncReceiveIndex` — on a loaded machine the scan can win
+  (seen once in 3 runs, 2026-07-31). A red there with the following "advances to /7" check
+  still green is that race, not a regression.
 - Wallet-switcher rows: select by identity (`.wal-row` with/without `.wal-check` = active),
   never `[data-switch]`/`[data-manage]` index — list order is creation order today, but no
   assertion should depend on it.

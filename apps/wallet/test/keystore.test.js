@@ -85,6 +85,20 @@ test('parseKeystoreFile rejects wrong format/version/damage with clear errors', 
   assert.throws(() => parseKeystoreFile(JSON.stringify({ ...env, cipher: {} })), /damaged/);
 });
 
+test('parseKeystoreFile bounds kdf.iterations — the file picker is a hostile input', () => {
+  // The count is fed straight to PBKDF2 by decryptKeystoreFile. Unbounded, a
+  // file anyone can hand a user pins the tab inside deriveAesKey with no way
+  // out but killing it — validating salt/iv/data and not this was half a gate.
+  const env = { format: 'diginaut-keystore', v: 1, kdf: { salt: 'c2FsdA==', iterations: 600_000 }, cipher: { iv: 'aXY=', data: 'ZA==' } };
+  const withIter = (iterations) => JSON.stringify({ ...env, kdf: { ...env.kdf, iterations } });
+  assert.equal(parseKeystoreFile(withIter(600_000)).kdf.iterations, 600_000); // what we ship
+  assert.equal(parseKeystoreFile(withIter(100_000)).kdf.iterations, 100_000); // floor, inclusive
+  assert.equal(parseKeystoreFile(withIter(2_000_000)).kdf.iterations, 2_000_000); // ceiling, inclusive
+  for (const bad of [2_000_001, 1e12, Number.MAX_SAFE_INTEGER, 99_999, 0, -600_000, 600_000.5, NaN, Infinity, '600000', null, undefined]) {
+    assert.throws(() => parseKeystoreFile(withIter(bad)), /damaged/, String(bad));
+  }
+});
+
 test('keystore filename follows diginaut-<name-slug>-<yyyymmdd>.keystore.json', () => {
   const when = new Date('2026-07-15T12:00:00Z');
   assert.equal(keystoreFileName('My Trading Wallet #2!', when), 'diginaut-my-trading-wallet-2-20260715.keystore.json');

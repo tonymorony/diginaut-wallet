@@ -174,7 +174,11 @@ string a user reads — see `agent-workflow.md` § PR workflow step 2b.
 - **A destructive button is labelled by its consequence, even next to identical-looking
   siblings.** The recovery card's *Dismiss* deleted the signed hex of a possibly-in-flight
   transaction; it now says *Delete saved transaction* on a live row and keeps *Dismiss* only
-  on a resolved one, where nothing is destroyed.
+  on a resolved one, where nothing is destroyed. Same rule one level up, for a ceremony that
+  ENUMERATES what it destroys: `w-erase-go` wipes the journal too, so the erase view carries
+  `#w-erase-pending` — shown by `w-forget` only when `broadcastLog.list()` is non-empty, because
+  the seed-phrase line above it is false for signed hex. Widen a destructive handler and the
+  enumeration is part of the change.
 - **Borrowed chain jargon must mean here what it means out there.** `#w-recovery`'s heading
   was *Unconfirmed broadcast*; to a BTC/LTC/DGB holder "unconfirmed" means broadcast and
   waiting for a block — routine — while the card exists because we don't know it was

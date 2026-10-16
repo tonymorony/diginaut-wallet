@@ -1199,6 +1199,9 @@ let receiveScanGen = -1;      // walletGen whose scan COMPLETED (see walletGen: 
 let receiveScanBusy = -1;     // walletGen whose scan is in flight
 let receiveScanFailGen = -1;  // walletGen the failure count below belongs to
 let receiveScanFails = 0;
+let receiveScanRearmPending = -1; // walletGen whose re-arm arrived mid-scan and is owed a walk
+let receiveFrontier = -1;     // deepest index the money poll has seen used on chain
+let receiveFrontierGen = -1;  // walletGen that frontier belongs to
 // Backoff for a failing indexer. No ceiling on purpose: capping the retries
 // reintroduces a slower version of the bug this replaces — a wallet that has
 // silently stopped looking for its own coins — and the last step is a minute,
@@ -1229,8 +1232,15 @@ async function syncReceiveIndex() {
   if (receiveScanFailGen !== gen) { receiveScanFailGen = gen; receiveScanFails = 0; }
   receiveScanBusy = gen;
   let highest = -1;
+  // Warm start: the counter is this device's own memory of how far the chain
+  // has been walked, so re-proving 0…index-1 costs two history reads per index
+  // for an answer we already hold (a wallet at index 12 re-walked ~32 indices
+  // on every open). Safe ONLY because the watch window is CONTIGUOUS —
+  // watchedDerivations covers 0…index+2 and the money poll re-reads all of it
+  // every 8s, so an index below the counter can never go unwatched. Make the
+  // window sparse and this must go back to 0.
   try {
-    for (let from = 0, gap = 0; gap < RECEIVE_GAP; from += RECEIVE_SCAN_BATCH) {
+    for (let from = wallet.index, gap = 0; gap < RECEIVE_GAP; from += RECEIVE_SCAN_BATCH) {
       const batch = Array.from({ length: RECEIVE_SCAN_BATCH }, (_, k) => from + k);
       const used = await Promise.all(batch.map((i) =>
         derivationUsed(deriveTaprootAddress(wallet.seed, { ...wallet.network, index: i }))));
@@ -1259,16 +1269,68 @@ async function syncReceiveIndex() {
     return;
   }
   receiveScanGen = gen; // only now: the chain actually answered
+  // Clear the in-flight flag on the way out, or the FIRST completed scan of a
+  // generation locks out every later one: `receiveScanBusy === gen` fails the
+  // guard above for the rest of the session and the re-arm below is inert.
+  receiveScanBusy = -1;
+  // The chain answered, so the retry ladder starts from 2 s again. Left
+  // climbing, a session whose opening scan failed three times would run every
+  // later re-armed scan at the 60 s step for the rest of its life.
+  receiveScanFails = 0;
   // One PAST the last index the chain has seen. `highest` was by definition
   // already paid, so offering it again on the receive screen re-uses an
   // address for no benefit; the watch window counts from 0, so moving one
   // further along stops nothing being watched.
   const next = highest + 1;
-  if (next <= wallet.index) return;
-  wallet.index = next;
-  renderAddress();
-  refreshMoney();
-  rememberReceiveIndex(); // teach this device what the chain just taught us
+  if (next > wallet.index) {
+    wallet.index = next;
+    renderAddress();
+    refreshMoney();
+    rememberReceiveIndex(); // teach this device what the chain just taught us
+  }
+  // A frontier edge that arrived while this walk was in flight was deferred,
+  // not dropped — and the walk may have read that newly funded index as unused
+  // before the payment landed. Re-enter once, now that the flags are clear.
+  if (receiveScanRearmPending === gen) {
+    receiveScanRearmPending = -1;
+    receiveScanGen = -1;
+    syncReceiveIndex();
+  }
+}
+
+/** Re-arm the scan when the money poll finds on-chain activity AT or PAST the
+ * handout counter. Without this, rediscovery runs once per open: with the same
+ * seed live on a second device, a payment landing at the top of the watch
+ * window (index+2) is seen, but the window never widens — so the NEXT payment,
+ * one index further, stays invisible until the wallet is re-opened.
+ *
+ * EDGE-triggered on the frontier, deliberately not level-triggered: a wallet
+ * sitting at a funded frontier the scan cannot advance would otherwise re-walk
+ * the chain every 8s straight into the proxy's rate limit (#H4).
+ *
+ * Called from inside refreshMoney's generation guard, so wallet.index and
+ * addressUse still belong to the wallet on screen. */
+function maybeRearmReceiveScan() {
+  if (receiveFrontierGen !== walletGen) { receiveFrontierGen = walletGen; receiveFrontier = -1; }
+  let frontier = -1;
+  addressUse.forEach((use, i) => { if (use.used && i > frontier) frontier = i; });
+  if (frontier <= receiveFrontier) return;
+  receiveFrontier = frontier;
+  // Activity BELOW the counter is the ordinary case — an address this device
+  // handed out has finally been paid — and the window already covers it. Only
+  // activity at or past the counter means someone walked the chain further
+  // than this device knows about.
+  if (frontier < wallet.index) return;
+  // Defer, don't drop: the frontier edge is consumed above and can never fire
+  // again, so a request the busy guard rejects would be lost — and the walk in
+  // flight may have read this very index as unused a moment before the payment
+  // landed, leaving the deeper index outside the watch window with nothing left
+  // to re-trigger it. syncReceiveIndex re-enters once when it lands.
+  if (receiveScanBusy === walletGen) { receiveScanRearmPending = walletGen; return; }
+  // ONLY receiveScanGen: re-arming receiveScanBusy would let a second walk
+  // start under the one in flight and double the fan-out.
+  receiveScanGen = -1;
+  syncReceiveIndex();
 }
 
 /** Persist the handout counter. Best effort by design: losing it costs an
@@ -1852,6 +1914,11 @@ $('w-forget').addEventListener('click', (e) => {
   const names = (vault.meta()?.wallets ?? []).map((w) => w.name);
   $('w-erase-names').innerHTML = (names.length ? names : ['Wallet 1 (created by an older version)'])
     .map((n) => `<li>${esc(n)}</li>`).join('');
+  // The ceremony enumerates what it destroys and names the seed phrase as the
+  // way back; since the journal goes too, name that as well — a seed phrase
+  // cannot rebuild a signed transaction that may already be in flight. Only
+  // when there is something to lose: the line is a warning, not a disclaimer.
+  $('w-erase-pending').style.display = broadcastLog.list().length ? '' : 'none';
   setConnectMode('erase');
   $('w-erase-input').focus();
 });
@@ -1868,6 +1935,22 @@ $('w-erase-cancel').addEventListener('click', () => setConnectMode('unlock'));
 $('w-erase-go').addEventListener('click', () =>
   busy($('w-erase-go'), 'w-erase-err', async () => {
     await keystore.deleteAllRecords();
+    // The journal is the other durable artifact this app owns: signed raw
+    // transaction hex plus the counterparty and amount of every unresolved
+    // broadcast, for up to 30 days. It outlives lock and wallet switch on
+    // purpose, but "erase all wallets on this device" is where that stops —
+    // leaving it behind on a shared machine is exactly what the ceremony
+    // promises not to do. The in-memory verdicts go with it, or the card keeps
+    // rendering resolved rows for records that no longer exist.
+    broadcastLog.clearAll();
+    recoveryStatus.clear();
+    // The mainnet ack is a one-time BLOCKING real-funds gate (#54/#63), not a
+    // preference like the autolock timeout: "erase all wallets on this device"
+    // is the only "this device is changing hands" signal the app has, and the
+    // next person to create a mainnet wallet here must meet the gate. Re-showing
+    // it costs one click; keeping it skips a real-funds warning on a shared
+    // machine. (In-session `mainnetAckShown` still holds — this bites at reload.)
+    try { localStorage.removeItem(MAINNET_ACK_KEY); } catch { /* nothing to clear */ }
     // #C2: a deliberate erase is not an eviction. Clear BEFORE show(), or the
     // recovery hero flashes at the user who just chose to erase.
     clearHadVault(globalThis.localStorage);
@@ -2681,6 +2764,7 @@ async function refreshMoney() {
       at.sats += r.utxos.reduce((n, u) => n + Number(u.valueSats), 0);
       addressUse.set(index, at);
     });
+    maybeRearmReceiveScan();
     renderPrevAddresses(); // no-op unless the list is open
     const utxos = perAddr.flatMap((r) => r.utxos);
     const confirmed = utxos.filter((u) => u.height > 0).reduce((n, u) => n + Number(u.valueSats), 0);
