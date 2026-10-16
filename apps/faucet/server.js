@@ -15,6 +15,10 @@ const COIN = 100_000_000n;
 export function configFromEnv() {
   return {
     port: Number(process.env.PORT) || 8788,
+    // Loopback by default — this is the one service with spending power (the
+    // hot wallet), so `node server.js` must not publish it to the network by
+    // accident. Containers opt back in with BIND_HOST=0.0.0.0 (deploy/*.yml).
+    bindHost: process.env.BIND_HOST || '127.0.0.1',
     rpc: {
       url: process.env.DGB_RPC_URL || 'http://127.0.0.1:14022',
       user: process.env.DGB_RPC_USER || '',
@@ -179,9 +183,9 @@ export function startServer(overrides = {}) {
     }
   });
 
-  server.listen(config.port, () => {
+  server.listen(config.port, config.bindHost, () => {
     const { port } = server.address();
-    console.log(`  DigiDollar Faucet → http://localhost:${port}`);
+    console.log(`  DigiDollar Faucet → http://localhost:${port} (bind ${config.bindHost})`);
   });
   return server;
 }

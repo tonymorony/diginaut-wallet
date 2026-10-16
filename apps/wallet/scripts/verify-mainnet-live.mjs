@@ -58,14 +58,17 @@ check(cfg.body?.mock === false, 'live node, not mock');
 check(cfg.body?.faucet === false, 'NO faucet on mainnet (there is none to have)');
 check(cfg.body?.indexer === true, 'indexer wired in config');
 // exercise the wallet→indexer→ElectrumX chain, not just the config flag
-// (verify-dual-public pattern): the probe txid doesn't exist, so an electrum/
-// daemon error body means the trio answered end-to-end, while a transport
-// error (ECONNREFUSED/timeout) means a link in the trio is down.
+// (verify-dual-public pattern): the probe txid doesn't exist, so a 404
+// `tx-not-found` means the trio answered end-to-end, and `upstream-error` means
+// the backend answered too (with an error — e.g. a warming daemon), while a 502
+// whose `cause` is *-unreachable means a link in the trio is down. Read `cause`
+// first — the servers no longer relay upstream text; `error` is the fallback
+// for a server that predates the token.
 {
   const idx = await getJson(`/api/indexer/tx/${'0'.repeat(64)}`);
-  const idxErr = String(idx.body?.error ?? '');
+  const idxErr = String(idx.body?.cause ?? idx.body?.error ?? '');
   const transportDown = /econnrefused|etimedout|unreachable|socket/i.test(idxErr);
-  const answered = (idx.status < 500 || /daemon error|no such|not found/i.test(idxErr)) && !transportDown;
+  const answered = (idx.status < 500 || /daemon error|no such|not found|upstream-error/i.test(idxErr)) && !transportDown;
   check(answered, answered
     ? `indexer chain answers end-to-end (status ${idx.status})`
     : `indexer chain NOT READY: ${idxErr || `status ${idx.status}`} — ElectrumX link down/still syncing; deployment-not-ready, not a wallet bug`);

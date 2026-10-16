@@ -40,6 +40,7 @@ services:
       args: { APP: indexer }
     environment:
       PORT: 8789
+      BIND_HOST: 0.0.0.0 # reached by wallet-main across the compose network; not published
       DGB_HRP: dgb # mainnet bech32 HRP — fixed, not configurable, so it cannot cross-wire
       ELECTRUM_HOST: electrumx-main
       ELECTRUM_PORT: 50001
@@ -53,6 +54,7 @@ services:
       args: { APP: wallet }
     environment:
       PORT: 8791
+      BIND_HOST: 0.0.0.0 # Caddy reaches it across the compose network
       DGB_RPC_URL: ${MAINNET_RPC_URL:?http://host:port of the MAINNET DigiByte node RPC}
       DGB_RPC_USER: ${MAINNET_RPC_USER:?}
       DGB_RPC_PASS: ${MAINNET_RPC_PASS:?}

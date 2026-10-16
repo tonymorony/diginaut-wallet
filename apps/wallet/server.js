@@ -136,6 +136,11 @@ const numEnv = (name, dflt) => {
 export function configFromEnv() {
   return {
     port: Number(process.env.PORT) || 8787,
+    // Loopback by default: `node server.js` on a box with an open port used to
+    // publish this proxy — and with it the node's RPC surface — to the whole
+    // network. A public deployment puts a TLS terminator in front and the
+    // container opts back in with BIND_HOST=0.0.0.0 (deploy/*.yml).
+    bindHost: process.env.BIND_HOST || '127.0.0.1',
     rpc: {
       // Point at your node's RPC (from digibyte.conf: rpcport). Set user/pass to leave mock mode.
       url: process.env.DGB_RPC_URL || 'http://127.0.0.1:14022',
@@ -196,10 +201,16 @@ async function handleIndexer(req, res, { indexerUrl, guard }) {
   try {
     const upstream = await fetch(`${indexerUrl}/api${rel}`, { signal: AbortSignal.timeout(15_000) });
     const body = await upstream.text();
-    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
+    // no-store for the same reason as sendJson's — these ARE the balance reads
+    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(body);
   } catch (err) {
-    sendJson(res, 502, { error: `indexer unreachable: ${String(err.message || err)}` });
+    // Not `indexer unreachable: ${err.message}` — that named the configured
+    // INDEXER_URL host:port (plus ECONNREFUSED/DNS text) to any caller. Same
+    // `{error, cause}` shape the indexer itself answers: copy for the user,
+    // token for the UI's flag check and for an operator triaging the hop.
+    console.error('wallet: indexer fetch:', err);
+    sendJson(res, 502, { error: 'the balance index is unavailable', cause: 'indexer-unreachable' });
   }
 }
 
@@ -223,10 +234,12 @@ async function handleFaucetClaim(req, res, { faucetUrl, guard, maxBodyBytes, tru
       signal: AbortSignal.timeout(30_000),
     });
     const body = await upstream.text();
-    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8' });
+    res.writeHead(upstream.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(body);
   } catch (err) {
-    sendJson(res, 502, { error: `faucet unreachable: ${String(err.message || err)}` });
+    // same rule as the indexer proxy: FAUCET_URL's host:port stays server-side
+    console.error('wallet: faucet fetch:', err);
+    sendJson(res, 502, { error: 'the Faucet is unavailable', cause: 'faucet-unreachable' });
   }
 }
 
@@ -460,9 +473,21 @@ async function callNode(rpc, method, params) {
   return json.result;
 }
 
+// `no-store`, on every API answer, for the same reason static assets got a
+// validator: with neither header a browser picks its own expiry (heuristic
+// freshness, RFC 9111 §4.2.2) and may re-serve a JSON body it fetched days ago.
+// Static content going stale is a bad deploy; THIS going stale is money — a
+// cached /api/indexer/…/utxos feeds coin selection outputs that are already
+// spent, and a cached /api/config can serve `chainMismatch:false` after the
+// deployment was cross-wired, which is the one flag the #64 guard renders from.
+// Not `no-cache`: these have no validator to revalidate against.
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data) });
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(data),
+    'cache-control': 'no-store',
+  });
   res.end(data);
 }
 
@@ -613,11 +638,48 @@ async function handleRpc(req, res, { rpc, mockMode, guard, maxBodyBytes }) {
     if (method === 'getblockchaininfo' && result?.chain) guard?.seen(result.chain);
     sendJson(res, 200, { result, mock: mockMode });
   } catch (err) {
+    // DELIBERATELY VERBATIM — do not genericize this one the way the indexer and
+    // faucet proxies were. The node's reject string IS the answer: broadcastlog's
+    // classifyBroadcastError string-matches its tokens (bad-txns-inputs-*,
+    // txn-mempool-conflict, txn-already-in-mempool, the DigiDollar bad-dd-*
+    // families) to decide reject vs already-broadcast vs ambiguous. Strip it and
+    // every definite reject degrades to "this MAY have been broadcast", which
+    // hands the user back the rebuild-and-send path onto the same coins.
+    // Unlike the indexer's ElectrumX, this upstream is the node whose address the
+    // caller can already read from /api/config (rpcUrl) — nothing new leaks.
     sendJson(res, 502, { error: String(err.message || err), mock: mockMode });
   }
 }
 
-async function serveFrom(baseDir, relPath, res) {
+// ---- Static caching: revalidate, never guess ----
+// Responses used to carry content-type and nothing else. With no cache-control
+// and no validator, a browser applies HEURISTIC freshness (RFC 9111 §4.2.2) and
+// picks its own expiry — which is why phones kept running days-old app.js after
+// a deploy while desktops looked fine. index.html has no cache-busting query on
+// its script tags and deploy/Caddyfile is a bare reverse_proxy, so this is the
+// only place that can fix it.
+//
+// `no-cache` does not mean "don't store": it means store, but revalidate before
+// each use — so an unchanged file still costs one 304 and no body.
+//
+// The validator is a hash of the BYTES, not mtime. Docker COPY preserves
+// build-context mtimes, so a rollback can hand a client an older file with a
+// plausible last-modified and win the comparison; a content ETag makes a
+// rollback revalidate correctly. Re-hashing per request adds no I/O — this
+// function already re-reads the file every time.
+const etagFor = (body) => `"${createHash('sha256').update(body).digest('base64url').slice(0, 27)}"`;
+
+// A client may send several validators, and `*` matches anything it holds.
+function ifNoneMatch(req, etag) {
+  const header = req.headers['if-none-match'];
+  if (!header) return false;
+  return String(header).split(',').some((t) => {
+    const tag = t.trim().replace(/^W\//, '');
+    return tag === '*' || tag === etag;
+  });
+}
+
+async function serveFrom(baseDir, relPath, req, res) {
   const filePath = normalize(join(baseDir, relPath));
   if (!filePath.startsWith(baseDir)) {
     res.writeHead(403).end('forbidden');
@@ -625,7 +687,15 @@ async function serveFrom(baseDir, relPath, res) {
   }
   try {
     const body = await readFile(filePath);
-    res.writeHead(200, { 'content-type': MIME[extname(filePath)] || 'application/octet-stream' });
+    // /vendor and /lib are NOT exempt: a vendor bump changes vendor.lock, and a
+    // phone must never run a new app.js against stale vendored crypto.
+    const revalidate = { 'cache-control': 'no-cache', etag: etagFor(body) };
+    if (ifNoneMatch(req, revalidate.etag)) {
+      res.writeHead(304, revalidate);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'content-type': MIME[extname(filePath)] || 'application/octet-stream', ...revalidate });
     res.end(body);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
@@ -635,14 +705,14 @@ async function serveFrom(baseDir, relPath, res) {
 async function serveStatic(req, res) {
   let urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   if (urlPath === '/') urlPath = '/index.html';
-  if (urlPath.startsWith('/lib/')) return serveFrom(LIB_DIR, urlPath.slice('/lib/'.length), res);
+  if (urlPath.startsWith('/lib/')) return serveFrom(LIB_DIR, urlPath.slice('/lib/'.length), req, res);
   if (urlPath.startsWith('/vendor/')) {
     const rel = urlPath.slice('/vendor/'.length);
     const pkg = VENDOR_PACKAGES.find((p) => rel.startsWith(p + '/'));
     if (!pkg) return void res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
-    return serveFrom(VENDOR_ROOTS[pkg], rel.slice(pkg.length + 1), res);
+    return serveFrom(VENDOR_ROOTS[pkg], rel.slice(pkg.length + 1), req, res);
   }
-  return serveFrom(PUBLIC_DIR, urlPath, res);
+  return serveFrom(PUBLIC_DIR, urlPath, req, res);
 }
 
 export function startServer(overrides = {}) {
@@ -718,7 +788,15 @@ export function startServer(overrides = {}) {
       if (req.method === 'GET') return await serveStatic(req, res);
       res.writeHead(405).end('method not allowed');
     } catch (err) {
-      sendJson(res, 500, { error: String(err.message || err) });
+      // Last-resort catch: whatever threw here was NOT handled deliberately, so
+      // its message is unbounded — a filesystem path, a stack-shaped string, an
+      // upstream body. Log it, answer a fixed line. That line names the actor,
+      // because it reaches the user verbatim through fetchIndexer → busy() and
+      // can land in #w-send-err mid-review; `internal error` was status-speak.
+      // No "nothing was sent" reassurance: this also wraps /api/rpc, so it
+      // cannot claim a broadcast failed to reach the node.
+      console.error('wallet:', err);
+      sendJson(res, 500, { error: 'the wallet server hit an unexpected error', cause: 'internal' });
     }
   });
 
@@ -727,10 +805,10 @@ export function startServer(overrides = {}) {
     priceSeries = startPriceSampler({ rpc: config.rpc, ...(config.priceHistory || {}), guard }, server);
   }
 
-  server.listen(config.port, () => {
+  server.listen(config.port, config.bindHost, () => {
     const { port } = server.address();
     console.log(`\n  Diginaut · DigiDollar wallet ${APP_VERSION}`);
-    console.log(`  → http://localhost:${port}`);
+    console.log(`  → http://localhost:${port} (bind ${config.bindHost})`);
     console.log(`  mode: ${mockMode ? 'MOCK (set DGB_RPC_USER/DGB_RPC_PASS for a real node)' : `REAL node @ ${config.rpc.url}`}`);
     console.log(`  vendor: ${vendorFileCount} files verified against vendor.lock\n`);
   });

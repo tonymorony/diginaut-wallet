@@ -231,3 +231,17 @@ export function classifyBroadcastError(err) {
   // which can follow a node that ACCEPTED the transaction.
   return { kind: 'ambiguous', message: raw };
 }
+
+/** Did the indexer answer "the chain has never seen this transaction"?
+ *
+ *  This is the verdict "Check status" turns into *Rebroadcast is safe*, so it
+ *  must be true of nothing else: an outage, a warming backend or a failed
+ *  prevout lookup answers `upstream-error`, and treating those as "never
+ *  broadcast" would invite a second spend of coins already committed.
+ *  The FLAG is the contract (`cause: 'tx-not-found'`, apps/indexer/server.js);
+ *  the legacy text match stays for a deployment that has not taken that build —
+ *  before it, an unknown txid arrived as ElectrumX's relayed DaemonError repr. */
+export function isTxUnknownToIndexer(err) {
+  if (err?.indexerCause) return err.indexerCause === 'tx-not-found';
+  return /No such mempool or blockchain transaction|unknown path|HTTP 404/i.test(String(err?.message ?? ''));
+}

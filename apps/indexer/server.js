@@ -19,6 +19,11 @@ export function configFromEnv() {
   const ttl = Number(process.env.TX_CACHE_TTL_MS);
   return {
     port: Number(process.env.PORT) || 8789,
+    // Loopback by default. This façade is an unthrottled proxy in front of
+    // ElectrumX with no auth of its own, and `node server.js` on a box with an
+    // open port used to publish it to the whole network. Containers that must
+    // take cross-container traffic set BIND_HOST=0.0.0.0 (deploy/*.yml).
+    bindHost: process.env.BIND_HOST || '127.0.0.1',
     hrp: process.env.DGB_HRP || 'dgbt', // dgb | dgbt | dgbrt
     electrum: {
       host: process.env.ELECTRUM_HOST || '127.0.0.1',
@@ -38,6 +43,23 @@ export function configFromEnv() {
 // to exhaust indexer memory with an endless line that never sends a newline (#55).
 // Counted in BYTES — the assembler holds raw chunks, not a decoded string.
 const MAX_ELECTRUM_FRAME = 16 * 1024 * 1024;
+
+// Every failure that came from the ElectrumX side is TAGGED at the point it
+// arises, because the HTTP layer never sees its text: raw upstream strings name
+// the backend, its host:port and its error grammar to unauthenticated callers,
+// so they are logged and dropped. `upstream` = a backend problem either way;
+// `electrumRpc` narrows it to "the backend answered, with an error" — the only
+// signal that distinguishes a healthy link from a dead one once the text is
+// gone; `electrumRpcCode` carries the JSON-RPC code the backend sent, because
+// "no such transaction" is an ANSWER and every other RPC error is an outage.
+function tagUpstream(err, { rpc = false, code } = {}) {
+  err.upstream = true;
+  if (rpc) {
+    err.electrumRpc = true;
+    if (code !== undefined) err.electrumRpcCode = code;
+  }
+  return err;
+}
 
 export class ElectrumClient {
   constructor({ host, port }) {
@@ -73,8 +95,9 @@ export class ElectrumClient {
         if (this.sock !== sock) return; // a newer session owns this client now
         this.sock = null;
         this.#resetFrames(); // a half-assembled frame belongs to the dead socket
-        reject(err ?? new Error('electrum connection closed'));
-        for (const { reject: rj } of this.pending.values()) rj(err ?? new Error('electrum connection closed'));
+        const e = tagUpstream(err ?? new Error('electrum connection closed'));
+        reject(e);
+        for (const { reject: rj } of this.pending.values()) rj(e);
         this.pending.clear();
       };
       sock.on('error', fail);
@@ -90,7 +113,7 @@ export class ElectrumClient {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`electrum timeout: ${method}`));
+        if (this.pending.delete(id)) reject(tagUpstream(new Error(`electrum timeout: ${method}`)));
       }, 15_000).unref();
     });
   }
@@ -120,7 +143,7 @@ export class ElectrumClient {
       // the only way to resync a stream mid-frame is to skip to the next
       // newline. A fresh connection is cheaper and unambiguous.
       this.#resetFrames();
-      const err = new Error('electrum response exceeded frame limit');
+      const err = tagUpstream(new Error('electrum response exceeded frame limit'));
       for (const { reject } of this.pending.values()) reject(err);
       this.pending.clear();
       const dead = this.sock;
@@ -166,7 +189,9 @@ export class ElectrumClient {
       const entry = this.pending.get(msg.id);
       if (!entry) continue; // subscription notification — not used yet
       this.pending.delete(msg.id);
-      msg.error ? entry.reject(new Error(msg.error.message || JSON.stringify(msg.error))) : entry.resolve(msg.result);
+      msg.error
+        ? entry.reject(tagUpstream(new Error(msg.error.message || JSON.stringify(msg.error)), { rpc: true, code: msg.error.code }))
+        : entry.resolve(msg.result);
     }
   }
 
@@ -314,8 +339,10 @@ function spkAddress(spk) {
 // Core reports values as float DGB; sats is the integer we settle in.
 const valueToSats = (v) => BigInt(Math.round(v * 1e8));
 
-async function enrichTx(getTx, txid) {
-  const tx = await getTx(txid);
+// `tx` is the ALREADY-FETCHED verbose tx: the route does that first lookup
+// itself, because it is the only one whose failure can mean "no such
+// transaction" — the prevout lookups below are about other transactions.
+async function enrichTx(getTx, tx) {
   const type = parseDDVersion(tx.version).type || 'dgb';
   const ddMap = ddAmountsByVout(tx); // vout.n → DD cents (null for a plain DGB tx)
   const vout = tx.vout.map((o) => ({
@@ -357,6 +384,27 @@ async function enrichTx(getTx, txid) {
     vout,
   };
 }
+
+// The one upstream error that is an ANSWER rather than an outage: the chain has
+// never seen this txid. Core's getrawtransaction answers RPC code -5
+// (RPC_INVALID_ADDRESS_OR_KEY) in four shapes (src/rpc/rawtransaction.cpp:373-381),
+// and only two of them are that answer — the other two say the node cannot see
+// CONFIRMED transactions at all (txindex off, or still building), so the
+// transaction asked about may well be on chain. Those are a warming backend and
+// take the `upstream-error` path with everything else; the wallet turns this
+// 404 into "Rebroadcast is safe", so it must never cover them.
+// ElectrumX normally relays the daemon's error inside its OWN error (code 1)
+// whose message is a Python DaemonError repr, hence matching the text as well
+// as the code. Classifying HERE is fine — it is RELAYING upstream text that
+// leaks the backend to unauthenticated callers (#55).
+const NO_SUCH_TX = /no such (mempool or blockchain transaction|transaction found in the provided block)/i;
+const INDEX_NOT_READY = /use -txindex|still in the process of being indexed/i;
+const isTxUnknown = (err) => {
+  const message = String(err?.message ?? '');
+  return Boolean(err?.electrumRpc)
+    && (err.electrumRpcCode === -5 || NO_SUCH_TX.test(message))
+    && !INDEX_NOT_READY.test(message);
+};
 
 function sendJson(res, status, body) {
   const data = JSON.stringify(body);
@@ -415,7 +463,29 @@ export function startServer(overrides = {}) {
       }
       const txMatch = req.url.match(/^\/api\/tx\/([0-9a-f]{64})$/);
       if (req.method === 'GET' && txMatch) {
-        return sendJson(res, 200, await enrichTx(txCache.get, txMatch[1]));
+        let tx;
+        try {
+          // Through the cache on purpose: it memoizes the PROMISE, so a tagged
+          // rejection reaches every caller and the failure self-evicts —
+          // nothing caches the 404 — while a hot txid still costs one upstream
+          // read across positions/dd-utxos/tx.
+          tx = await txCache.get(txMatch[1]);
+        } catch (err) {
+          // 404 is scoped to the REQUESTED txid, and to the errors that actually
+          // say "no such transaction", so the copy is true by construction. The
+          // wallet's recovery card reads this answer as "it never reached the
+          // network — rebroadcasting is safe" (app.js), so a warming daemon, a
+          // txindex problem or a failed PREVOUT lookup inside enrichTx must
+          // never land here: they fall through to `upstream-error`, which
+          // claims nothing about the transaction. That also keeps the ops
+          // triage probe honest (ops-and-server.md).
+          if (isTxUnknown(err)) {
+            console.error('indexer: tx lookup:', err.message);
+            return sendJson(res, 404, { error: 'not found', cause: 'tx-not-found' });
+          }
+          throw err;
+        }
+        return sendJson(res, 200, await enrichTx(txCache.get, tx));
       }
       if (req.method === 'GET' && req.url === '/api/health') {
         const tip = await withElectrum('blockchain.headers.subscribe', []);
@@ -423,13 +493,31 @@ export function startServer(overrides = {}) {
       }
       sendJson(res, 404, { error: 'not found' });
     } catch (err) {
-      sendJson(res, 502, { error: String(err.message || err) });
+      // This service is reachable unauthenticated through the wallet's proxy, so
+      // the error TEXT stays here: it carries ElectrumX's Python DaemonError
+      // reprs, `electrum timeout: <method>` (naming the backend's RPC grammar)
+      // and socket errors naming ELECTRUM_HOST:PORT. Log the real thing — the
+      // most useful line we have — and answer a fixed, machine-readable verdict.
+      console.error('indexer:', err);
+      // `error` is copy a user may end up reading through the wallet; `cause` is
+      // the machine token, and it keeps TWO upstream verdicts because an
+      // operator curling this service must tell "the backend answered, so the
+      // trio is healthy" from "the link is actually down" with no fingerprint
+      // left to read (ops-and-server.md). Same copy for both: to a user holding
+      // a wallet there is no difference — no balances either way.
+      const unavailable = 'the balance index is unavailable';
+      if (err?.electrumRpc) return sendJson(res, 502, { error: unavailable, cause: 'upstream-error' });
+      if (err?.upstream) return sendJson(res, 502, { error: unavailable, cause: 'upstream-unreachable' });
+      // Untagged = our own defect. The copy names the actor because it reaches
+      // the user verbatim through the wallet's fetchIndexer; `internal error`
+      // was status-speak that named neither an actor nor a next step.
+      sendJson(res, 500, { error: 'the balance index hit an unexpected error', cause: 'internal' });
     }
   });
 
   server.on('close', () => electrum.sock?.destroy()); // don't hold the event loop after close
-  server.listen(config.port, () => {
-    console.log(`  DigiDollar indexer façade → http://localhost:${server.address().port} (electrum ${config.electrum.host}:${config.electrum.port}, hrp ${config.hrp})`);
+  server.listen(config.port, config.bindHost, () => {
+    console.log(`  DigiDollar indexer façade → http://localhost:${server.address().port} (bind ${config.bindHost}, electrum ${config.electrum.host}:${config.electrum.port}, hrp ${config.hrp})`);
   });
   return server;
 }

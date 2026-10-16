@@ -23,6 +23,10 @@ services:
       args: { APP: indexer }
     environment:
       PORT: 8789
+      # REQUIRED in a container: the services bind loopback by default, and the
+      # wallet reaches this one across the compose network. No port is published
+      # for it, so 0.0.0.0 here means "the compose network", not the internet.
+      BIND_HOST: 0.0.0.0
       DGB_HRP: ${DGB_HRP:-dgbrt} # dgb | dgbt | dgbrt — must match the node's chain
       ELECTRUM_HOST: electrumx
       ELECTRUM_PORT: 50001
@@ -36,6 +40,7 @@ services:
       args: { APP: faucet }
     environment:
       PORT: 8788
+      BIND_HOST: 0.0.0.0 # reached by the wallet across the compose network; not published
       DGB_RPC_URL: ${DGB_RPC_URL:?http://host:port of your DigiByte node RPC}
       DGB_RPC_USER: ${DGB_RPC_USER:?}
       DGB_RPC_PASS: ${DGB_RPC_PASS:?}
@@ -56,6 +61,9 @@ services:
       args: { APP: wallet }
     environment:
       PORT: 8791
+      # published below (and fronted by Caddy in the tls/dual overlays), so this
+      # must bind the container's own interface, not its loopback
+      BIND_HOST: 0.0.0.0
       DGB_RPC_URL: ${DGB_RPC_URL}
       DGB_RPC_USER: ${DGB_RPC_USER}
       DGB_RPC_PASS: ${DGB_RPC_PASS}
