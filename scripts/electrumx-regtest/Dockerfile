@@ -4,7 +4,7 @@
 #   docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' python:3.14-slim
 # 3.14 verified 2026-07-26: e-x 2.0.0 declares 3.14 support and plyvel 1.5.1 has
 # no cp314 wheel but compiles from its sdist against the libleveldb-dev above.
-FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
+FROM python:3.15-slim@sha256:94d3426f1def7db4a106a232ac121bfd975393e5dfd40a619b955fae45fe7913
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libleveldb-dev \
